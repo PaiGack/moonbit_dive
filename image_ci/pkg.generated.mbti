@@ -1,0 +1,210 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "PaiGack/dive/image_ci"
+
+import {
+  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/layer_tree",
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn config_error_annotation(ConfigError, String) -> String
+
+pub fn config_error_to_json(ConfigError, String) -> Json
+
+pub fn covered_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise
+
+pub fn covered_pair() -> (@dive_analysis.Report, @layer_tree.FileTree) raise
+
+pub fn exit_code_of(CheckResult) -> Int
+
+pub let exit_config_error : Int
+
+pub let exit_ok : Int
+
+pub let exit_rule_failed : Int
+
+pub fn fat_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise
+
+pub fn percent1(Double) -> String
+
+pub fn rule_type_name(RuleKind) -> String
+
+pub fn sample_docker_archive() -> Bytes
+
+// Errors
+pub(all) suberror ConfigError {
+  Parse(String)
+  NotAnObject
+  MissingRules
+  RuleNotObject(Int)
+  UnknownRuleType(Int, String)
+  BadNumber(Int, String)
+  OutOfRange(Int, String)
+  BadEfficiency(Int, Double)
+  BadPatterns(Int, String)
+  BadScope(Int, String)
+} derive(Eq, @debug.Debug)
+pub fn ConfigError::equal(Self, Self) -> Bool
+pub fn ConfigError::not_equal(Self, Self) -> Bool
+pub fn ConfigError::output(Self, &Logger) -> Unit
+pub fn ConfigError::to_repr(Self) -> @debug.Repr
+pub fn ConfigError::to_string(Self) -> String
+pub impl Show for ConfigError
+
+pub(all) suberror ImageError {
+  Malformed(String)
+  Unsupported(String)
+  Io(String)
+  Decompress(String)
+} derive(Eq, @debug.Debug)
+pub fn ImageError::equal(Self, Self) -> Bool
+pub fn ImageError::not_equal(Self, Self) -> Bool
+pub fn ImageError::output(Self, &Logger) -> Unit
+pub fn ImageError::to_repr(Self) -> @debug.Repr
+pub fn ImageError::to_string(Self) -> String
+pub impl Show for ImageError
+
+// Types and methods
+pub(all) struct CheckResult {
+  results : Array[RuleResult]
+  source : String
+  image : String
+} derive(Eq, @debug.Debug)
+pub fn CheckResult::all_passed(Self) -> Bool
+pub fn CheckResult::equal(Self, Self) -> Bool
+pub fn CheckResult::failed_count(Self) -> Int
+pub fn CheckResult::not_equal(Self, Self) -> Bool
+pub fn CheckResult::output(Self, &Logger) -> Unit
+pub fn CheckResult::passed_count(Self) -> Int
+pub fn CheckResult::to_annotations(Self) -> String
+pub fn CheckResult::to_json(Self) -> Json
+pub fn CheckResult::to_json_string(Self) -> String
+pub fn CheckResult::to_repr(Self) -> @debug.Repr
+pub fn CheckResult::to_string(Self) -> String
+pub fn CheckResult::to_text(Self) -> String
+pub impl Show for CheckResult
+
+pub(all) struct ImageSource {
+  name : String
+  format : String
+  layers : Array[LayerSource]
+} derive(@debug.Debug)
+pub fn ImageSource::from_oci_layout(String, String, String, Array[Bytes]) -> Self raise ImageError
+pub fn ImageSource::from_tar_bytes(Bytes, name? : String) -> Self raise ImageError
+pub fn ImageSource::load(String) -> Self raise ImageError
+pub fn ImageSource::output(Self, &Logger) -> Unit
+pub fn ImageSource::to_repr(Self) -> @debug.Repr
+pub fn ImageSource::to_string(Self) -> String
+pub impl Show for ImageSource
+
+pub(all) struct LayerSource {
+  media_type : String
+  data : Bytes
+  diff_id : String
+} derive(@debug.Debug)
+pub fn LayerSource::output(Self, &Logger) -> Unit
+pub fn LayerSource::raw_bytes(Self) -> Bytes raise ImageError
+pub fn LayerSource::to_repr(Self) -> @debug.Repr
+pub fn LayerSource::to_string(Self) -> String
+pub impl Show for LayerSource
+
+pub(all) struct PathFilter {
+  pattern : PathPattern
+  recursive : Bool
+} derive(Eq, @debug.Debug)
+pub fn PathFilter::covers(Self, String) -> Bool
+pub fn PathFilter::equal(Self, Self) -> Bool
+pub fn PathFilter::new(PathPattern, recursive? : Bool) -> Self
+pub fn PathFilter::not_equal(Self, Self) -> Bool
+pub fn PathFilter::output(Self, &Logger) -> Unit
+pub fn PathFilter::render(Self) -> String
+pub fn PathFilter::to_repr(Self) -> @debug.Repr
+pub fn PathFilter::to_string(Self) -> String
+pub impl Show for PathFilter
+
+pub(all) struct PathPattern {
+  raw : String
+  segments : Array[PatternSegment]
+  subtree : Bool
+} derive(Eq, @debug.Debug)
+pub fn PathPattern::compile(String) -> Self
+pub fn PathPattern::equal(Self, Self) -> Bool
+pub fn PathPattern::matches(Self, String) -> Bool
+pub fn PathPattern::not_equal(Self, Self) -> Bool
+pub fn PathPattern::output(Self, &Logger) -> Unit
+pub fn PathPattern::to_repr(Self) -> @debug.Repr
+pub fn PathPattern::to_string(Self) -> String
+pub impl Show for PathPattern
+
+pub(all) enum PatternSegment {
+  Literal(String)
+  Wildcard(String)
+  Any
+} derive(Eq, @debug.Debug)
+pub fn PatternSegment::equal(Self, Self) -> Bool
+pub fn PatternSegment::not_equal(Self, Self) -> Bool
+pub fn PatternSegment::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Rule {
+  id : String
+  kind : RuleKind
+} derive(Eq, @debug.Debug)
+pub fn Rule::equal(Self, Self) -> Bool
+pub fn Rule::not_equal(Self, Self) -> Bool
+pub fn Rule::output(Self, &Logger) -> Unit
+pub fn Rule::to_repr(Self) -> @debug.Repr
+pub fn Rule::to_string(Self) -> String
+pub impl Show for Rule
+
+pub(all) enum RuleKind {
+  MaxImageSize(Int)
+  MaxLayerSize(Int)
+  MaxWastedSize(Int)
+  MinEfficiency(Double)
+  DenyPaths(Array[String])
+  AllowPaths(Array[String])
+  MaxFileSize(Int, PathFilter?)
+} derive(Eq, @debug.Debug)
+pub fn RuleKind::equal(Self, Self) -> Bool
+pub fn RuleKind::not_equal(Self, Self) -> Bool
+pub fn RuleKind::output(Self, &Logger) -> Unit
+pub fn RuleKind::to_repr(Self) -> @debug.Repr
+pub fn RuleKind::to_string(Self) -> String
+pub impl Show for RuleKind
+
+pub(all) struct RuleResult {
+  id : String
+  rule : RuleKind
+  passed : Bool
+  observed : String
+  expected : String
+  reason : String
+  locations : Array[String]
+} derive(Eq, @debug.Debug)
+pub fn RuleResult::equal(Self, Self) -> Bool
+pub fn RuleResult::not_equal(Self, Self) -> Bool
+pub fn RuleResult::output(Self, &Logger) -> Unit
+pub fn RuleResult::to_repr(Self) -> @debug.Repr
+pub fn RuleResult::to_string(Self) -> String
+pub impl Show for RuleResult
+
+pub(all) struct Ruleset {
+  rules : Array[Rule]
+  source : String
+} derive(Eq, @debug.Debug)
+pub fn Ruleset::check(Self, @dive_analysis.Report, @layer_tree.FileTree, image? : String) -> CheckResult
+pub fn Ruleset::empty(String) -> Self
+pub fn Ruleset::equal(Self, Self) -> Bool
+pub fn Ruleset::not_equal(Self, Self) -> Bool
+pub fn Ruleset::of_json(Json, source? : String) -> Self raise ConfigError
+pub fn Ruleset::of_rules(Array[RuleKind], source? : String) -> Self
+pub fn Ruleset::output(Self, &Logger) -> Unit
+pub fn Ruleset::parse(String, source? : String) -> Self raise ConfigError
+pub fn Ruleset::to_repr(Self) -> @debug.Repr
+pub fn Ruleset::to_string(Self) -> String
+pub impl Show for Ruleset
+
+// Type aliases
+
+// Traits

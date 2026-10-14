@@ -1,0 +1,16 @@
+import {
+  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/layer_tree",
+  "PaiGack/dive/oci_spec",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+  "moonbitlang/x/encoding",
+  "moonbitlang/x/fs",
+}
+
+import {
+  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/layer_tree",
+} for "wbtest"
+
+warnings = "-test_unqualified_package"

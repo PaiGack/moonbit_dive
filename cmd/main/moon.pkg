@@ -1,5 +1,9 @@
-// import {
-//   "PaiGack/dive" @lib,
-// }
+import {
+  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/image_ci",
+  "PaiGack/dive/layer_tree",
+  "moonbitlang/core/argparse",
+  "moonbitlang/x/fs",
+}
 
 pkgtype(kind: "executable")
