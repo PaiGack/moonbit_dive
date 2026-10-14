@@ -30,3 +30,7 @@ jobs:
 
       - name: Run CI
         run: bash scripts/ci.sh
+
+      # 代码统计只在这里跑，.cnb.yml 不接这一步。
+      - name: Tokei (code statistics)
+        run: docker run --rm -v "$(pwd)":/src ghcr.io/xampprocky/tokei:latest .
