@@ -15,10 +15,21 @@
 
 ### tar 应用
 
-- 流式读 tar entry（复用 `bobzhang/tar`），按 entry type 建/改/删节点
-- 处理 layer 压缩：gzip / zstd 先解压再喂给 tar 解析
+- 流式读 tar entry，按 entry type 建/改/删节点
+- 处理 layer 压缩：gzip / zstd 先解压再喂给 tar 解析（`bikallem/compress` 或 `moonbit-community/flate`）
 - 硬链接：指向目标节点而不是复制内容
 - 符号链接：记录链接目标，不跟随
+
+> **开工前必须定的事：tar 底座**
+> `bobzhang/tar@0.1.3` 的 `data` 是 `String` 而非 `Bytes`，且未暴露 header 的
+> mode/uid/gid/mtime。二进制内容过 `String` 会丢信息，也还原不出权限，
+> **不能直接当 P2 的底座**。`oyjh0381/moonoci/archive` 的
+> `TarEntry::file(String, Bytes, mode)` 形态是对的，但它是该模块的内部类型，
+> 只能整包依赖。
+>
+> 二选一：自研流式 tar reader（`Bytes` + 完整 header），或与
+> `oyjh0381/moonoci` 作者对齐出独立可复用的 tar 包。
+> 详见 [docker-cli-survey.md](docker-cli-survey.md#三一个必须知道的坑bobzhangtar-不够用)。
 
 ### whiteout 语义（独立贡献点）
 
