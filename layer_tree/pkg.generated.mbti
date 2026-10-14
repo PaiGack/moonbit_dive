@@ -1,0 +1,338 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "PaiGack/dive/layer_tree"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn apply_layer(FileTree, BytesView, Int) -> Unit raise TarError
+
+pub fn apply_layer_with_media_type(FileTree, BytesView, String, Int) -> Unit raise LayerError
+
+pub fn apply_layers_with_diffs(Array[BytesView], media_types? : Array[String]) -> LayerDiffResult raise LayerError
+
+pub fn base_name(String) -> String
+
+pub fn build_tar(Array[TarEntrySpec]) -> Bytes
+
+pub fn compare_ascii(String, String) -> Int
+
+pub fn compression_of(String) -> String
+
+pub fn crc32(BytesView) -> UInt
+
+pub fn decompress_layer(BytesView, String) -> Bytes raise DecompressError
+
+pub let default_render_options : RenderOptions
+
+pub fn diff_against_empty(FileTree, Int) -> Diff
+
+pub fn diff_snapshots(FileTree, FileTree, Int, Int) -> Diff
+
+pub fn gzip_compress(BytesView) -> Bytes
+
+pub fn gzip_decompress(BytesView) -> Bytes raise DecompressError
+
+pub fn inflate(BytesView) -> Bytes raise DecompressError
+
+pub fn join_path(String, String) -> String
+
+pub fn make_opaque(FileTree, String, Int) -> Unit
+
+pub let minimal_render_options : RenderOptions
+
+pub fn normalize_path(String) -> Result[String, PathError]
+
+pub let opaque_marker : String
+
+pub fn parent_path(String) -> String
+
+pub fn parse_tar_entries(BytesView) -> Array[TarEntry] raise TarError
+
+pub fn path_depth(String) -> Int
+
+pub fn path_is_under(String, String) -> Bool
+
+pub fn path_order(String, String) -> Int
+
+pub let plnk_marker : String
+
+pub fn read_file_from_tar(BytesView, String) -> BytesView? raise TarError
+
+pub fn remove_subtree(FileTree, String, Int) -> Int
+
+pub fn render_diff(Diff) -> String
+
+pub fn render_tree(FileTree, options? : RenderOptions) -> String
+
+pub fn render_tree_between(FileTree, Int, Int, options? : RenderOptions) -> String
+
+pub let tar_block_size : Int
+
+pub fn whiteout_kind(String) -> WhiteoutKind?
+
+pub let whiteout_prefix : String
+
+// Errors
+pub(all) suberror DecompressError {
+  Gzip(String)
+  Zstd(String)
+  Unsupported(String)
+} derive(Eq, @debug.Debug)
+pub fn DecompressError::equal(Self, Self) -> Bool
+pub fn DecompressError::not_equal(Self, Self) -> Bool
+pub fn DecompressError::output(Self, &Logger) -> Unit
+pub fn DecompressError::to_repr(Self) -> @debug.Repr
+pub fn DecompressError::to_string(Self) -> String
+pub impl Show for DecompressError
+
+pub(all) suberror LayerError {
+  Tar(TarError)
+  Decompress(DecompressError)
+  DigestMismatch(String, String)
+  PathEscape(String)
+} derive(Eq, @debug.Debug)
+pub fn LayerError::equal(Self, Self) -> Bool
+pub fn LayerError::message(Self) -> String
+pub fn LayerError::not_equal(Self, Self) -> Bool
+pub fn LayerError::output(Self, &Logger) -> Unit
+pub fn LayerError::to_repr(Self) -> @debug.Repr
+pub fn LayerError::to_string(Self) -> String
+pub impl Show for LayerError
+
+pub(all) suberror PathError {
+  Escape(String)
+} derive(Eq, @debug.Debug)
+pub fn PathError::equal(Self, Self) -> Bool
+pub fn PathError::not_equal(Self, Self) -> Bool
+pub fn PathError::output(Self, &Logger) -> Unit
+pub fn PathError::to_repr(Self) -> @debug.Repr
+pub fn PathError::to_string(Self) -> String
+pub impl Show for PathError
+
+pub(all) suberror TarError {
+  Truncated(String)
+  BadHeader(String)
+  InvalidNumber(String, String)
+} derive(Eq, @debug.Debug)
+pub fn TarError::equal(Self, Self) -> Bool
+pub fn TarError::not_equal(Self, Self) -> Bool
+pub fn TarError::output(Self, &Logger) -> Unit
+pub fn TarError::to_repr(Self) -> @debug.Repr
+pub fn TarError::to_string(Self) -> String
+pub impl Show for TarError
+
+// Types and methods
+pub struct BitReader {
+  data : BytesView
+  mut byte : Int
+  mut bits : Int
+} derive(@debug.Debug)
+pub fn BitReader::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Diff {
+  base : Int
+  layer : Int
+  added : Array[String]
+  modified : Array[String]
+  removed : Array[String]
+} derive(Eq, @debug.Debug)
+pub fn Diff::equal(Self, Self) -> Bool
+pub fn Diff::is_empty(Self) -> Bool
+pub fn Diff::not_equal(Self, Self) -> Bool
+pub fn Diff::output(Self, &Logger) -> Unit
+pub fn Diff::section_name(Self) -> String
+pub fn Diff::to_repr(Self) -> @debug.Repr
+pub fn Diff::to_string(Self) -> String
+pub fn Diff::total(Self) -> Int
+pub impl Show for Diff
+
+pub(all) struct FileTree {
+  root : Node
+  mut layers : Int
+  nodes : Map[String, Node]
+  mut orphans : Map[String, Array[Node]]
+  mut history : String
+  mut layer_stats : Array[LayerStat]
+} derive(@debug.Debug)
+pub fn FileTree::get(Self, String) -> Node?
+pub fn FileTree::history_of(Self, String) -> String
+pub fn FileTree::layer_stats(Self) -> Array[LayerStat]
+pub fn FileTree::new() -> Self
+pub fn FileTree::output(Self, &Logger) -> Unit
+pub fn FileTree::paths(Self) -> Array[String]
+pub fn FileTree::require(Self, String) -> Node raise
+pub fn FileTree::root(Self) -> Node
+pub fn FileTree::size(Self) -> Int
+pub fn FileTree::snapshot(Self) -> Self
+pub fn FileTree::stat(Self, Int) -> LayerStat?
+pub fn FileTree::to_repr(Self) -> @debug.Repr
+pub fn FileTree::to_string(Self) -> String
+pub impl Show for FileTree
+
+pub struct HuffmanTable {
+  counts : FixedArray[Int]
+  symbols : FixedArray[Int]
+} derive(@debug.Debug)
+pub fn HuffmanTable::to_repr(Self) -> @debug.Repr
+
+pub struct LayerDiffResult {
+  tree : FileTree
+  diffs : Array[Diff]
+} derive(@debug.Debug)
+pub fn LayerDiffResult::to_repr(Self) -> @debug.Repr
+
+pub(all) struct LayerStat {
+  layer : Int
+  mut changed_paths : Int
+  mut changed_bytes : Int
+  mut deleted_paths : Int
+} derive(Eq, @debug.Debug)
+pub fn LayerStat::equal(Self, Self) -> Bool
+pub fn LayerStat::not_equal(Self, Self) -> Bool
+pub fn LayerStat::output(Self, &Logger) -> Unit
+pub fn LayerStat::to_repr(Self) -> @debug.Repr
+pub fn LayerStat::to_string(Self) -> String
+pub impl Show for LayerStat
+
+pub(all) struct LayerWrite {
+  layer : Int
+  kind : NodeKind
+  size : Int
+} derive(Eq, @debug.Debug)
+pub fn LayerWrite::equal(Self, Self) -> Bool
+pub fn LayerWrite::not_equal(Self, Self) -> Bool
+pub fn LayerWrite::output(Self, &Logger) -> Unit
+pub fn LayerWrite::to_repr(Self) -> @debug.Repr
+pub fn LayerWrite::to_string(Self) -> String
+pub impl Show for LayerWrite
+
+pub(all) struct Node {
+  path : String
+  mut kind : NodeKind
+  mut size : Int
+  mut mode : Int
+  mut layer : Int
+  mut mtime : Int
+  mut children : Array[Node]
+} derive(@debug.Debug)
+pub fn Node::find_child(Self, String) -> Self?
+pub fn Node::insert_child(Self, Self) -> Unit
+pub fn Node::is_dir(Self) -> Bool
+pub fn Node::is_file(Self) -> Bool
+pub fn Node::is_link(Self) -> Bool
+pub fn Node::link_target(Self) -> String?
+pub fn Node::new(String, NodeKind, size? : Int, mode? : Int, layer? : Int, mtime? : Int) -> Self
+pub fn Node::output(Self, &Logger) -> Unit
+pub fn Node::remove_child(Self, String) -> Bool
+pub fn Node::to_repr(Self) -> @debug.Repr
+pub fn Node::to_string(Self) -> String
+pub impl Show for Node
+
+pub(all) enum NodeKind {
+  File
+  Directory
+  Symlink(String)
+  Hardlink(String)
+} derive(Eq, @debug.Debug)
+pub fn NodeKind::equal(Self, Self) -> Bool
+pub fn NodeKind::not_equal(Self, Self) -> Bool
+pub fn NodeKind::output(Self, &Logger) -> Unit
+pub fn NodeKind::to_repr(Self) -> @debug.Repr
+pub fn NodeKind::to_string(Self) -> String
+pub impl Show for NodeKind
+
+pub(all) struct RenderOptions {
+  show_size : Bool
+  show_layer : Bool
+  show_links : Bool
+} derive(Eq, @debug.Debug)
+pub fn RenderOptions::equal(Self, Self) -> Bool
+pub fn RenderOptions::not_equal(Self, Self) -> Bool
+pub fn RenderOptions::to_repr(Self) -> @debug.Repr
+
+pub struct TarBuilder {
+  blocks : Array[Byte]
+} derive(@debug.Debug)
+pub fn TarBuilder::add_directory(Self, String) -> Unit
+pub fn TarBuilder::add_file(Self, String, String, mode? : Int) -> Unit
+pub fn TarBuilder::add_hardlink(Self, String, String) -> Unit
+pub fn TarBuilder::add_header(Self, String, Int, entry_type? : Byte, mode? : Int, link_target? : String, mtime? : Int) -> Unit
+pub fn TarBuilder::add_opaque(Self, String) -> Unit
+pub fn TarBuilder::add_symlink(Self, String, String) -> Unit
+pub fn TarBuilder::add_whiteout(Self, String, String) -> Unit
+pub fn TarBuilder::finish(Self) -> Bytes
+pub fn TarBuilder::new() -> Self
+pub fn TarBuilder::to_repr(Self) -> @debug.Repr
+
+pub(all) struct TarEntry {
+  path : String
+  entry_type : TarEntryType
+  size : Int
+  mode : Int
+  mtime : Int
+  link_target : String
+  data_offset : Int
+} derive(Eq, @debug.Debug)
+pub fn TarEntry::data(Self, BytesView) -> BytesView
+pub fn TarEntry::equal(Self, Self) -> Bool
+pub fn TarEntry::not_equal(Self, Self) -> Bool
+pub fn TarEntry::output(Self, &Logger) -> Unit
+pub fn TarEntry::to_repr(Self) -> @debug.Repr
+pub fn TarEntry::to_string(Self) -> String
+pub impl Show for TarEntry
+
+pub(all) enum TarEntrySpec {
+  File(String, String)
+  Dir(String)
+  Symlink(String, String)
+  Hardlink(String, String)
+  Whiteout(String, String)
+  Opaque(String)
+} derive(Eq, @debug.Debug)
+pub fn TarEntrySpec::equal(Self, Self) -> Bool
+pub fn TarEntrySpec::not_equal(Self, Self) -> Bool
+pub fn TarEntrySpec::to_repr(Self) -> @debug.Repr
+
+pub(all) enum TarEntryType {
+  Regular
+  Directory
+  Symlink
+  Hardlink
+  Meta
+  Other(Byte)
+} derive(Eq, @debug.Debug)
+pub fn TarEntryType::equal(Self, Self) -> Bool
+pub fn TarEntryType::not_equal(Self, Self) -> Bool
+pub fn TarEntryType::output(Self, &Logger) -> Unit
+pub fn TarEntryType::to_repr(Self) -> @debug.Repr
+pub fn TarEntryType::to_string(Self) -> String
+pub impl Show for TarEntryType
+
+pub struct TarReader {
+  stream : BytesView
+  base_offset : Int
+  mut cursor : Int
+  mut done : Bool
+} derive(@debug.Debug)
+pub fn TarReader::new(BytesView) -> Self
+pub fn TarReader::next(Self) -> TarEntry? raise TarError
+pub fn TarReader::to_repr(Self) -> @debug.Repr
+pub fn TarReader::with_base(BytesView, Int) -> Self
+
+pub(all) enum WhiteoutKind {
+  Entry(String)
+  Opaque
+  Plnk
+} derive(Eq, @debug.Debug)
+pub fn WhiteoutKind::equal(Self, Self) -> Bool
+pub fn WhiteoutKind::not_equal(Self, Self) -> Bool
+pub fn WhiteoutKind::output(Self, &Logger) -> Unit
+pub fn WhiteoutKind::to_repr(Self) -> @debug.Repr
+pub fn WhiteoutKind::to_string(Self) -> String
+pub impl Show for WhiteoutKind
+
+// Type aliases
+
+// Traits
