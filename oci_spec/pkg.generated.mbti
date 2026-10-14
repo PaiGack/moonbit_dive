@@ -1,0 +1,348 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "PaiGack/dive/oci_spec"
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn annotations_to_json(Map[String, String]?) -> Json?
+
+pub fn digest_matches_hex(String, String) -> Bool
+
+pub let docker_config_media_type : String
+
+pub let docker_foreign_layer_gzip_media_type : String
+
+pub let docker_layer_gzip_media_type : String
+
+pub let docker_layer_media_type : String
+
+pub let docker_manifest_list_media_type : String
+
+pub let docker_manifest_media_type : String
+
+pub fn hex_value(Char) -> Int?
+
+pub fn is_compressed_layer_media_type(String) -> Bool
+
+pub fn is_hex(String, lowercase_only? : Bool) -> Bool
+
+pub fn is_index_media_type(String) -> Bool
+
+pub fn is_layer_media_type(String) -> Bool
+
+pub fn is_manifest_media_type(String) -> Bool
+
+pub fn json_loc_index(JsonLoc, Int) -> JsonLoc
+
+pub fn json_loc_key(JsonLoc, String) -> JsonLoc
+
+pub fn normalize_digest(String) -> String
+
+pub fn object_fields(Json, JsonLoc) -> Map[String, Json] raise @json.JsonDecodeError
+
+pub let oci_config_media_type : String
+
+pub let oci_descriptor_media_type : String
+
+pub let oci_index_media_type : String
+
+pub let oci_layer_gzip_media_type : String
+
+pub let oci_layer_media_type : String
+
+pub let oci_layer_zstd_media_type : String
+
+pub let oci_layout_media_type : String
+
+pub let oci_manifest_media_type : String
+
+pub fn optional_annotations(Map[String, Json], JsonLoc) -> Map[String, String]? raise @json.JsonDecodeError
+
+pub fn optional_field(Map[String, Json], String) -> Json?
+
+pub fn optional_json_into(Map[String, Json], String, String?) -> Unit
+
+pub fn optional_string(Map[String, Json], String, JsonLoc) -> String? raise @json.JsonDecodeError
+
+pub fn optional_string_array(Map[String, Json], String, JsonLoc) -> Array[String]? raise @json.JsonDecodeError
+
+pub fn parse_descriptor_array(Map[String, Json], String, JsonLoc) -> Array[Descriptor] raise @json.JsonDecodeError
+
+pub fn parse_document(String) -> Result[OciDocument, OciParseError]
+
+pub fn parse_document_json(Json) -> Result[OciDocument, OciParseError]
+
+pub fn parse_image_config_lenient(String) -> Result[ImageConfig, OciParseError]
+
+pub fn[T : @json.FromJson] parse_nested(Map[String, Json], String, JsonLoc) -> T raise @json.JsonDecodeError
+
+pub fn[T : @json.FromJson] parse_optional(Map[String, Json], String, JsonLoc) -> T? raise @json.JsonDecodeError
+
+pub fn required_int_field(Map[String, Json], String, JsonLoc) -> Int raise @json.JsonDecodeError
+
+pub fn required_object_field(Map[String, Json], String, JsonLoc) -> Map[String, Json] raise @json.JsonDecodeError
+
+pub fn required_object_json_field(Map[String, Json], String, JsonLoc) -> Json raise @json.JsonDecodeError
+
+pub fn required_string_field(Map[String, Json], String, JsonLoc) -> String raise @json.JsonDecodeError
+
+pub let supported_digest_algorithms : Array[String]
+
+// Errors
+pub(all) suberror DigestError {
+  EmptyDigest
+  MissingSeparator(String)
+  MissingAlgorithm(String)
+  EmptyEncoded(String)
+  UnsupportedAlgorithm(String, Array[String])
+  InvalidLength(String, Int, Int)
+  InvalidHexChar(String, Char, Int)
+  NotLowercase(String)
+} derive(Eq, @debug.Debug)
+pub fn DigestError::equal(Self, Self) -> Bool
+pub fn DigestError::not_equal(Self, Self) -> Bool
+pub fn DigestError::output(Self, &Logger) -> Unit
+pub fn DigestError::to_repr(Self) -> @debug.Repr
+pub fn DigestError::to_string(Self) -> String
+pub impl Show for DigestError
+
+pub(all) suberror OciParseError {
+  ParseFailed(String)
+  NotAnObject(String)
+  InvalidField(String, String)
+  DecodeFailed(String)
+} derive(Eq, @debug.Debug)
+pub fn OciParseError::equal(Self, Self) -> Bool
+pub fn OciParseError::not_equal(Self, Self) -> Bool
+pub fn OciParseError::output(Self, &Logger) -> Unit
+pub fn OciParseError::to_repr(Self) -> @debug.Repr
+pub fn OciParseError::to_string(Self) -> String
+pub impl Show for OciParseError
+
+// Types and methods
+pub(all) struct ContainerConfig {
+  raw : Json
+} derive(Eq, @debug.Debug)
+pub fn ContainerConfig::cmd(Self) -> Array[String]
+pub fn ContainerConfig::entrypoint(Self) -> Array[String]
+pub fn ContainerConfig::equal(Self, Self) -> Bool
+pub fn ContainerConfig::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn ContainerConfig::not_equal(Self, Self) -> Bool
+pub fn ContainerConfig::output(Self, &Logger) -> Unit
+pub fn ContainerConfig::to_json(Self) -> Json
+pub fn ContainerConfig::to_repr(Self) -> @debug.Repr
+pub fn ContainerConfig::to_string(Self) -> String
+pub fn ContainerConfig::user(Self) -> String?
+pub fn ContainerConfig::working_dir(Self) -> String?
+pub impl Show for ContainerConfig
+pub impl ToJson for ContainerConfig
+pub impl @json.FromJson for ContainerConfig
+
+pub(all) struct Descriptor {
+  media_type : String
+  digest : String
+  size : Int
+  urls : Array[String]?
+  annotations : Map[String, String]?
+  platform : Platform?
+  data : String?
+} derive(Eq, @debug.Debug)
+pub fn Descriptor::equal(Self, Self) -> Bool
+pub fn Descriptor::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn Descriptor::not_equal(Self, Self) -> Bool
+pub fn Descriptor::output(Self, &Logger) -> Unit
+pub fn Descriptor::to_json(Self) -> Json
+pub fn Descriptor::to_repr(Self) -> @debug.Repr
+pub fn Descriptor::to_string(Self) -> String
+pub fn Descriptor::validated_digest(Self) -> Result[Digest, DigestError]
+pub impl Show for Descriptor
+pub impl ToJson for Descriptor
+pub impl @json.FromJson for Descriptor
+
+pub(all) struct Digest {
+  algorithm : String
+  encoded : String
+} derive(Eq, @debug.Debug)
+pub fn Digest::equal(Self, Self) -> Bool
+pub fn Digest::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn Digest::from_sha256(BytesView) -> Self
+pub fn Digest::not_equal(Self, Self) -> Bool
+pub fn Digest::output(Self, &Logger) -> Unit
+pub fn Digest::parse(String) -> Result[Self, DigestError]
+pub fn Digest::to_json(Self) -> Json
+pub fn Digest::to_repr(Self) -> @debug.Repr
+pub fn Digest::to_string(Self) -> String
+pub fn Digest::verify_sha256(BytesView, String) -> Bool
+pub impl Show for Digest
+pub impl ToJson for Digest
+pub impl @json.FromJson for Digest
+
+pub(all) struct History {
+  created : String?
+  created_by : String?
+  author : String?
+  comment : String?
+  empty_layer : Bool
+} derive(Eq, @debug.Debug)
+pub fn History::equal(Self, Self) -> Bool
+pub fn History::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn History::not_equal(Self, Self) -> Bool
+pub fn History::output(Self, &Logger) -> Unit
+pub fn History::to_json(Self) -> Json
+pub fn History::to_repr(Self) -> @debug.Repr
+pub fn History::to_string(Self) -> String
+pub impl Show for History
+pub impl ToJson for History
+pub impl @json.FromJson for History
+
+pub(all) struct ImageConfig {
+  schema_version : Int
+  media_type : String?
+  artifact_type : String?
+  created : String?
+  author : String?
+  architecture : String?
+  os : String?
+  os_version : String?
+  variant : String?
+  config : ContainerConfig?
+  rootfs : RootFS
+  history : Array[History]
+} derive(Eq, @debug.Debug)
+pub fn ImageConfig::equal(Self, Self) -> Bool
+pub fn ImageConfig::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn ImageConfig::layer_history(Self) -> Array[History]
+pub fn ImageConfig::layers(Self) -> Array[LayerHistoryEntry]
+pub fn ImageConfig::not_equal(Self, Self) -> Bool
+pub fn ImageConfig::output(Self, &Logger) -> Unit
+pub fn ImageConfig::platform(Self) -> Platform
+pub fn ImageConfig::to_json(Self) -> Json
+pub fn ImageConfig::to_repr(Self) -> @debug.Repr
+pub fn ImageConfig::to_string(Self) -> String
+pub impl Show for ImageConfig
+pub impl ToJson for ImageConfig
+pub impl @json.FromJson for ImageConfig
+
+pub(all) struct Index {
+  schema_version : Int
+  media_type : String?
+  artifact_type : String?
+  manifests : Array[Descriptor]
+  subject : Descriptor?
+  annotations : Map[String, String]?
+} derive(Eq, @debug.Debug)
+pub fn Index::equal(Self, Self) -> Bool
+pub fn Index::find_platform(Self, String, String) -> Descriptor?
+pub fn Index::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn Index::manifests_with_media_type(Self, String) -> Array[Descriptor]
+pub fn Index::not_equal(Self, Self) -> Bool
+pub fn Index::output(Self, &Logger) -> Unit
+pub fn Index::platforms(Self) -> Array[Platform]
+pub fn Index::to_json(Self) -> Json
+pub fn Index::to_repr(Self) -> @debug.Repr
+pub fn Index::to_string(Self) -> String
+pub impl Show for Index
+pub impl ToJson for Index
+pub impl @json.FromJson for Index
+
+pub(all) struct JsonLoc {
+  path : String
+} derive(Eq, @debug.Debug)
+pub fn JsonLoc::equal(Self, Self) -> Bool
+pub fn JsonLoc::from_json_path(@json.JsonPath) -> Self
+pub fn JsonLoc::not_equal(Self, Self) -> Bool
+pub fn JsonLoc::output(Self, &Logger) -> Unit
+pub fn JsonLoc::root() -> Self
+pub fn JsonLoc::to_repr(Self) -> @debug.Repr
+pub fn JsonLoc::to_string(Self) -> String
+pub impl Show for JsonLoc
+
+pub(all) struct LayerHistoryEntry {
+  index : Int
+  diff_id : String
+  created_by : String?
+} derive(Eq, @debug.Debug)
+pub fn LayerHistoryEntry::equal(Self, Self) -> Bool
+pub fn LayerHistoryEntry::not_equal(Self, Self) -> Bool
+pub fn LayerHistoryEntry::output(Self, &Logger) -> Unit
+pub fn LayerHistoryEntry::to_repr(Self) -> @debug.Repr
+pub fn LayerHistoryEntry::to_string(Self) -> String
+pub impl Show for LayerHistoryEntry
+
+pub(all) struct Manifest {
+  schema_version : Int
+  media_type : String?
+  artifact_type : String?
+  config : Descriptor
+  layers : Array[Descriptor]
+  subject : Descriptor?
+  annotations : Map[String, String]?
+} derive(Eq, @debug.Debug)
+pub fn Manifest::config_digest(Self) -> Result[Digest, DigestError]
+pub fn Manifest::equal(Self, Self) -> Bool
+pub fn Manifest::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn Manifest::is_index(Self) -> Bool
+pub fn Manifest::layers_with_media_type(Self, String) -> Array[Descriptor]
+pub fn Manifest::not_equal(Self, Self) -> Bool
+pub fn Manifest::output(Self, &Logger) -> Unit
+pub fn Manifest::to_json(Self) -> Json
+pub fn Manifest::to_repr(Self) -> @debug.Repr
+pub fn Manifest::to_string(Self) -> String
+pub fn Manifest::total_layer_size(Self) -> Int
+pub impl Show for Manifest
+pub impl ToJson for Manifest
+pub impl @json.FromJson for Manifest
+
+pub(all) enum OciDocument {
+  Manifest(Manifest)
+  IndexDoc(Index)
+  ImageConfig(ImageConfig)
+} derive(Eq, @debug.Debug)
+pub fn OciDocument::equal(Self, Self) -> Bool
+pub fn OciDocument::not_equal(Self, Self) -> Bool
+pub fn OciDocument::output(Self, &Logger) -> Unit
+pub fn OciDocument::to_repr(Self) -> @debug.Repr
+pub fn OciDocument::to_string(Self) -> String
+pub impl Show for OciDocument
+
+pub(all) struct Platform {
+  architecture : String
+  os : String
+  os_version : String?
+  os_features : Array[String]?
+  variant : String?
+} derive(Eq, @debug.Debug)
+pub fn Platform::equal(Self, Self) -> Bool
+pub fn Platform::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn Platform::is_empty(Self) -> Bool
+pub fn Platform::matches(Self, String, String) -> Bool
+pub fn Platform::not_equal(Self, Self) -> Bool
+pub fn Platform::output(Self, &Logger) -> Unit
+pub fn Platform::to_json(Self) -> Json
+pub fn Platform::to_repr(Self) -> @debug.Repr
+pub fn Platform::to_string(Self) -> String
+pub impl Show for Platform
+pub impl ToJson for Platform
+pub impl @json.FromJson for Platform
+
+pub(all) struct RootFS {
+  fs_type : String
+  diff_ids : Array[String]
+} derive(Eq, @debug.Debug)
+pub fn RootFS::equal(Self, Self) -> Bool
+pub fn RootFS::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
+pub fn RootFS::not_equal(Self, Self) -> Bool
+pub fn RootFS::output(Self, &Logger) -> Unit
+pub fn RootFS::to_json(Self) -> Json
+pub fn RootFS::to_repr(Self) -> @debug.Repr
+pub fn RootFS::to_string(Self) -> String
+pub impl Show for RootFS
+pub impl ToJson for RootFS
+pub impl @json.FromJson for RootFS
+
+// Type aliases
+
+// Traits

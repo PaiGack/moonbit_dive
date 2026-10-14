@@ -24,3 +24,7 @@ keywords = [ "oci", "container-image", "tar", "analysis" ]
 preferred_target = "wasm"
 
 description = "A MoonBit toolkit for analyzing OCI container images: layer stacking, whiteout diffs and size-efficiency reports"
+
+import {
+  "moonbitlang/x@0.5.5",
+}
