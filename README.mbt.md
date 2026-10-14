@@ -21,7 +21,14 @@ moon run --target native cmd/main -- demo-image.tar
 # 门禁：按 rules.json 判定，退出码 0/1/2 分别表示全过 / 有失败 / 规则非法
 moon run --target native cmd/main -- demo-image.tar --rules rules.json
 moon run --target native cmd/main -- demo-image.tar --rules rules.json --format annotations
+
+# 逐层浏览（dive 交互界面的只读替身）：看第 N 层应用完之后的文件树与这层 diff
+moon run --target native cmd/main -- demo-image.tar --layer 1
+moon run --target native cmd/main -- demo-image.tar --layer 1 --path /app
 ```
+
+给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
+`--path` 按目录下钻（沿途祖先目录保留作缩进参照）。没有 TUI，交互靠 shell 补。
 
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
 docker save 产物、OCI Image Layout 目录、单层 tar。

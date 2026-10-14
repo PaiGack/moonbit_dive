@@ -14,6 +14,8 @@ pub fn apply_layers_with_diffs(Array[BytesView], media_types? : Array[String]) -
 
 pub fn base_name(String) -> String
 
+pub fn browse_layers(Array[BytesView], media_types? : Array[String]) -> Array[LayerView] raise LayerError
+
 pub fn build_tar(Array[TarEntrySpec]) -> Bytes
 
 pub fn compare_ascii(String, String) -> Int
@@ -195,6 +197,18 @@ pub fn LayerStat::output(Self, &Logger) -> Unit
 pub fn LayerStat::to_repr(Self) -> @debug.Repr
 pub fn LayerStat::to_string(Self) -> String
 pub impl Show for LayerStat
+
+pub(all) struct LayerView {
+  layer : Int
+  tree : FileTree
+  diff : Diff
+} derive(@debug.Debug)
+pub fn LayerView::changed_paths(Self) -> Array[String]
+pub fn LayerView::output(Self, &Logger) -> Unit
+pub fn LayerView::subtree(Self, String) -> FileTree
+pub fn LayerView::to_repr(Self) -> @debug.Repr
+pub fn LayerView::to_string(Self) -> String
+pub impl Show for LayerView
 
 pub(all) struct LayerWrite {
   layer : Int
