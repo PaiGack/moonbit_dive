@@ -66,10 +66,8 @@ let empty_json_path : @json.JsonPath = json_root_path()
 
 ///|
 fn json_root_path() -> @json.JsonPath {
-  let _ : Int = @json.from_json(("x" : Json)) catch {
-    JsonDecodeError((path, _)) => {
-      return path
-    }
+  let _ : Int32 = @json.from_json(("x" : Json)) catch {
+    JsonDecodeError((path, _)) => return path
   }
   abort("json_root_path: unreachable")
 }

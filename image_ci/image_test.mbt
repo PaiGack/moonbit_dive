@@ -97,15 +97,7 @@ test "manifest without layers is malformed" {
 /// 内存里的 OCI layout：blob 目录结构由测试直接在磁盘上摆。
 test "load oci layout from disk" {
   let root = "target/image_ci_fixture"
-  @fs.create_dir(root) catch {
-    _ => ()
-  }
-  @fs.create_dir(root + "/blobs") catch {
-    _ => ()
-  }
-  @fs.create_dir(root + "/blobs/sha256") catch {
-    _ => ()
-  }
+  mkdir_p(root + "/blobs/sha256")
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
     @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),
@@ -146,6 +138,23 @@ test "missing input reports io error" {
   }
   if !failed {
     fail("missing file should report Io")
+  }
+}
+
+///|
+/// 逐级建目录。`@fs.create_dir` 只做一层 `mkdir`，父目录不在就直接失败，
+/// 而 `target/` 在干净的 checkout 里并不存在，所以这里自己把祖先补齐。
+fn mkdir_p(path : String) -> Unit {
+  let mut current = ""
+  for segment in path.split("/") {
+    if segment.length() == 0 {
+      continue
+    }
+    let part : String = segment.to_owned()
+    current = if current == "" { part } else { current + "/" + part }
+    @fs.create_dir(current) catch {
+      _ => () // 已存在（或并发建过）就继续往下走
+    }
   }
 }
 

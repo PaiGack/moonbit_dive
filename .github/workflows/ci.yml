@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  moonbit:
+    name: MoonBit check, test & CLI smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The whole CI — fmt/interface check, test + coverage, build, CLI smoke —
+      # lives in scripts/ci.sh, which .cnb.yml calls too, so the two
+      # pipelines cannot drift apart.
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Run CI
+        run: bash scripts/ci.sh
+
+      - name: Tokei (code statistics)
+        run: docker run --rm -v "$(pwd)":/src ghcr.io/xampprocky/tokei:latest .

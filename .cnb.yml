@@ -1,0 +1,37 @@
+# CNB 流水线按 GitHub Actions（.github/workflows/ci.yml）的 job 逐步对齐。
+# 两边都只负责「装工具链 + 调 scripts/ci.sh」，步骤内容不在两处重复，
+# 所以不会出现「GitHub 绿、CNB 红」这种漂移。
+.ci-env: &ci-env
+  docker:
+    build:
+      dockerfile: .ide/Dockerfile
+      versionBy:
+        - .ide/Dockerfile
+
+# 与 GitHub Actions 的 job 一一对应，共用同一段步骤。
+.ci: &ci
+  name: moonbit
+  script: bash scripts/ci.sh
+
+main:
+  push:
+    - <<: *ci-env
+      services:
+        - docker
+      stages:
+        - *ci
+  pull_request:
+    - <<: *ci-env
+      services:
+        - docker
+      stages:
+        - *ci
+
+$:
+  vscode:
+    - docker:
+        build: .ide/Dockerfile
+        image: cnbcool/default-dev-env:latest
+      services:
+        - vscode
+        - docker
