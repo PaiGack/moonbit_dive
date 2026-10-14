@@ -1,0 +1,39 @@
+{
+  "architecture": "amd64",
+  "author": "Example Maintainer <maintainer@example.com>",
+  "config": {
+    "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+    "Cmd": ["/bin/sh", "-c", "echo hello"],
+    "Entrypoint": ["/entrypoint.sh"],
+    "WorkingDir": "/app",
+    "User": "1000:1000",
+    "Labels": { "com.example.label": "value" }
+  },
+  "created": "2024-04-01T00:00:00.000000000Z",
+  "history": [
+    {
+      "created": "2024-04-01T00:00:00.000000000Z",
+      "created_by": "COPY / / # buildkit",
+      "comment": "buildkit.dockerfile.v0"
+    },
+    {
+      "created": "2024-04-01T00:00:01.000000000Z",
+      "created_by": "ENV PATH=/usr/local/sbin",
+      "empty_layer": true
+    },
+    {
+      "created": "2024-04-01T00:00:02.000000000Z",
+      "created_by": "RUN /bin/sh -c apt-get update # buildkit"
+    }
+  ],
+  "os": "linux",
+  "rootfs": {
+    "type": "layers",
+    "diff_ids": [
+      "sha256:6f6ea4c1d9a0cbb7a6d9e1d6f7c4e9b6f0bd7d86a1f0e4b8b7a56d5e5a0c0a11",
+      "sha256:9e5d6c3a5b4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c"
+    ]
+  },
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.config.v1+json"
+}
