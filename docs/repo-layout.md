@@ -10,7 +10,7 @@ moon.pkg                # 根包占位
 cmd/main/               # 总 CLI 入口（后续聚合四包能力）
 oci_spec/               # P1
 layer_tree/             # P2
-dive_analysis/          # P3
+image_analysis/         # P3
 image_ci/               # P4
 docker_cli/             # P5（独立包，不被 P1–P4 依赖）
 docs/                   # 设计文档与拆分规划

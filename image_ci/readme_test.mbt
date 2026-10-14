@@ -16,10 +16,10 @@ test "README example runs as written" {
 
   let tree = @layer_tree.FileTree::new()
   let layers : Array[BytesView] = [layer0, layer1]
-  let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
     err => fail(err.to_string())
   }
-  let report = @dive_analysis.build_report(analysis, tree)
+  let report = @image_analysis.build_report(analysis, tree)
 
   let ruleset = Ruleset::parse(
     (

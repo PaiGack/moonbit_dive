@@ -12,7 +12,7 @@ MoonBit 侧没有等价绑定；直接移植等于重写容器运行时，一个
 |---|---|---|---|---|
 | P1 | `oci_spec/` | OCI image-spec 类型层：descriptor / manifest / index / config / platform、digest 解析校验、media type 常量、JSON 序列化 | ~1.5k–2.5k 行 | 无 |
 | P2 | `layer_tree/` | 流式 tar 应用到文件树、`.wh.` / `.wh..wh..plnk` whiteout 语义、层间 diff、路径规范化、树渲染 | ~2.5k–4k 行 | P1 + tar + zstd/gzip |
-| P3 | `dive_analysis/` | 跨层重复文件统计、被删文件浪费、cumulative size 排序、efficiency score、JSON/HTML 报告 | ~2k–3k 行 | P2 |
+| P3 | `image_analysis/` | 跨层重复文件统计、被删文件浪费、cumulative size 排序、efficiency score、JSON/HTML 报告 | ~2k–3k 行 | P2 |
 | P4 | `image_ci/` | 体积门禁规则 DSL、阈值判定、exit code 规范、CI 注解输出 | ~1.5k–2.5k 行 | P1 + P3 |
 | P5 | `docker_cli/` | Docker Engine 封装：docker/podman/nerdctl CLI 后端 + unix socket Engine 后端，吃镜像名、吐 tar/layout | ~1.5k–2.5k 行 | 无（独立于 P1–P4） |
 

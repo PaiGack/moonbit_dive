@@ -2,7 +2,7 @@
 package "PaiGack/dive/image_ci"
 
 import {
-  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/image_analysis",
   "PaiGack/dive/layer_tree",
   "moonbitlang/core/debug",
 }
@@ -12,9 +12,9 @@ pub fn config_error_annotation(ConfigError, String) -> String
 
 pub fn config_error_to_json(ConfigError, String) -> Json
 
-pub fn covered_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise
+pub fn covered_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise
 
-pub fn covered_pair() -> (@dive_analysis.Report, @layer_tree.FileTree) raise
+pub fn covered_pair() -> (@image_analysis.Report, @layer_tree.FileTree) raise
 
 pub fn exit_code_of(CheckResult) -> Int
 
@@ -24,7 +24,7 @@ pub let exit_ok : Int
 
 pub let exit_rule_failed : Int
 
-pub fn fat_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise
+pub fn fat_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise
 
 pub fn percent1(Double) -> String
 
@@ -193,7 +193,7 @@ pub(all) struct Ruleset {
   rules : Array[Rule]
   source : String
 } derive(Eq, @debug.Debug)
-pub fn Ruleset::check(Self, @dive_analysis.Report, @layer_tree.FileTree, image? : String) -> CheckResult
+pub fn Ruleset::check(Self, @image_analysis.Report, @layer_tree.FileTree, image? : String) -> CheckResult
 pub fn Ruleset::empty(String) -> Self
 pub fn Ruleset::equal(Self, Self) -> Bool
 pub fn Ruleset::not_equal(Self, Self) -> Bool

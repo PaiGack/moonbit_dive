@@ -1,5 +1,5 @@
 import {
-  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/image_analysis",
   "PaiGack/dive/layer_tree",
   "PaiGack/dive/oci_spec",
   "moonbitlang/core/debug",
@@ -9,7 +9,7 @@ import {
 }
 
 import {
-  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/image_analysis",
   "PaiGack/dive/layer_tree",
 } for "wbtest"
 

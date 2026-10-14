@@ -5,7 +5,7 @@
 ///
 /// 1. 读本地镜像产物（docker save / OCI layout / 单层 tar / stdin）
 /// 2. 逐层解压后喂给 `layer_tree` 叠树
-/// 3. `dive_analysis` 出体积报告
+/// 3. `image_analysis` 出体积报告
 /// 4. `image_ci` 按规则判定，输出人类可读 / JSON / CI 注解
 ///
 /// `--layer` / `--path` 是 dive 交互界面的只读替身：没有 TUI，但能逐层看文件树、
@@ -191,17 +191,17 @@ fn run(options : Options) -> Result[Int32, CommandError] noraise {
   if options.layer is Some(_) || options.path is Some(_) {
     return run_layer_view(options, layers)
   }
-  let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
     err => return Err(CommandError::Analysis(err.to_string()))
   }
-  let report = @dive_analysis.build_report(analysis, tree)
+  let report = @image_analysis.build_report(analysis, tree)
   let ruleset = load_rules(options)
   let result = ruleset.check(report, tree, image=options.image)
   match options.format {
     "json" => println(result.to_json_string())
     "annotations" => println(result.to_annotations())
     _ => {
-      println(@dive_analysis.render_text_report(report))
+      println(@image_analysis.render_text_report(report))
       println(result.to_text())
     }
   }

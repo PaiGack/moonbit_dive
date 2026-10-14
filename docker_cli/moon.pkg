@@ -19,6 +19,6 @@ import {
   "moonbitlang/async",
   "moonbitlang/async/fs",
   "moonbitlang/core/env",
-  "PaiGack/dive/dive_analysis",
+  "PaiGack/dive/image_analysis",
   "moonbitlang/core/encoding/utf8",
 } for "test"

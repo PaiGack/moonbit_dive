@@ -1,6 +1,6 @@
 # P3 报告 JSON schema
 
-`dive_analysis` 的 JSON 报告由 `report_to_json` / `report_to_json_string` 产出，
+`image_analysis` 的 JSON 报告由 `report_to_json` / `report_to_json_string` 产出，
 用于 P4 的体积门禁判定与外部工具消费。
 
 - 顶层带 `schemaVersion`（当前 `1`），字段有增删改时递增
