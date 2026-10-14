@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "PaiGack/dive/dive_analysis"
+package "PaiGack/dive/image_analysis"
 
 import {
   "PaiGack/dive/layer_tree",

@@ -1,4 +1,4 @@
-# dive_analysis
+# image_analysis
 
 在 P2 的层叠文件树之上做**镜像体积分析**：找出跨层重复写入、被 whiteout 删掉的浪费，
 给出每个路径的 cumulative size 与一个可比较的 efficiency 分数。
@@ -22,7 +22,7 @@ test "README example" {
 
   let tree = @layer_tree.FileTree::new()
   let layers : Array[BytesView] = [layer0, layer1]
-  let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
     err => fail(err.to_string())
   }
 
@@ -31,7 +31,7 @@ test "README example" {
   assert_eq(analysis.overwritten_wasted, 10)
   assert_eq(analysis.wasted_bytes(), 10)
 
-  let report = @dive_analysis.build_report(analysis, tree)
+  let report = @image_analysis.build_report(analysis, tree)
   // 分数按路径取 min：min=10 / cumulative=26
   assert_eq(report.efficiency.min_bytes, 10)
   assert_eq(report.efficiency.cumulative_bytes, 26)

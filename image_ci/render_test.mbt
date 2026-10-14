@@ -9,7 +9,7 @@ fn failing_result() -> CheckResult raise {
 
 ///|
 /// 共用的小工具：一份「覆盖写入」镜像的报告与树。
-fn covered_report() -> @dive_analysis.Report raise {
+fn covered_report() -> @image_analysis.Report raise {
   let (report, _) = @image_ci.covered_pair()
   report
 }

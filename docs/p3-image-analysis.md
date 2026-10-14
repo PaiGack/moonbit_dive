@@ -1,4 +1,4 @@
-# P3 `dive_analysis` — 镜像体积分析与 efficiency score
+# P3 `image_analysis` — 镜像体积分析与 efficiency score
 
 ## 目标
 
@@ -42,7 +42,7 @@
 
 ## 落地情况
 
-实现落在 `dive_analysis/`，公开入口：
+实现落在 `image_analysis/`，公开入口：
 
 | 能力 | 入口 |
 |---|---|

@@ -7,7 +7,7 @@
 ///|
 /// 造一份两层镜像的分析结果：`/app/main.js` 从 10 字节被覆盖成 16 字节。
 /// 返回 (report, tree)。
-pub fn covered_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise {
+pub fn covered_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise {
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
     @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),
@@ -17,15 +17,15 @@ pub fn covered_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise 
   ])
   let tree = @layer_tree.FileTree::new()
   let layers : Array[BytesView] = [layer0, layer1]
-  let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
     err => fail(err.to_string())
   }
-  (@dive_analysis.build_report(analysis, tree), tree)
+  (@image_analysis.build_report(analysis, tree), tree)
 }
 
 ///|
 /// 造一份「胖」镜像：`node_modules` 塞进大文件，且跨层重复写。
-pub fn fat_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise {
+pub fn fat_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise {
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("node_modules"),
     @layer_tree.TarEntrySpec::File("node_modules/pkg/index.js", "0123456789"),
@@ -38,15 +38,15 @@ pub fn fat_fixture() -> (@dive_analysis.Report, @layer_tree.FileTree) raise {
   ])
   let tree = @layer_tree.FileTree::new()
   let layers : Array[BytesView] = [layer0, layer1]
-  let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
     err => fail(err.to_string())
   }
-  (@dive_analysis.build_report(analysis, tree), tree)
+  (@image_analysis.build_report(analysis, tree), tree)
 }
 
 ///|
 /// 合并版的覆盖写入夹具，给同包其他测试文件用。
-pub fn covered_pair() -> (@dive_analysis.Report, @layer_tree.FileTree) raise {
+pub fn covered_pair() -> (@image_analysis.Report, @layer_tree.FileTree) raise {
   covered_fixture()
 }
 

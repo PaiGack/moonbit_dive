@@ -7,7 +7,7 @@
 | [split-plan.md](split-plan.md) | 五个拆分包的总体规划、依赖顺序、生态去重与验收口径 |
 | [p1-oci-spec.md](p1-oci-spec.md) | P1 `oci_spec`：OCI image-spec 类型层 |
 | [p2-layer-tree.md](p2-layer-tree.md) | P2 `layer_tree`：tar 层叠文件树 + whiteout diff |
-| [p3-dive-analysis.md](p3-dive-analysis.md) | P3 `dive_analysis`：体积分析与 efficiency score |
+| [p3-image-analysis.md](p3-image-analysis.md) | P3 `image_analysis`：体积分析与 efficiency score |
 | [p3-report-schema.md](p3-report-schema.md) | P3 JSON 报告 schema（供 P4 门禁消费） |
 | [p4-image-ci.md](p4-image-ci.md) | P4 `image_ci`：镜像体积门禁规则 DSL 与 CLI |
 | [p4-rules-schema.md](p4-rules-schema.md) | P4 门禁输入（rules.json）与输出（判定结论 / 注解）的 JSON schema |

@@ -14,10 +14,10 @@ test "end to end: docker archive to gate verdict" {
     let raw = layer.raw_bytes() catch { err => fail(err.to_string()) }
     layers.push(raw)
   }
-  let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
     err => fail(err.to_string())
   }
-  let report = @dive_analysis.build_report(analysis, tree)
+  let report = @image_analysis.build_report(analysis, tree)
   // 两层各写 20 / 36 字节，其中 20 字节是覆盖掉的浪费
   assert_eq(report.final_file_bytes, 36)
   assert_eq(report.overwritten_wasted, 20)
@@ -64,10 +64,10 @@ test "end to end: relaxed rules pass" {
     let raw = layer.raw_bytes() catch { err => fail(err.to_string()) }
     layers.push(raw)
   }
-  let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
     err => fail(err.to_string())
   }
-  let report = @dive_analysis.build_report(analysis, tree)
+  let report = @image_analysis.build_report(analysis, tree)
   let ruleset = Ruleset::of_rules([
     MaxImageSize(4096),
     MaxLayerSize(4096),

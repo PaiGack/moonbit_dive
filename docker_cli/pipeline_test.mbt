@@ -36,13 +36,13 @@ test "docker archive feeds P2 layer stacking and P3 analysis" {
 
   // 喂给 P3：被覆盖的 10 字节算浪费
   let tree = @layer_tree.FileTree::new()
-  let analysis = @dive_analysis.analyze_layers(tree, streams) catch {
+  let analysis = @image_analysis.analyze_layers(tree, streams) catch {
     err => fail("P3 should accept the layers: \{err}")
   }
   assert_eq(analysis.final_file_bytes, 16)
   assert_eq(analysis.overwritten_wasted, 10)
 
-  let report = @dive_analysis.build_report(analysis, tree)
+  let report = @image_analysis.build_report(analysis, tree)
   assert_true(report.efficiency.score() > 0.0)
 }
 

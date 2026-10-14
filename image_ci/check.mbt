@@ -86,11 +86,11 @@ pub fn CheckResult::all_passed(self : CheckResult) -> Bool {
 /// 两者必须来自同一张镜像，否则判定的是两件事。
 pub fn Ruleset::check(
   self : Ruleset,
-  report : @dive_analysis.Report,
+  report : @image_analysis.Report,
   tree : @layer_tree.FileTree,
   image~ : String = "<inline>",
 ) -> CheckResult {
-  let files = @dive_analysis.file_sizes(tree)
+  let files = @image_analysis.file_sizes(tree)
   let results = []
   for rule in self.rules {
     results.push(check_rule(rule, report, tree, files))
@@ -102,7 +102,7 @@ pub fn Ruleset::check(
 /// 逐条判定。六类规则的实现都在这里，每类对应一段 `match` 分支。
 fn check_rule(
   rule : Rule,
-  report : @dive_analysis.Report,
+  report : @image_analysis.Report,
   tree : @layer_tree.FileTree,
   files : Map[String, Int32],
 ) -> RuleResult {
