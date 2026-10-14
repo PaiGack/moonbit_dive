@@ -58,17 +58,23 @@ test "DOCKER_CLI promotes the chosen tool" {
 
 ///|
 /// 探测不到任何后端时给 NoBackend，错误信息里逐条列出尝试过的候选。
+///
+/// `PATH` 必须显式指向空目录：`probe_backends` 在 `env` 里没有 `PATH` 时会
+/// 回落到进程环境，而 `resolve_executable` 还会兜 `/usr/bin` 等常见位置。
+/// 探测宿主机上真实存在的 docker，这个用例就变成「取决于机器装没装」了。
 async test "probing failure lists every attempt" {
+  let dir = @fs.tmpdir(prefix="dive-probe-")
   let candidates = [
     @docker_cli.BackendCandidate::Socket("/definitely/missing.sock"),
     @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
   ]
-  let probed = @docker_cli.probe_backends(candidates, {})
+  let probed = @docker_cli.probe_backends(candidates, { "PATH": dir })
   assert_true(probed.candidate is None)
   assert_eq(probed.attempts.length(), 2)
   let described = @docker_cli.describe_backends(probed)
   assert_true(described.contains("/definitely/missing.sock"))
   assert_true(described.contains("docker"))
+  @fs.rmdir(dir, recursive=true)
 }
 
 ///|
@@ -113,12 +119,16 @@ async test "a non-socket path is not treated as a healthy socket" {
 
 ///|
 /// 无 daemon 环境下 resolve_backend 抛 NoBackend，不 panic。
+///
+/// 同 `probing failure lists every attempt`：`PATH` 钉在空目录上，
+/// 否则宿主机上的 docker 会让这个用例提前「成功」。
 async test "resolve_backend reports NoBackend without a daemon" {
+  let dir = @fs.tmpdir(prefix="dive-probe-")
   let candidates = [
     @docker_cli.BackendCandidate::Socket("/definitely/missing.sock"),
   ]
   let error = try {
-    @docker_cli.resolve_backend(candidates, {}) |> ignore
+    @docker_cli.resolve_backend(candidates, { "PATH": dir }) |> ignore
     fail("should fail")
   } catch {
     err => err
@@ -126,4 +136,5 @@ async test "resolve_backend reports NoBackend without a daemon" {
   let text = error.to_string()
   assert_true(text.contains("no usable docker backend"))
   assert_true(text.contains("DOCKER_CLI"))
+  @fs.rmdir(dir, recursive=true)
 }
