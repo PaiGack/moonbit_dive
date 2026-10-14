@@ -1,0 +1,117 @@
+///|
+/// CLI 后端：把 `docker` / `podman` / `nerdctl` 当黑盒用，只吃它们的
+/// `save` / `inspect` 输出。退出码与 stderr 原样带进错误，排查不靠猜。
+pub(all) struct DockerCliSource {
+  /// 可执行文件绝对路径（或 PATH 上的裸名）
+  program : String
+  tool : CliTool
+  /// 单次调用的超时（毫秒），0 表示不设超时
+  timeout_ms : Int32
+} derive(Eq, Debug)
+
+///|
+pub extend DockerCliSource with Eq::{equal, not_equal}
+
+///|
+pub extend DockerCliSource with @debug.Debug::{to_repr}
+
+///|
+/// 用固定路径的 CLI 建一个后端。
+pub fn DockerCliSource::new(
+  program : String,
+  tool~ : CliTool = CliTool::Docker,
+  timeout_ms~ : Int32 = 0,
+) -> DockerCliSource {
+  { program, tool, timeout_ms, }
+}
+
+///|
+impl ImageSource for DockerCliSource with fn inspect(self, reference) {
+  guard_reference(reference)
+  let (code, stdout, stderr) = run_cli(
+    self.program,
+    inspect_args(self.tool, reference),
+    self.timeout_ms,
+  )
+  if code != 0 {
+    raise Backend(self.program, code, bytes_to_string(stderr))
+  }
+  parse_inspect(self.tool, stdout, reference)
+}
+
+///|
+impl ImageSource for DockerCliSource with fn save(self, reference) {
+  guard_reference(reference)
+  let (code, stdout, stderr) = run_cli(
+    self.program,
+    save_args(self.tool, reference),
+    self.timeout_ms,
+  )
+  if code != 0 {
+    raise Backend(self.program, code, bytes_to_string(stderr))
+  }
+  if stdout.is_empty() {
+    // docker save 对未知镜像会安静地吐一个空 tar；这里当失败处理更实在
+    raise Backend(self.program, code, "save produced an empty archive")
+  }
+  stdout
+}
+
+///|
+/// `docker save` / `podman save` / `nerdctl save` 的参数形态。
+///
+/// docker 与 nerdctl 的 `save` 默认输出 docker-archive 格式；
+/// podman 得靠 `--format docker-archive` 拉齐，否则给你 podman-archive。
+pub fn save_args(tool : CliTool, reference : String) -> Array[String] {
+  match tool {
+    Docker | Nerdctl => ["save", reference]
+    Podman => ["save", "--format", "docker-archive", reference]
+  }
+}
+
+///|
+/// `inspect` 的参数形态。docker / nerdctl 默认就吐 JSON 数组；
+/// podman 需要显式 `--format json`，否则是 Go 模板渲染的表格。
+pub fn inspect_args(tool : CliTool, reference : String) -> Array[String] {
+  match tool {
+    Docker | Nerdctl => ["inspect", reference]
+    Podman => ["inspect", "--format", "json", reference]
+  }
+}
+
+///|
+/// 镜像名不能是空的。
+fn guard_reference(reference : String) -> Unit raise DockerCliError {
+  if reference.trim().is_empty() {
+    raise InvalidReference("image reference is empty")
+  }
+}
+
+///|
+pub extend DockerCliSource with ImageSource::{inspect, save}
+
+///|
+/// 把 `save` 的结果直接落到文件，中途不把整段归档拼进内存。
+///
+/// 大镜像走这条路：`ImageSource::save` 返回 `Bytes` 的形态适合小镜像与测试，
+/// 几百 MB 的层用这个入口。返回写入的字节数。
+pub async fn DockerCliSource::save_to_file(
+  self : DockerCliSource,
+  reference : String,
+  output_path : String,
+) -> Int32 raise DockerCliError {
+  guard_reference(reference)
+  let (code, written) = run_cli_to_file(
+    self.program,
+    save_args(self.tool, reference),
+    output_path,
+    self.timeout_ms,
+  )
+  if code != 0 {
+    raise Backend(self.program, code, "save failed")
+  }
+  if written == 0 {
+    raise Backend(self.program, code, "save produced an empty archive")
+  }
+  written
+}

@@ -1,0 +1,256 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "PaiGack/dive/docker_cli"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn build_docker_archive(Array[(String, Bytes)], repoTags? : Array[String], config? : String) -> Bytes
+
+pub fn build_head_for_test(HttpRequest) -> String
+
+pub fn bytes_to_string(Bytes) -> String
+
+pub fn bytes_to_text(BytesView) -> String
+
+pub fn default_candidates(Map[String, String]) -> Array[BackendCandidate]
+
+pub fn describe_backends(ProbedBackend) -> String
+
+pub fn encode_ref_for_test(String) -> String
+
+pub fn error_body_for_test(HttpResponse) -> String
+
+pub fn extract_layers(BytesView, DockerArchiveEntry) -> Array[ArchiveLayer] raise DockerCliError
+
+pub fn fake_failing_cli(String, Int) -> String
+
+pub async fn fake_hanging_cli() -> String
+
+pub fn fake_inspect_and_save(String, String) -> String
+
+pub async fn fetch_archive(String, env? : Map[String, String], timeout_ms? : Int) -> Bytes raise DockerCliError
+
+pub async fn fetch_archive_verbose(String, env? : Map[String, String], timeout_ms? : Int) -> (Bytes, ResolvedBackend) raise DockerCliError
+
+pub async fn http_over_unix(String, HttpRequest, Int) -> HttpResponse raise DockerCliError
+
+pub fn inspect_args(CliTool, String) -> Array[String]
+
+pub fn is_retryable_spawn_error(Error) -> Bool
+
+pub fn layer_id_of(String) -> String
+
+pub fn parse_chunk_size_for_test(String) -> Int raise DockerCliError
+
+pub fn parse_docker_archive(BytesView) -> DockerArchive raise DockerCliError
+
+pub fn parse_inspect(CliTool, Bytes, String) -> ImageInfo raise DockerCliError
+
+pub fn parse_status_for_test(String) -> Int raise DockerCliError
+
+pub fn parse_unix_uri(String) -> UnixUri?
+
+pub fn primary_entry(DockerArchive) -> DockerArchiveEntry?
+
+pub async fn probe_backends(Array[BackendCandidate], Map[String, String]) -> ProbedBackend
+
+pub fn probe_order_for_test(Array[BackendCandidate], Map[String, String]) -> Array[BackendCandidate]
+
+pub fn process_env() -> Map[String, String]
+
+pub async fn remove_fake_cli(String) -> Unit
+
+pub async fn remove_temp_bytes(String) -> Unit
+
+pub async fn resolve_backend(Array[BackendCandidate], Map[String, String], timeout_ms? : Int) -> ResolvedBackend raise DockerCliError
+
+pub async fn resolve_executable(String, String) -> String?
+
+pub async fn run_cli(String, Array[String], Int) -> (Int, Bytes, Bytes) raise DockerCliError
+
+pub async fn run_cli_to_file(String, Array[String], String, Int) -> (Int, Int) raise DockerCliError
+
+pub fn save_args(CliTool, String) -> Array[String]
+
+pub fn split_reference_for_test(String) -> (String, String)
+
+pub fn unix_socket_of(String) -> String?
+
+pub async fn write_fake_cli(String) -> String
+
+pub async fn write_temp_bytes(String, Bytes) -> String
+
+// Errors
+pub(all) suberror DockerCliError {
+  NoBackend(String)
+  Backend(String, Int, String)
+  ExecutableNotFound(String)
+  Cancelled(String)
+  Archive(String)
+  InvalidReference(String)
+} derive(Eq, @debug.Debug)
+pub fn DockerCliError::equal(Self, Self) -> Bool
+pub fn DockerCliError::not_equal(Self, Self) -> Bool
+pub fn DockerCliError::output(Self, &Logger) -> Unit
+pub fn DockerCliError::to_repr(Self) -> @debug.Repr
+pub fn DockerCliError::to_string(Self) -> String
+pub impl Show for DockerCliError
+
+// Types and methods
+pub(all) struct ArchiveLayer {
+  path : String
+  bytes : Bytes
+} derive(@debug.Debug)
+pub fn ArchiveLayer::to_repr(Self) -> @debug.Repr
+
+pub(all) struct BackendAttempt {
+  candidate : BackendCandidate
+  ok : Bool
+  reason : String
+} derive(Eq, @debug.Debug)
+pub fn BackendAttempt::equal(Self, Self) -> Bool
+pub fn BackendAttempt::not_equal(Self, Self) -> Bool
+pub fn BackendAttempt::output(Self, &Logger) -> Unit
+pub fn BackendAttempt::to_repr(Self) -> @debug.Repr
+pub fn BackendAttempt::to_string(Self) -> String
+
+pub(all) enum BackendCandidate {
+  Socket(String)
+  Cli(CliTool)
+} derive(Eq, @debug.Debug)
+pub fn BackendCandidate::equal(Self, Self) -> Bool
+pub fn BackendCandidate::not_equal(Self, Self) -> Bool
+pub fn BackendCandidate::output(Self, &Logger) -> Unit
+pub fn BackendCandidate::to_repr(Self) -> @debug.Repr
+pub fn BackendCandidate::to_string(Self) -> String
+
+pub(all) enum CliTool {
+  Docker
+  Podman
+  Nerdctl
+} derive(Eq, @debug.Debug)
+pub fn CliTool::equal(Self, Self) -> Bool
+pub fn CliTool::not_equal(Self, Self) -> Bool
+pub fn CliTool::output(Self, &Logger) -> Unit
+pub fn CliTool::to_repr(Self) -> @debug.Repr
+pub fn CliTool::to_string(Self) -> String
+
+pub(all) struct DockerArchive {
+  entries : Array[DockerArchiveEntry]
+} derive(Eq, @debug.Debug)
+pub fn DockerArchive::equal(Self, Self) -> Bool
+pub fn DockerArchive::not_equal(Self, Self) -> Bool
+pub fn DockerArchive::to_repr(Self) -> @debug.Repr
+
+pub(all) struct DockerArchiveEntry {
+  config : String
+  repoTags : Array[String]
+  layers : Array[String]
+  layer_ids : Array[String]
+} derive(Eq, @debug.Debug)
+pub fn DockerArchiveEntry::equal(Self, Self) -> Bool
+pub fn DockerArchiveEntry::not_equal(Self, Self) -> Bool
+pub fn DockerArchiveEntry::to_repr(Self) -> @debug.Repr
+
+pub(all) struct DockerCliSource {
+  program : String
+  tool : CliTool
+  timeout_ms : Int
+} derive(Eq, @debug.Debug)
+pub fn DockerCliSource::equal(Self, Self) -> Bool
+pub async fn DockerCliSource::inspect(Self, String) -> ImageInfo raise DockerCliError
+pub fn DockerCliSource::new(String, tool? : CliTool, timeout_ms? : Int) -> Self
+pub fn DockerCliSource::not_equal(Self, Self) -> Bool
+pub async fn DockerCliSource::save(Self, String) -> Bytes raise DockerCliError
+pub async fn DockerCliSource::save_to_file(Self, String, String) -> Int raise DockerCliError
+pub fn DockerCliSource::to_repr(Self) -> @debug.Repr
+
+pub(all) struct EngineSource {
+  uri : UnixUri
+  mut api_prefix : String
+  timeout_ms : Int
+} derive(@debug.Debug)
+pub fn EngineSource::api_path(Self, String) -> String
+pub async fn EngineSource::inspect(Self, String) -> ImageInfo raise DockerCliError
+pub async fn EngineSource::negotiate(Self) -> String raise DockerCliError
+pub fn EngineSource::new(UnixUri, timeout_ms? : Int) -> Self
+pub async fn EngineSource::pull(Self, String) -> Unit raise DockerCliError
+pub async fn EngineSource::save(Self, String) -> Bytes raise DockerCliError
+pub fn EngineSource::set_api_version(Self, String) -> Unit
+pub fn EngineSource::to_repr(Self) -> @debug.Repr
+
+pub(all) struct HttpRequest {
+  http_method : String
+  path : String
+  host : String
+  headers : Array[(String, String)]
+  body : Bytes
+} derive(Eq, @debug.Debug)
+pub fn HttpRequest::equal(Self, Self) -> Bool
+pub fn HttpRequest::not_equal(Self, Self) -> Bool
+pub fn HttpRequest::to_repr(Self) -> @debug.Repr
+
+pub(all) struct HttpResponse {
+  status : Int
+  headers : Array[(String, String)]
+  body : Bytes
+} derive(Eq, @debug.Debug)
+pub fn HttpResponse::equal(Self, Self) -> Bool
+pub fn HttpResponse::header(Self, String) -> String?
+pub fn HttpResponse::not_equal(Self, Self) -> Bool
+pub fn HttpResponse::to_repr(Self) -> @debug.Repr
+
+pub(all) enum ImageBackend {
+  Cli(DockerCliSource)
+  Engine(EngineSource)
+} derive(@debug.Debug)
+pub async fn ImageBackend::inspect(Self, String) -> ImageInfo raise DockerCliError
+pub fn ImageBackend::output(Self, &Logger) -> Unit
+pub async fn ImageBackend::save(Self, String) -> Bytes raise DockerCliError
+pub fn ImageBackend::to_repr(Self) -> @debug.Repr
+pub fn ImageBackend::to_string(Self) -> String
+
+pub(all) struct ImageInfo {
+  id : String
+  reference : String
+  architecture : String
+  os : String
+  size : Int
+  virtual_size : Int
+} derive(Eq, @debug.Debug)
+pub fn ImageInfo::equal(Self, Self) -> Bool
+pub fn ImageInfo::not_equal(Self, Self) -> Bool
+pub fn ImageInfo::to_repr(Self) -> @debug.Repr
+
+pub(all) struct ProbedBackend {
+  index : Int
+  candidate : BackendCandidate?
+  attempts : Array[BackendAttempt]
+} derive(Eq, @debug.Debug)
+pub fn ProbedBackend::equal(Self, Self) -> Bool
+pub fn ProbedBackend::not_equal(Self, Self) -> Bool
+pub fn ProbedBackend::to_repr(Self) -> @debug.Repr
+
+pub(all) struct ResolvedBackend {
+  backend : ImageBackend
+  probed : ProbedBackend
+} derive(@debug.Debug)
+pub fn ResolvedBackend::to_repr(Self) -> @debug.Repr
+
+pub(all) struct UnixUri {
+  path : String
+  host : String
+} derive(Eq, @debug.Debug)
+pub fn UnixUri::equal(Self, Self) -> Bool
+pub fn UnixUri::not_equal(Self, Self) -> Bool
+pub fn UnixUri::to_repr(Self) -> @debug.Repr
+
+// Type aliases
+
+// Traits
+pub(open) trait ImageSource {
+  async fn inspect(Self, String) -> ImageInfo raise DockerCliError
+  async fn save(Self, String) -> Bytes raise DockerCliError
+}

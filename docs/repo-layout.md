@@ -19,11 +19,15 @@ docs/                   # 设计文档与拆分规划
 `cmd/main/` 是只读分析链路的入口，已接上 P1→P2→P3→P4：
 `dive <image.tar|layout-dir|-> [--rules rules.json] [--format text|json|annotations]`。
 它只做接线，判定逻辑都在 `image_ci` 里。
-P5 `docker_cli` 目录尚未创建，待 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17) 开工时按同样约定加 `moon.pkg` 与 README。
+
+P5 `docker_cli` 已按同样约定落地（`moon.pkg` + README + 测试），见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)。
+它是唯一带平台约束的包：进程与 unix socket 只在 native / wasm 后端可用，
+`.cnb.yml` / 本地跑测试时用 `--target wasm`。
 
 ## 开发工作流
 
 - `moon check` 提交前必跑（`.githooks/pre-commit` 已配置）
+- `docker_cli` 的测试要显式指 target：`moon test -p docker_cli --target wasm`
 - `moon test` 全绿才算完成一个包；快照测试用 `moon test --update` 刷新
 - `moon info && moon fmt` 更新 `.mbti` 接口与格式，`.mbti` diff 要人工确认
 - 每个包一个目录、一个 `moon.pkg`，包间依赖用 `moon add` 声明，不跨目录引用私有实现
