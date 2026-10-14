@@ -1,0 +1,6 @@
+import {
+  "PaiGack/dive/layer_tree",
+  "moonbitlang/core/debug",
+}
+
+warnings = "-test_unqualified_package"
