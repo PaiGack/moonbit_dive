@@ -48,9 +48,12 @@ pub async fn probe_backends(
 ) -> ProbedBackend {
   let ordered = with_cli_override(candidates, env)
   let path = path_of_env(env)
+  // 调用方显式给了 PATH，就只在这个范围里找：否则装了 docker 的机器上
+  // 怎么探都是「找得到」，确定性测试和隔离环境都会失真。
+  let allow_fallback = env.get("PATH") is None
   let attempts = []
   for index, candidate in ordered {
-    let (ok, reason) = health_check(candidate, path)
+    let (ok, reason) = health_check(candidate, path, allow_fallback~)
     attempts.push({ candidate, ok, reason, })
     if ok {
       return { index, candidate: Some(candidate), attempts, }
@@ -129,6 +132,7 @@ fn tool_of_name(name : String) -> CliTool? {
 async fn health_check(
   candidate : BackendCandidate,
   path : String,
+  allow_fallback~ : Bool,
 ) -> (Bool, String) {
   match candidate {
     Socket(path) => {
@@ -142,7 +146,8 @@ async fn health_check(
       }
     }
     Cli(tool) =>
-      match resolve_executable(Show::to_string(tool), path) {
+      match
+        resolve_executable_opts(Show::to_string(tool), path, allow_fallback~) {
         Some(found) => (true, "found at \{found}")
         None => (false, "not found on PATH")
       }
@@ -155,6 +160,22 @@ async fn health_check(
 /// 只做「存在 + 可执行」判定，不真的跑 `--version`：
 /// 探测本身不应该产生副作用，否则 CI 里一个慢二进制就能拖死启动。
 pub async fn resolve_executable(name : String, path : String) -> String? {
+  resolve_executable_opts(name, path, allow_fallback=true)
+}
+
+///|
+/// `resolve_executable` 的带参版本：`allow_fallback=false` 时只认给定 `PATH`，
+/// 不去兜 `/usr/bin` 这类系统目录。
+///
+/// `probe_backends` 在调用方显式传了 `PATH` 时用这个开关——
+/// 显式指定 PATH 的意思就是「只在这个范围里找」，再兜系统目录会把
+/// 隔离环境（测试、容器）里的判定搅乱：装了 docker 的机器上，
+/// 探测就永远失败不了。
+async fn resolve_executable_opts(
+  name : String,
+  path : String,
+  allow_fallback~ : Bool,
+) -> String? {
   if name.contains("/") {
     // 已经是路径，只看它在不在
     return if is_executable_file(name) { Some(name) } else { None }
@@ -171,10 +192,12 @@ pub async fn resolve_executable(name : String, path : String) -> String? {
       return Some(candidate)
     }
   }
-  for directory in fallback_directories() {
-    let candidate = "\{directory}/\{name}"
-    if is_executable_file(candidate) {
-      return Some(candidate)
+  if allow_fallback {
+    for directory in fallback_directories() {
+      let candidate = "\{directory}/\{name}"
+      if is_executable_file(candidate) {
+        return Some(candidate)
+      }
     }
   }
   None

@@ -58,12 +58,18 @@ test "DOCKER_CLI promotes the chosen tool" {
 
 ///|
 /// 探测不到任何后端时给 NoBackend，错误信息里逐条列出尝试过的候选。
+///
+/// 显式给一个空的 PATH，把探测钉死在隔离环境里：装了 docker 的机器
+/// （比如 CI 容器）上，若回落到进程 PATH 或系统目录，`Cli(Docker)` 会被
+/// 判成可用，探测提前选中，这条测试也就跑不出来了。
 async test "probing failure lists every attempt" {
   let candidates = [
     @docker_cli.BackendCandidate::Socket("/definitely/missing.sock"),
     @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
   ]
-  let probed = @docker_cli.probe_backends(candidates, {})
+  let probed = @docker_cli.probe_backends(candidates, {
+    "PATH": "/definitely/missing/bin",
+  })
   assert_true(probed.candidate is None)
   assert_eq(probed.attempts.length(), 2)
   let described = @docker_cli.describe_backends(probed)
