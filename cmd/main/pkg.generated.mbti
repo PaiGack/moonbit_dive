@@ -1,11 +1,18 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "PaiGack/dive/cmd/main"
 
+import {
+  "moonbitlang/core/debug",
+}
+
 // Values
 
 // Errors
 
 // Types and methods
+type CommandError derive(Eq, @debug.Debug)
+
+type Options derive(@debug.Debug)
 
 // Type aliases
 

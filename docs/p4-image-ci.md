@@ -49,11 +49,32 @@
 
 ## 验收
 
-- [ ] 至少覆盖上列 6 类规则，每条有独立测试
-- [ ] exit code 在「全过 / 有失败 / 规则非法」三种情况下区分正确
-- [ ] JSON 输出有 schema 文档，能直接被 CI 消费
-- [ ] 用真实（或构造的）镜像走一遍端到端，README 记录命令与预期结果
-- [ ] `moon check` / `moon test` 全绿
+- [x] 至少覆盖上列 6 类规则，每条有独立测试
+- [x] exit code 在「全过 / 有失败 / 规则非法」三种情况下区分正确
+- [x] JSON 输出有 schema 文档，能直接被 CI 消费（见 [p4-rules-schema.md](p4-rules-schema.md)）
+- [x] 用真实（或构造的）镜像走一遍端到端，README 记录命令与预期结果
+- [x] `moon check` / `moon test` 全绿
+
+## 落地说明
+
+实现落在 `image_ci/`：
+
+- `rule.mbt`：规则种类与路径模式（`*` 段内、`**` 跨段）
+- `ruleset.mbt`：rules.json 加载与校验，非法配置归到 `ConfigError`
+- `check.mbt`：六类规则判定，产出 `CheckResult` / `RuleResult`
+- `render.mbt`：人类可读 / JSON / CI 注解三种输出 + 退出码
+- `image.mbt`：本地镜像输入（docker save / OCI layout / 单层 tar / stdin）
+
+CLI 落在 `cmd/main/`：`moon run --target native cmd/main -- <image> --rules rules.json`。
+`moon run` 默认跑 wasm，退出码只有 native 后端能原样传给 shell，
+所以文档与示例统一用 `--target native`。
+
+与初版范围的两处偏差，记录一下取舍：
+
+- **输入格式**：issue 正文只写了 `dive <image.tar>`，设计文档要求再补 OCI layout 目录与
+  stdin。三种都实现了，识别方式见 `read_archive` / `read_oci_layout`。
+- **stdin**：`fs` 走 seek 读，管道（`|`）拿不到内容，用重定向（`<`）或文件路径。
+  这是运行时限制，已在 README 的「已知限制」里写清楚，不做流式改造。
 
 ## 参考
 
