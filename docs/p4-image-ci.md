@@ -2,54 +2,48 @@
 
 ## 目标
 
-把「CI 里检查镜像是否超标」做成开箱即用的 MoonBit 包：一条命令、一份规则、一个 exit code。
+把 P3 的分析结果变成 CI 里能用的门禁：声明式规则 + 明确 exit code + CI 注解输出，
+让「镜像胖了就把流水线卡住」这件事可配置、可解释。
 
 ## 范围
 
 ### 规则 DSL
 
-参考 dive `dive/dive/image/../../cmd/dive/cli/ci/rules.go`（约 196 行 Go）的思路，用 MoonBit 实现：
+参考 dive `ci/rules.go` 的形态，但用 MoonBit 数据结构表达（不引入 yaml 依赖的话，
+先支持从 JSON / 配置结构构造）。规则示例：
 
-```yaml
-rules:
-  - lowestEfficiency: 0.95
-  - highestBytes: 500MB
-  - highestUserFileCount: 1000
-  - wastedBytes:
-      threshold: 50MB
-      filePattern: "*.log"
-```
+- 总镜像大小上限（绝对字节 / MB）
+- 单层大小上限
+- 浪费空间（wasted bytes）上限
+- efficiency score 下限
+- 路径白名单/黑名单（例如禁止把 `node_modules` 打进镜像）
+- 单文件大小上限
 
-- 规则项：`lowestEfficiency`、`highestBytes`、`highestUserFileCount`、`wastedBytes`（带 filePattern）
-- 组合逻辑：任一规则命中即失败，全部通过才 exit 0
+### 判定与输出
 
-### 阈值单位
+- 每条规则给出 pass / fail 与失败原因
+- 汇总结果输出到 stdout（人类可读 + JSON 两种）
+- exit code 规范：0 全过，非 0 表示有规则失败并区分「规则本身错误」与「规则未通过」
+- CI 注解：输出可被 CI 解析的标注（如 `::error::` 形式）
 
-支持 `B` / `KB` / `MB` / `GB` / `KiB` / `MiB` / `GiB`，与 dive 的单位口径一致。
+### CLI 接线
 
-### CLI 行为
+- `cmd/main` 聚合 P1→P2→P3→P4：`dive <image.tar> --rules rules.json`
+- 只读分析链路先打通，不要求交互界面
 
-- `image-ci check <image.tar> --rules rules.yaml`（先支持 `docker save` 出的 tar，不依赖 daemon）
-- exit code：0 通过 / 1 规则失败 / 2 用法或加载错误（与 dive CI 对齐）
-- 失败时输出命中的规则、实际值、阈值，以及 GitHub Actions 注解格式（`::error file=...,line=...::`）
+## 非目标
 
-### 解析
-
-- YAML 规则文件解析（找生态现成 YAML 包，没有则先支持 JSON 等价物）
-- 规则文件 schema 校验，错误信息指出具体行号
-
-## 依赖
-
-- P1 `oci_spec`、P3 `dive_analysis`
+- 不做交互式 TUI（dive 的 gocui 部分不复刻）
+- 不做 registry 拉取
 
 ## 验收
 
-- [ ] 四类规则各有一个通过用例和一个失败用例
-- [ ] exit code 符合规范，CI 脚本可直接依赖
-- [ ] 单位解析边界（大小写、无空格、`1e3` 之类的非法写法）有明确报错
-- [ ] README 给出 GitHub Actions / Gitlink CI 的接入片段
+- [ ] 至少覆盖上列 6 类规则，每条有独立测试
+- [ ] exit code 在「全过 / 有失败 / 规则非法」三种情况下区分正确
+- [ ] JSON 输出有 schema 文档，能直接被 CI 消费
+- [ ] 用真实（或构造的）镜像走一遍端到端，README 记录命令与预期结果
 - [ ] `moon check` / `moon test` 全绿
 
 ## 参考
 
-- dive `cmd/dive/cli/ci/rules.go`
+- dive 的 `cmd/dive/cli/internal/ci/`（MIT）
