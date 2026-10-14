@@ -36,7 +36,7 @@
 ## 非目标
 
 - 不做网络：不实现 registry 客户端（`mizchi/oci_wasm` 已覆盖；见 [docker-cli-survey.md](docker-cli-survey.md)）
-- 不做 Docker Engine 客户端（不连 `/var/run/docker.sock`，不实现 `docker save` 的调用方，只读它的产物）
+- 不做 Docker Engine 客户端（那部分归 P5 `docker_cli`，见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)；本包只读它的产物）
 - 不解析 layer 内容（P2 的职责）
 
 ## 验收

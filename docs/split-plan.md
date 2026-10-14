@@ -14,11 +14,12 @@ MoonBit 侧没有等价绑定；直接移植等于重写容器运行时，一个
 | P2 | `layer_tree/` | 流式 tar 应用到文件树、`.wh.` / `.wh..wh..plnk` whiteout 语义、层间 diff、路径规范化、树渲染 | ~2.5k–4k 行 | P1 + tar + zstd/gzip |
 | P3 | `dive_analysis/` | 跨层重复文件统计、被删文件浪费、cumulative size 排序、efficiency score、JSON/HTML 报告 | ~2k–3k 行 | P2 |
 | P4 | `image_ci/` | 体积门禁规则 DSL、阈值判定、exit code 规范、CI 注解输出 | ~1.5k–2.5k 行 | P1 + P3 |
+| P5 | `docker_cli/` | Docker Engine 封装：docker/podman/nerdctl CLI 后端 + unix socket Engine 后端，吃镜像名、吐 tar/layout | ~1.5k–2.5k 行 | 无（独立于 P1–P4） |
 
 ## 为什么这样切
 
 1. **依赖单向**：P1 是纯类型层，无外部依赖，可立刻开工并快速产出 schema 驱动的测试；
-   P2/P3/P4 依次依赖前者，不存在循环。
+   P2/P3/P4 依次依赖前者，不存在循环。P5 挂在链路外侧，四个离线包都不依赖它。
 2. **生态去重**：tar（`bobzhang/tar`）、gzip/zstd、sha256、TUI、LSP、pathfinding、indexmap、actor
    在 MoonBit 生态已有实现，直接复用，不重复造轮子。生态空白且正是本项目独立贡献点的有四处：
    whiteout 语义、层叠 diff、efficiency score、规则 DSL。
@@ -38,3 +39,6 @@ MoonBit 侧没有等价绑定；直接移植等于重写容器运行时，一个
 - M2：P2 完成（whiteout 语义 + 层间 diff）
 - M3：P3 完成（efficiency score + 报告输出）
 - M4：P4 完成（规则 DSL + CLI），打通 `dive <image>` 只读分析链路
+- M5：P5 完成（`docker_cli` 后端），打通 `dive <image-ref>` 取镜像链路
+
+里程碑只约束 P1–P4 的主链，P5 可并行推进，不阻塞 M1–M4。

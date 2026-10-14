@@ -29,7 +29,7 @@
 ## 非目标
 
 - 不做门禁阈值判定（P4 的职责）
-- 不做镜像拉取，也不做 Docker Engine 客户端（只吃本地 tar / 已解析的层）
+- 不做镜像拉取，也不做 Docker Engine 客户端（镜像获取归 P5 `docker_cli`，见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)；本包只吃本地 tar / 已解析的层）
 - docker-archive / OCI layout 的输入识别在 P4 的 CLI 层完成
 
 ## 验收
