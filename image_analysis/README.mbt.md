@@ -47,7 +47,7 @@ test "README example" {
 | 路径体积账 | `Analysis::path_size`、`PathSize`、`Analysis::waste_ranking` |
 | efficiency score | `Analysis::efficiency`、`EfficiencyReport`、`efficiency_of_versions` |
 | 目录热点 | `hotspots`、`Hotspot` |
-| 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string` |
+| 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string`、`report_to_html` |
 
 ## efficiency score 口径
 
@@ -85,6 +85,14 @@ efficiency: 32.3% (10/31)
 
 JSON 报告（`report_to_json_string`）的结构见 [docs/p3-report-schema.md](../docs/p3-report-schema.md)，
 带 `schemaVersion` 字段，供 P4 的门禁判定消费。
+
+HTML 报告（`report_to_html`）是同一份 `Report` 的第三个渲染后端：单文件、无外部依赖、
+内联样式，顶部概览卡 + 逐层表 + efficiency 进度条 + 浪费 / 热点两张表。所有路径名都过
+`html_escape`，`<` `&` 引号不会撑破结构。CLI 用法：
+
+```bash
+dive image.tar --format html -o report.html
+```
 
 ## 设计要点
 

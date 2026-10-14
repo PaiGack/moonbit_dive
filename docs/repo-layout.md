@@ -17,7 +17,7 @@ docs/                   # 设计文档与拆分规划
 ```
 
 `cmd/main/` 是只读分析链路的入口，已接上 P1→P2→P3→P4：
-`dive <image.tar|layout-dir|-> [--rules rules.json] [--format text|json|annotations]`。
+`dive <image.tar|layout-dir|-> [--rules rules.json] [--format text|json|html|annotations] [-o out]`。
 它只做接线，判定逻辑都在 `image_ci` 里。
 
 另有一支「逐层浏览」入口，是 dive 交互界面的只读替身：
