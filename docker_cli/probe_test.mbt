@@ -59,15 +59,22 @@ test "DOCKER_CLI promotes the chosen tool" {
 ///|
 /// 探测不到任何后端时给 NoBackend，错误信息里逐条列出尝试过的候选。
 ///
-/// `PATH` 必须显式指向空目录：`probe_backends` 在 `env` 里没有 `PATH` 时会
-/// 回落到进程环境，而 `resolve_executable` 还会兜 `/usr/bin` 等常见位置。
-/// 探测宿主机上真实存在的 docker，这个用例就变成「取决于机器装没装」了。
+/// `PATH` 必须显式指向空目录，两层原因叠在一起：
+///
+/// - `env` 里没有 `PATH` 时 `probe_backends` 会回落到进程环境；
+/// - `resolve_executable` 还会兜 `/usr/bin` 这类系统目录
+///   （GUI / cron 场景的兜底，本身是对的）。
+///
+/// 于是「这台机器装没装 docker」直接决定用例过不过：CI 镜像里
+/// `/usr/bin/docker` 是真实存在的，`Cli(Docker)` 会被判成可用，
+/// 探测提前选中，`candidate is None` 就不成立。
 async test "probing failure lists every attempt" {
   let dir = @fs.tmpdir(prefix="dive-probe-")
   let candidates = [
     @docker_cli.BackendCandidate::Socket("/definitely/missing.sock"),
     @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
   ]
+  // 空临时目录：既没有 docker，也不会被 /usr/bin 兜底捡回来
   let probed = @docker_cli.probe_backends(candidates, { "PATH": dir })
   assert_true(probed.candidate is None)
   assert_eq(probed.attempts.length(), 2)
@@ -120,8 +127,10 @@ async test "a non-socket path is not treated as a healthy socket" {
 ///|
 /// 无 daemon 环境下 resolve_backend 抛 NoBackend，不 panic。
 ///
-/// 同 `probing failure lists every attempt`：`PATH` 钉在空目录上，
-/// 否则宿主机上的 docker 会让这个用例提前「成功」。
+/// `PATH` 同样钉在空临时目录上：只放一个 socket 候选时看似跟 PATH 无关，
+/// 但探到了真实 docker 就会走另一条分支，用例变成「取决于机器装没装」。
+/// `PATH` 不显式钉死时还要小心递归：进程 PATH 上就装着 docker 的机器上，
+/// 探测会先选中它，这里就不再是 NoBackend。
 async test "resolve_backend reports NoBackend without a daemon" {
   let dir = @fs.tmpdir(prefix="dive-probe-")
   let candidates = [
