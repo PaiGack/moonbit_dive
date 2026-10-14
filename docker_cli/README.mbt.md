@@ -105,7 +105,51 @@ CLI 看 `PATH` 上解析不解析得到（再兜 `/usr/bin`、`/usr/local/bin` �
 - **HTTP 自己收口**：`moonbitlang/async/http` 面向 `http(s)://` URL，
   没有 unix socket 入口，所以包内收了一个最小 HTTP/1.1 客户端
   （状态行 + 头 + `Content-Length` / chunked）。
+- **unix socket 自己建连**：`@socket.Tcp::connect_to_host` 内部先做 `getaddrinfo`，
+  面向 `host:port`，连不上 `/var/run/docker.sock` 这种路径。
+  `connect_unix_socket` 自己收口 `socket(AF_UNIX, ...)` + `connect(2)`，
+  再把 non-blocking fd 交给 `@raw_fd.RawFdStream` 走事件循环收发。
 - **`method` 改叫 `http_method`**：`method` 是 MoonBit 保留字。
+- **只支持 native**：unix socket / `@raw_fd` / 子进程都只在 native 上有入口，
+  本包因此声明 `supported_targets = "-all+native"`。只读 tar 的 P1–P4 不受影响。
+
+## 测试策略
+
+两条后端各自怎么验：
+
+- **CLI 后端**：fake 可执行文件，不依赖真实 daemon（`cli_source_test.mbt`）
+- **Engine 后端**：分两层
+  - 报文层：请求组装 / 响应解析 / 版本前缀 / 引用编码 / 错误体提取（`engine_test.mbt`）
+  - **传输层**：真起一根 unix socket、真发一次 HTTP、真读 chunked（`transport_test.mbt`）
+- **大归档**：`save_to_file` 走流式路径，内存不随归档体积涨（`save_to_file_memory_test.mbt`）
+
+### 测试用的 unix socket 服务端
+
+`moonbitlang/async/socket` 只有 TCP / UDP 绑定，没有 `AF_UNIX` 的 listen / accept，
+起不了 fake daemon。测试用一层薄 FFI 补上：
+
+| 文件 | 作用 |
+|---|---|
+| `unix_socket_stub.c` | 生产侧：`connect(2)` 建连 |
+| `unix_socket_test_stub.c` | 测试侧：`listen` / `accept` |
+| `unix_test_support.mbt` | `UnixSocketServer`：起监听、等连接、收发字节 |
+
+listen / accept 只服务测试，不进成品包的公开 API。
+两个 stub 都只在 `#cfg(not(platform="windows"))` 下编译。
+
+### 大 fixture 的生成方式
+
+100MB 量级的归档不在仓库里（会把仓库撑爆），由 `large_fixture.mbt` 的
+`write_large_archive(path, target_bytes)` **流式现造**：
+按 tar 结构逐条写 header 与数据块，内存里只有 64KB 的填充缓冲，
+无论目标多大都不驻留整段归档。
+
+结构跟 `build_docker_archive` 一致（单层 `<id>/layer.tar` + config + `manifest.json`），
+能被 `parse_docker_archive` 与 P2 的 `apply_layers_with_diffs` 直接吃下。
+
+内存验证读 `/proc/self/status` 的 `VmRSS`：
+写完之后当前占用不涨，就说明归档没被拼进内存。
+（对照实验：走 `save` 的缓冲路径，100MB 归档会让 RSS 涨 ~127MB，用例会失败。）
 
 ## 与 P1–P4 的接线
 

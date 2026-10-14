@@ -3,12 +3,13 @@ import {
   "moonbitlang/async",
   "moonbitlang/async/fs",
   "moonbitlang/async/io",
-  "moonbitlang/async/socket",
+  "moonbitlang/async/raw_fd",
   "moonbitlang/core/buffer",
   "moonbitlang/core/env",
   "moonbitlang/async/process",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
+  "moonbitlang/core/cmp",
   "moonbitlang/core/encoding/utf8",
 }
 
@@ -22,3 +23,12 @@ import {
   "PaiGack/dive/image_analysis",
   "moonbitlang/core/encoding/utf8",
 } for "test"
+
+// unix socket / `@raw_fd` / 子进程都只在 native 上有入口，
+// 本包因此只支持 native（见 docs/p5-docker-cli.md）。
+
+supported_targets = "-all+native"
+
+options(
+  "native-stub": [ "unix_socket_stub.c", "unix_socket_test_stub.c" ],
+)
