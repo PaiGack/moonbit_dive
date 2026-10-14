@@ -33,13 +33,17 @@
   - `docker save` 产物（docker-archive：`manifest.json` + `<hash>/layer.tar`）—— **必须打通**
   - OCI Image Layout 目录（`index.json` + `oci-layout`）
   - stdin 流（`dive -`）
+- 三种之外的输入（如镜像名 `nginx:latest`）交给 P5 解析成上述格式后再进本层
 - 只读分析链路先打通，不要求交互界面
 
 ## 非目标
 
 - 不做交互式 TUI（dive 的 gocui 部分不复刻）
-- 不做 registry 拉取
-- 不做 Docker Engine 客户端（不连 `/var/run/docker.sock`）
+- 不做 registry 拉取（公网镜像名直拉归 `mizchi/oci_wasm` 那条可选路径）
+- 不自己实现 Docker Engine 客户端（封装归 P5 `docker_cli`，见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)）
+
+输入层对上文三种本地格式负责；「给个镜像名」由 P5 取到 tar/layout 后**回落到同一入口**，
+本包不直接依赖 P5，保持可离线运行。
 
 接口边界的调研与取舍见 [docker-cli-survey.md](docker-cli-survey.md)。
 
