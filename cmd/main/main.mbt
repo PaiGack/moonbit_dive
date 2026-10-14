@@ -1,5 +1,5 @@
 ///|
-/// `dive` 的只读分析入口：`dive <image.tar> --rules rules.json`。
+/// `dive` 的只读分析入口：`dive <image> [--rules rules.json] [--layer N] [--path P]`。
 ///
 /// 链路是 P1/P2 → P3 → P4 的串接：
 ///
@@ -7,6 +7,9 @@
 /// 2. 逐层解压后喂给 `layer_tree` 叠树
 /// 3. `dive_analysis` 出体积报告
 /// 4. `image_ci` 按规则判定，输出人类可读 / JSON / CI 注解
+///
+/// `--layer` / `--path` 是 dive 交互界面的只读替身：没有 TUI，但能逐层看文件树、
+/// 按目录下钻。给了这两个参数就不做门禁判定，只打印那一层的树与 diff。
 ///
 /// 退出码由 `image_ci` 定义：`0` 全过、`1` 有规则未通过、
 /// `2` 规则非法或镜像读不出来。wasm 下拿不到退出码，详见 `exit.mbt`。
@@ -48,6 +51,16 @@ fn cli() -> @argparse.Command {
         about="output format: text, json or annotations",
         default_values=["text"],
       ),
+      @argparse.OptionArg(
+        "layer",
+        short='l',
+        about="show the file tree as of layer N (0-based) instead of the gate",
+      ),
+      @argparse.OptionArg(
+        "path",
+        short='p',
+        about="restrict the tree view to a subtree (default layer: last)",
+      ),
     ],
     positionals=[
       @argparse.PositionArg(
@@ -64,6 +77,8 @@ struct Options {
   image : String
   rules : String?
   format : String
+  layer : Int32?
+  path : String?
 } derive(Debug)
 
 ///|
@@ -79,6 +94,8 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
         format
       }
     },
+    layer: layer_of(matches),
+    path: optional_value(matches, "path"),
   }
 }
 
@@ -100,6 +117,42 @@ fn optional_value(matches : @argparse.Matches, name : String) -> String? {
   } else {
     Some(value)
   }
+}
+
+///|
+/// 解析 `--layer`：非数字直接报错到 stderr 并按 exit 2 退出。
+fn layer_of(matches : @argparse.Matches) -> Int32? {
+  match optional_value(matches, "layer") {
+    None => None
+    Some(text) =>
+      match parse_non_negative_int(text) {
+        Some(value) => Some(value)
+        None => {
+          eprintln(
+            "invalid --layer: expect a non-negative integer, got \{text}",
+          )
+          exit_process(@image_ci.exit_config_error)
+          None
+        }
+      }
+  }
+}
+
+///|
+/// 只认十进制非负整数；空串、带符号、带其它字符一律算非法。
+fn parse_non_negative_int(text : String) -> Int32? {
+  if text.is_empty() {
+    return None
+  }
+  let mut value = 0
+  for unit in text {
+    let code = unit.to_int()
+    if code < '0'.to_int() || code > '9'.to_int() {
+      return None
+    }
+    value = value * 10 + (code - '0'.to_int())
+  }
+  Some(value)
 }
 
 ///|
@@ -135,6 +188,9 @@ fn run(options : Options) -> Result[Int32, CommandError] noraise {
     }
     layers.push(raw)
   }
+  if options.layer is Some(_) || options.path is Some(_) {
+    return run_layer_view(options, layers)
+  }
   let analysis = @dive_analysis.analyze_layers(tree, layers) catch {
     err => return Err(CommandError::Analysis(err.to_string()))
   }
@@ -150,6 +206,68 @@ fn run(options : Options) -> Result[Int32, CommandError] noraise {
     }
   }
   Ok(@image_ci.exit_code_of(result))
+}
+
+///|
+/// `--layer` / `--path` 分支：只出「某一层的文件树 + 该层 diff」，不做门禁。
+///
+/// 没有 TUI：每次调用渲染一层快照，交互由 shell 的历史 / 循环补。
+fn run_layer_view(
+  options : Options,
+  layers : Array[BytesView],
+) -> Result[Int32, CommandError] noraise {
+  let views = @layer_tree.browse_layers(layers) catch {
+    err => return Err(CommandError::Analysis(err.to_string()))
+  }
+  let wanted = match options.layer {
+    Some(layer) => layer
+    // 只给 `--path` 时默认看最后一层
+    None => views.length() - 1
+  }
+  if wanted < 0 || wanted >= views.length() {
+    return Err(
+      CommandError::Analysis(
+        "layer \{wanted} is out of range: image has \{views.length()} layer(s) (0..\{views.length() - 1})",
+      ),
+    )
+  }
+  let view = views[wanted]
+  let subtree = match options.path {
+    Some(path) => view.subtree(path)
+    None => view.tree
+  }
+  match options.format {
+    "json" => println(layer_view_to_json(view, options).stringify(indent=2))
+    _ => {
+      println(
+        "layer \{view.layer} of \{views.length()} (\{subtree.size()} path(s))",
+      )
+      println("diff: \{view.diff}")
+      println(@layer_tree.render_tree(subtree))
+    }
+  }
+  Ok(@image_ci.exit_ok)
+}
+
+///|
+/// 逐层视图的 JSON：给脚本消费，字段与文本视图一一对应。
+fn layer_view_to_json(view : @layer_tree.LayerView, options : Options) -> Json {
+  Json::object({
+    "schemaVersion": Json(1),
+    "layer": Json(view.layer),
+    "tree": Json(@layer_tree.render_tree(view.tree)),
+    "path": Json(
+      match options.path {
+        Some(path) => Json(path)
+        None => Json(null)
+      },
+    ),
+    "diff": Json::object({
+      "added": Json(view.diff.added.map(fn(path) { Json(path) })),
+      "modified": Json(view.diff.modified.map(fn(path) { Json(path) })),
+      "removed": Json(view.diff.removed.map(fn(path) { Json(path) })),
+    }),
+  })
 }
 
 ///|

@@ -20,6 +20,11 @@ docs/                   # 设计文档与拆分规划
 `dive <image.tar|layout-dir|-> [--rules rules.json] [--format text|json|annotations]`。
 它只做接线，判定逻辑都在 `image_ci` 里。
 
+另有一支「逐层浏览」入口，是 dive 交互界面的只读替身：
+`dive <image> --layer N [--path P]`。给了 `--layer` / `--path` 就不做门禁判定，
+只打印那一层的文件树与该层 diff；`--path` 按目录下钻，纯给 shell 用，
+不做 TUI（gocui 那部分不在范围内）。实现落在 `layer_tree::browse_layers`。
+
 P5 `docker_cli` 已按同样约定落地（`moon.pkg` + README + 测试），见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)。
 它是唯一带平台约束的包：进程与 unix socket 只在 native / wasm 后端可用，
 `.cnb.yml` / 本地跑测试时用 `--target wasm`。

@@ -57,6 +57,7 @@ test "README example" {
 | 层应用 | `apply_layer`、`apply_layer_with_media_type`、`apply_layers_with_diffs` |
 | whiteout | `whiteout_kind`、`WhiteoutKind`、`remove_subtree`、`make_opaque` |
 | 层间 diff | `diff_snapshots`、`diff_against_empty`、`Diff` |
+| 逐层浏览 | `browse_layers`、`LayerView`、`LayerView::subtree`、`LayerView::changed_paths` |
 | 树渲染 | `render_tree`、`render_tree_between`、`render_diff` |
 
 ## whiteout 语义
@@ -74,6 +75,44 @@ OCI / AUFS 用特殊文件名表达「删除」，它们本身不会出现在最
 层之间是**时间序**而不是集合差：同一路径被 whiteout 后又写回同名文件，
 在 diff 里表现为 `modified`（路径两层都存在，内容变了），
 只有真正消失的路径才进 `removed`。
+
+## 逐层浏览
+
+`browse_layers` 把「每层应用完之后树长什么样」抽出来：返回的 `LayerView` 数组与层一一对应，
+每个视图带该层的快照与相对上一层的 diff。CLI 的 `--layer` / `--path` 就是它的只读替身
+（没有 TUI 的交互，但能一次看一层）。
+
+```mbt check
+///|
+test "README layer browse" {
+  let layer0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("app/main.js", "v1"),
+  ])
+  let layer1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("app/main.js", "v2-longer"),
+  ])
+  let views = @layer_tree.browse_layers([layer0, layer1]) catch {
+    err => fail(err.to_string())
+  }
+  // 第 0 层的树只有旧内容
+  assert_eq(views[0].tree.require("/app/main.js").size, 2)
+  // 第 1 层是覆盖，diff 里表现为 modified
+  assert_eq(views[1].diff.modified, ["/app/main.js"])
+  assert_eq(views[1].changed_paths(), ["/app/main.js"])
+  // 按目录下钻：沿途祖先目录保留，供缩进参照
+  let app = views[1].subtree("/app")
+  assert_eq(app.size(), 2)
+  inspect(
+    @layer_tree.render_tree(app),
+    content=(
+      #|/
+      #|  app/ [L0]
+      #|    main.js (9 bytes) [L1]
+      #|
+    ),
+  )
+}
+```
 
 ## 设计要点
 

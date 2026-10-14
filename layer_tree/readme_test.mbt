@@ -29,3 +29,27 @@ test "README example" {
   assert_eq(diff.removed, ["/etc/passwd"])
   assert_eq(diff.modified, ["/etc/hosts"])
 }
+
+///|
+/// README 里的逐层浏览示例。
+test "README layer browse" {
+  let layer0 = build_tar([TarEntrySpec::File("app/main.js", "v1")])
+  let layer1 = build_tar([TarEntrySpec::File("app/main.js", "v2-longer")])
+  let views = browse_layers([layer0, layer1]) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(views[0].tree.require("/app/main.js").size, 2)
+  assert_eq(views[1].diff.modified, ["/app/main.js"])
+  assert_eq(views[1].changed_paths(), ["/app/main.js"])
+  let app = views[1].subtree("/app")
+  assert_eq(app.size(), 2)
+  inspect(
+    render_tree(app),
+    content=(
+      #|/
+      #|  app/ [L0]
+      #|    main.js (9 bytes) [L1]
+      #|
+    ),
+  )
+}
