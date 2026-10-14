@@ -10,5 +10,6 @@
 | [p3-dive-analysis.md](p3-dive-analysis.md) | P3 `dive_analysis`：体积分析与 efficiency score |
 | [p3-report-schema.md](p3-report-schema.md) | P3 JSON 报告 schema（供 P4 门禁消费） |
 | [p4-image-ci.md](p4-image-ci.md) | P4 `image_ci`：镜像体积门禁规则 DSL 与 CLI |
+| [p5-docker-cli.md](p5-docker-cli.md) | P5 `docker_cli`：CLI / Engine 双后端、探测降级、与 P2/P3 的接线 |
 | [docker-cli-survey.md](docker-cli-survey.md) | docker cli 封装的生态调研、范围取舍（结论已按 P5 issue #17 修订）、P2 的 tar 坑 |
 | [repo-layout.md](repo-layout.md) | 仓库结构、开发工作流、提交与发布约定 |

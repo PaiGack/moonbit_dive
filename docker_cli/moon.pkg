@@ -1,0 +1,24 @@
+import {
+  "PaiGack/dive/layer_tree",
+  "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/async/io",
+  "moonbitlang/async/socket",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/env",
+  "moonbitlang/async/process",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+  "moonbitlang/core/encoding/utf8",
+}
+
+warnings = "-test_unqualified_package"
+
+import {
+  "PaiGack/dive/layer_tree",
+  "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/env",
+  "PaiGack/dive/dive_analysis",
+  "moonbitlang/core/encoding/utf8",
+} for "test"

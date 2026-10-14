@@ -60,6 +60,21 @@ pub fn TarBuilder::add_header(
 }
 
 ///|
+/// 追加一条内容为二进制数据的常规文件 entry。
+///
+/// `add_file` 收 `String`，二进制层内容（可执行文件、字体）过不去；
+/// 镜象分析里「层本身也是 tar」这种嵌套场景需要字节入口。
+pub fn TarBuilder::add_raw_file(
+  self : TarBuilder,
+  path : String,
+  content : BytesView,
+  mode~ : Int32 = 0o644,
+) -> Unit {
+  self.add_header(path, content.length(), entry_type=b'0', mode~)
+  self.push_data_bytes(content)
+}
+
+///|
 /// 追加一条常规文件 entry。
 pub fn TarBuilder::add_file(
   self : TarBuilder,
@@ -123,6 +138,18 @@ pub fn TarBuilder::add_opaque(self : TarBuilder, directory : String) -> Unit {
     "\{directory}/\{opaque_marker}"
   }
   self.add_header(path, 0, entry_type=b'0')
+}
+
+///|
+fn TarBuilder::push_data_bytes(self : TarBuilder, bytes : BytesView) -> Unit {
+  for byte in bytes {
+    self.blocks.push(byte)
+  }
+  let padding = (tar_block_size - bytes.length() % tar_block_size) %
+    tar_block_size
+  for _ in 0..<padding {
+    self.blocks.push(b'\x00')
+  }
 }
 
 ///|

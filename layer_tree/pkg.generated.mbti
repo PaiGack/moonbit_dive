@@ -260,6 +260,7 @@ pub fn TarBuilder::add_file(Self, String, String, mode? : Int) -> Unit
 pub fn TarBuilder::add_hardlink(Self, String, String) -> Unit
 pub fn TarBuilder::add_header(Self, String, Int, entry_type? : Byte, mode? : Int, link_target? : String, mtime? : Int) -> Unit
 pub fn TarBuilder::add_opaque(Self, String) -> Unit
+pub fn TarBuilder::add_raw_file(Self, String, BytesView, mode? : Int) -> Unit
 pub fn TarBuilder::add_symlink(Self, String, String) -> Unit
 pub fn TarBuilder::add_whiteout(Self, String, String) -> Unit
 pub fn TarBuilder::finish(Self) -> Bytes

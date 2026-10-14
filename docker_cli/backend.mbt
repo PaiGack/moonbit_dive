@@ -1,0 +1,134 @@
+///|
+/// 一条「镜像名 → 本地归档」的通路。issue #17 只要两种实现：
+/// CLI 包装（`DockerCliSource`）与 Engine HTTP（`EngineSource`，见 engine.mbt）。
+pub(open) trait ImageSource {
+  async fn inspect(Self, String) -> ImageInfo raise DockerCliError
+  async fn save(Self, String) -> Bytes raise DockerCliError
+}
+
+///|
+/// 镜像元信息。字段刻意与 `docker inspect` 的输出对齐，
+/// 缺字段留空而不是报错——inspect 只是给用户看的旁证，不是分析输入。
+pub(all) struct ImageInfo {
+  /// 镜像 ID，形如 `sha256:...`
+  id : String
+  /// 镜像引用，形如 `nginx:latest`
+  reference : String
+  /// `amd64` / `arm64` ...
+  architecture : String
+  /// `linux` / `windows` ...
+  os : String
+  /// `docker save` 出来的归档字节数；inspect 拿不到时为 0
+  size : Int32
+  /// 镜像内所有层的累计大小（uncompressed）
+  virtual_size : Int32
+} derive(Eq, Debug)
+
+///|
+pub extend ImageInfo with Eq::{equal, not_equal}
+
+///|
+pub extend ImageInfo with @debug.Debug::{to_repr}
+
+///|
+/// 后端种类。值直接当可执行文件名用（Engine 除外）。
+pub(all) enum CliTool {
+  Docker
+  Podman
+  Nerdctl
+} derive(Eq, Debug)
+
+///|
+pub extend CliTool with Eq::{equal, not_equal}
+
+///|
+pub extend CliTool with @debug.Debug::{to_repr}
+
+///|
+impl Show for CliTool with fn to_string(self) {
+  match self {
+    Docker => "docker"
+    Podman => "podman"
+    Nerdctl => "nerdctl"
+  }
+}
+
+///|
+pub extend CliTool with Show::{to_string, output}
+
+///|
+/// 探测顺序里的一项。
+pub(all) enum BackendCandidate {
+  /// `DOCKER_HOST=unix://...` 显式指定的 socket
+  Socket(String)
+  /// CLI 可执行文件
+  Cli(CliTool)
+} derive(Eq, Debug)
+
+///|
+pub extend BackendCandidate with Eq::{equal, not_equal}
+
+///|
+pub extend BackendCandidate with @debug.Debug::{to_repr}
+
+///|
+impl Show for BackendCandidate with fn to_string(self) {
+  match self {
+    Socket(path) => "unix://\{path}"
+    Cli(tool) => "\{tool}"
+  }
+}
+
+///|
+pub extend BackendCandidate with Show::{to_string, output}
+
+///|
+/// 探测结果：选中了谁、为什么。
+///
+/// `reason` 是给人看的排查线索，issue #17 明确要求「探测结果要能打印出来」。
+pub(all) struct ProbedBackend {
+  /// 选中项在候选列表里的下标，-1 表示没选中
+  index : Int32
+  candidate : BackendCandidate?
+  /// 依次尝过哪些候选、各自为什么没成
+  attempts : Array[BackendAttempt]
+} derive(Eq, Debug)
+
+///|
+pub extend ProbedBackend with Eq::{equal, not_equal}
+
+///|
+pub extend ProbedBackend with @debug.Debug::{to_repr}
+
+///|
+/// 单个候选的探测记录。
+pub(all) struct BackendAttempt {
+  candidate : BackendCandidate
+  ok : Bool
+  reason : String
+} derive(Eq, Debug)
+
+///|
+pub extend BackendAttempt with Eq::{equal, not_equal}
+
+///|
+pub extend BackendAttempt with @debug.Debug::{to_repr}
+
+///|
+impl Show for BackendAttempt with fn to_string(self) {
+  let mark = if self.ok { "ok" } else { "no" }
+  "[\{mark}] \{Show::to_string(self.candidate)}: \{self.reason}"
+}
+
+///|
+pub extend BackendAttempt with Show::{to_string, output}
+
+///|
+/// 探测记录的人类可读输出，一行一个候选。
+pub fn describe_backends(probed : ProbedBackend) -> String {
+  let lines = []
+  for attempt in probed.attempts {
+    lines.push(Show::to_string(attempt))
+  }
+  lines.join("\n")
+}
