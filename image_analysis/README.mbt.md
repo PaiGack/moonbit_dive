@@ -46,6 +46,7 @@ test "README example" {
 | 逐层体积核算 | `analyze_layers`、`Analysis`、`LayerUsage` |
 | 路径体积账 | `Analysis::path_size`、`PathSize`、`Analysis::waste_ranking` |
 | efficiency score | `Analysis::efficiency`、`EfficiencyReport`、`efficiency_of_versions` |
+| 逐路径效率表 | `efficiency_view_rows`、`EfficiencyViewOptions`、`render_efficiency_view`、`efficiency_view_to_json` |
 | 目录热点 | `hotspots`、`Hotspot` |
 | 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string` |
 
@@ -68,6 +69,53 @@ test "README example" {
 分数与「浪费字节占比」**不是一回事**：前者按路径取 min，重复写同样大小的内容不扣分，
 后者是 `wasted / written`。报告里两个数字都给出来，别混用。
 
+## 逐路径效率表
+
+分数只告诉你「低了」，不告诉你「是哪条路径拖的」。要回答后者，
+用 `efficiency_view_rows` 从 `EfficiencyReport.paths` 里挑出那张表：
+
+```moonbit check
+///|
+test "README efficiency view example" {
+  // 一个路径被放大重写、另一个同大小重写：两者的「多写」量完全不同
+  let report = @image_analysis.efficiency_of_versions({
+    "/app/main.js": [10, 20],
+    "/app/util.js": [8, 8],
+  })
+  let view = @image_analysis.EfficiencyViewOptions::new(top=10)
+  let rows = @image_analysis.efficiency_view_rows(report, view)
+  // 先写 10 再写 20：多写的是后一份多出来的 20 字节
+  assert_eq(rows[0].path, "/app/main.js")
+  assert_eq(rows[0].cumulative_bytes, 30)
+  assert_eq(rows[0].min_bytes, 10)
+  assert_eq(rows[0].size, 20)
+  // 同大小重写：空间占了 2 份，但「多写的」仍然等于单份大小
+  assert_eq(rows[1].path, "/app/util.js")
+  assert_eq(rows[1].size, 8)
+}
+```
+
+口径就是 `cumulative - min`（多写了几份），与 efficiency 总分的分子分母同源：
+表里每行的 `cumulative_bytes` 加起来等于 `report.efficiency.cumulative_bytes`，
+所以随便取一行都能反推总分。排序沿用 `EfficiencyReport.paths` 的顺序
+（waste 降序、同分按 `path_order`）。
+
+**它不等于 `wasteful_paths` 的 `wasted_bytes`**：
+
+| 场景 | `wasted_bytes`（覆盖 + 删除的实际字节） | `size`（`cumulative - min`） |
+|---|---|---|
+| 10 字节写成 10 字节 | 10 | 10 |
+| 10 字节被 100 字节覆盖 | 10 | 90 |
+| 100 字节被 1 字节覆盖 | 100 | 1 |
+| 被 whiteout 删掉 | 原大小 | 原大小（min 取 0） |
+
+两个榜各自的读者不同：前者回答「空间实际丢在哪」，后者回答「是谁把分数拉下来的」。
+两套数字不混在一张表里，也不互相换算。
+
+`EfficiencyViewOptions` 的两个开关：`path` 做前缀过滤（`/app/` 与 `/app` 等价），
+`top` 限条数（负数不截断，CLI 的 `--top 0` 翻成它）。**先过滤再截断**——
+「只看 /app 下的前 20 条」是先挑再取，反过来会少出一半。
+
 ## 报告字段
 
 文本报告（`render_text_report`）逐行固定格式，可整份快照：
@@ -85,6 +133,19 @@ efficiency: 32.3% (10/31)
 
 JSON 报告（`report_to_json_string`）的结构见 [docs/p3-report-schema.md](../docs/p3-report-schema.md)，
 带 `schemaVersion` 字段，供 P4 的门禁判定消费。
+
+逐路径效率表（`render_efficiency_view` / `efficiency_view_to_json`）是**另一种视图**，
+不是整份报告的一部分，结构版本号也独立（`efficiency_view_schema_version`）：
+
+```
+efficiency: 32.1% (18/56)
+paths by extra writes (cumulative - min), scope: /, showing 3:
+  20 bytes  cumulative 30  min 10  x2  /app/main.js
+  10 bytes  cumulative 10  min 0  x2  /lib/a
+  8 bytes  cumulative 16  min 8  x2  /app/util.js
+```
+
+两张表（`wasteful paths` 与这张）在 CLI 里是互斥的开关，不会同时出现。
 
 ## 设计要点
 

@@ -105,6 +105,10 @@ moon run --target native cmd/main -- demo-image.tar --rules rules.json --format 
 
 # 从 stdin 读（用重定向，不用管道）
 moon run --target native cmd/main -- - --rules rules.json < demo-image.tar
+
+# 按效率看路径（不判定、不读 rules，与 --layer 一样是只读视图）
+moon run --target native cmd/main -- demo-image.tar --efficiency --top 20
+moon run --target native cmd/main -- demo-image.tar --efficiency --format json
 ```
 
 输入按序自动识别：docker save 产物（`manifest.json` + `<层>/layer.tar`）、

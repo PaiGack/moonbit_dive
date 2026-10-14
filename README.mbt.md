@@ -25,10 +25,21 @@ moon run --target native cmd/main -- demo-image.tar --rules rules.json --format 
 # 逐层浏览（dive 交互界面的只读替身）：看第 N 层应用完之后的文件树与这层 diff
 moon run --target native cmd/main -- demo-image.tar --layer 1
 moon run --target native cmd/main -- demo-image.tar --layer 1 --path /app
+
+# 按效率看路径：谁把 efficiency 分数拉下来的
+moon run --target native cmd/main -- demo-image.tar --efficiency
+moon run --target native cmd/main -- demo-image.tar --efficiency --top 20 --path /app
+moon run --target native cmd/main -- demo-image.tar --efficiency --format json
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
 `--path` 按目录下钻（沿途祖先目录保留作缩进参照）。没有 TUI，交互靠 shell 补。
+
+`--efficiency` 同样不做门禁，只出「按多写了几份排的路径表」
+（每行 `path` / `versions` / `cumulative` / `min` / `size`），
+`--top` 限条数（`0` 表示全都要），`--path` 当前缀过滤，`--format json` 可脚本化。
+这个表的 `size` 是 `cumulative - min`，**与报告里 `wasteful paths` 的 `wasted_bytes`
+不是同一个数**，口径差异见 [`image_analysis/README.mbt.md`](image_analysis/README.mbt.md)。
 
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
 docker save 产物、OCI Image Layout 目录、单层 tar。

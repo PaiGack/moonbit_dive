@@ -1,5 +1,5 @@
 ///|
-/// `dive` 的只读分析入口：`dive <image> [--rules rules.json] [--layer N] [--path P]`。
+/// `dive` 的只读分析入口：`dive <image> [--rules rules.json] [--layer N] [--path P] [--efficiency]`。
 ///
 /// 链路是 P1/P2 → P3 → P4 的串接：
 ///
@@ -8,8 +8,9 @@
 /// 3. `image_analysis` 出体积报告
 /// 4. `image_ci` 按规则判定，输出人类可读 / JSON / CI 注解
 ///
-/// `--layer` / `--path` 是 dive 交互界面的只读替身：没有 TUI，但能逐层看文件树、
-/// 按目录下钻。给了这两个参数就不做门禁判定，只打印那一层的树与 diff。
+/// `--layer` / `--path` / `--efficiency` 是 dive 交互界面的只读替身：没有 TUI，
+/// 但能逐层看文件树、按目录下钻、按「多写了几份」看哪条路径拖了效率。
+/// 给了 `--layer` 或 `--efficiency` 就不做门禁判定，只打印对应的那张表。
 ///
 /// 退出码由 `image_ci` 定义：`0` 全过、`1` 有规则未通过、
 /// `2` 规则非法或镜像读不出来。wasm 下拿不到退出码，详见 `exit.mbt`。
@@ -59,7 +60,18 @@ fn cli() -> @argparse.Command {
       @argparse.OptionArg(
         "path",
         short='p',
-        about="restrict the tree view to a subtree (default layer: last)",
+        about="restrict the tree/efficiency view to a subtree (default layer: last)",
+      ),
+      @argparse.OptionArg(
+        "top",
+        about="how many paths the efficiency view lists (0 = all, default: 10)",
+        default_values=["10"],
+      ),
+    ],
+    flags=[
+      @argparse.FlagArg(
+        "efficiency",
+        about="show per-path efficiency (cumulative - min), sorted desc, instead of the gate",
       ),
     ],
     positionals=[
@@ -79,6 +91,8 @@ struct Options {
   format : String
   layer : Int32?
   path : String?
+  efficiency : Bool
+  top : Int32
 } derive(Debug)
 
 ///|
@@ -96,6 +110,17 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     },
     layer: layer_of(matches),
     path: optional_value(matches, "path"),
+    efficiency: flag_of(matches, "efficiency"),
+    top: top_of(matches),
+  }
+}
+
+///|
+/// 取开关：没给算 `false`。
+fn flag_of(matches : @argparse.Matches, name : String) -> Bool {
+  match matches.flags.get(name) {
+    Some(value) => value
+    None => false
   }
 }
 
@@ -124,17 +149,29 @@ fn optional_value(matches : @argparse.Matches, name : String) -> String? {
 fn layer_of(matches : @argparse.Matches) -> Int32? {
   match optional_value(matches, "layer") {
     None => None
-    Some(text) =>
-      match parse_non_negative_int(text) {
-        Some(value) => Some(value)
-        None => {
-          eprintln(
-            "invalid --layer: expect a non-negative integer, got \{text}",
-          )
-          exit_process(@image_ci.exit_config_error)
-          None
-        }
-      }
+    Some(text) => Some(non_negative_int_or_exit(text, "--layer"))
+  }
+}
+
+///|
+/// 解析 `--top`：缺省 10；`0` 表示不截断。
+fn top_of(matches : @argparse.Matches) -> Int32 {
+  match optional_value(matches, "top") {
+    None => 10
+    Some(text) => non_negative_int_or_exit(text, "--top")
+  }
+}
+
+///|
+/// 非负整数，否则报错到 stderr 并按 exit 2 退出。
+fn non_negative_int_or_exit(text : String, option : String) -> Int32 {
+  match parse_non_negative_int(text) {
+    Some(value) => value
+    None => {
+      eprintln("invalid \{option}: expect a non-negative integer, got \{text}")
+      exit_process(@image_ci.exit_config_error)
+      0
+    }
   }
 }
 
@@ -187,6 +224,9 @@ fn run(options : Options) -> Result[Int32, CommandError] noraise {
       err => return Err(CommandError::Image(err.to_string()))
     }
     layers.push(raw)
+  }
+  if options.efficiency {
+    return run_efficiency_view(options, layers)
   }
   if options.layer is Some(_) || options.path is Some(_) {
     return run_layer_view(options, layers)
@@ -268,6 +308,34 @@ fn layer_view_to_json(view : @layer_tree.LayerView, options : Options) -> Json {
       "removed": Json(view.diff.removed.map(fn(path) { Json(path) })),
     }),
   })
+}
+
+///|
+/// `--efficiency` 分支：只出「按多写空间排的路径表」，不做门禁。
+///
+/// 数字全部来自 `EfficiencyReport.paths`（即 efficiency score 的同一批原料），
+/// 这里只负责渲染与截断。与 `--layer` 一样返回 `exit_ok`：
+/// 这是一张观察用的表，不是判定。
+fn run_efficiency_view(
+  options : Options,
+  layers : Array[BytesView],
+) -> Result[Int32, CommandError] noraise {
+  let tree = @layer_tree.FileTree::new()
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
+    err => return Err(CommandError::Analysis(err.to_string()))
+  }
+  let report = analysis.efficiency()
+  let view = @image_analysis.EfficiencyViewOptions::new(
+    path=options.path,
+    // `--top 0` 是「全都要」，内部用负数表示不截断
+    top=if options.top == 0 { -1 } else { options.top },
+  )
+  match options.format {
+    "json" =>
+      println(@image_analysis.efficiency_view_to_json_string(report, view))
+    _ => println(@image_analysis.render_efficiency_view(report, view))
+  }
+  Ok(@image_ci.exit_ok)
 }
 
 ///|
