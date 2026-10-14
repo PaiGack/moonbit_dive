@@ -16,7 +16,10 @@ docker_cli/             # P5（独立包，不被 P1–P4 依赖）
 docs/                   # 设计文档与拆分规划
 ```
 
-`cmd/main/` 目前只是 `moon new` 生成的占位入口，等 P1/P2 落地后再接线，不作为可交付功能。
+`cmd/main/` 是只读分析链路的入口，已接上 P1→P2→P3→P4：
+`dive <image.tar|layout-dir|-> [--rules rules.json] [--format text|json|annotations]`。
+它只做接线，判定逻辑都在 `image_ci` 里。
+
 P5 `docker_cli` 已按同样约定落地（`moon.pkg` + README + 测试），见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)。
 它是唯一带平台约束的包：进程与 unix socket 只在 native / wasm 后端可用，
 `.cnb.yml` / 本地跑测试时用 `--target wasm`。
