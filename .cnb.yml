@@ -1,7 +1,7 @@
 # CNB 流水线按 GitHub Actions（.github/workflows/ci.yml）的 job 逐步对齐。
 # 两边都只负责「装工具链 + 调 scripts/ci.sh」，步骤内容不在两处重复，
 # 所以不会出现「GitHub 绿、CNB 红」这种漂移。
-.ftp-ci-env: &ftp-ci-env
+.ci-env: &ci-env
   docker:
     build:
       dockerfile: .ide/Dockerfile
@@ -15,13 +15,13 @@
 
 main:
   push:
-    - <<: *ftp-ci-env
+    - <<: *ci-env
       services:
         - docker
       stages:
         - *ci
   pull_request:
-    - <<: *ftp-ci-env
+    - <<: *ci-env
       services:
         - docker
       stages:
