@@ -1,0 +1,169 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "PaiGack/dive/dive_analysis"
+
+import {
+  "PaiGack/dive/layer_tree",
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn analyze_layers(@layer_tree.FileTree, Array[BytesView], media_types? : Array[String]) -> Analysis raise @layer_tree.LayerError
+
+pub fn build_report(Analysis, @layer_tree.FileTree) -> Report
+
+pub fn efficiency_of_versions(Map[String, Array[Int]]) -> EfficiencyReport
+
+pub fn file_sizes(@layer_tree.FileTree) -> Map[String, Int]
+
+pub fn hotspots(@layer_tree.FileTree, depth? : Int, limit? : Int) -> Array[Hotspot]
+
+pub let json_report_schema_version : Int
+
+pub fn percent(Double) -> String
+
+pub fn render_text_report(Report) -> String
+
+pub fn report_to_json(Report) -> Json
+
+pub fn report_to_json_string(Report) -> String
+
+pub fn wasted_ratio(Report) -> Double
+
+// Errors
+
+// Types and methods
+pub(all) struct Analysis {
+  mut layers : Int
+  sizes : Map[String, PathSize]
+  usages : Array[LayerUsage]
+  mut final_file_bytes : Int
+  mut final_paths : Int
+  mut overwritten_wasted : Int
+  mut deleted_wasted : Int
+  mut versions : VersionTable?
+} derive(Eq, @debug.Debug)
+pub fn Analysis::efficiency(Self) -> EfficiencyReport
+pub fn Analysis::equal(Self, Self) -> Bool
+pub fn Analysis::not_equal(Self, Self) -> Bool
+pub fn Analysis::output(Self, &Logger) -> Unit
+pub fn Analysis::path_size(Self, String) -> PathSize?
+pub fn Analysis::to_repr(Self) -> @debug.Repr
+pub fn Analysis::to_string(Self) -> String
+pub fn Analysis::total_bytes(Self) -> Int
+pub fn Analysis::waste_ranking(Self, limit? : Int) -> Array[PathSize]
+pub fn Analysis::wasted_bytes(Self) -> Int
+pub impl Show for Analysis
+
+pub(all) struct Efficiency {
+  min_bytes : Int
+  cumulative_bytes : Int
+} derive(Eq, @debug.Debug)
+pub fn Efficiency::equal(Self, Self) -> Bool
+pub fn Efficiency::not_equal(Self, Self) -> Bool
+pub fn Efficiency::output(Self, &Logger) -> Unit
+pub fn Efficiency::score(Self) -> Double
+pub fn Efficiency::to_repr(Self) -> @debug.Repr
+pub fn Efficiency::to_string(Self) -> String
+pub fn Efficiency::wasted_ratio(Self) -> Double
+pub impl Show for Efficiency
+
+pub(all) struct EfficiencyReport {
+  efficiency : Efficiency
+  paths : Array[PathEfficiency]
+} derive(Eq, @debug.Debug)
+pub fn EfficiencyReport::equal(Self, Self) -> Bool
+pub fn EfficiencyReport::not_equal(Self, Self) -> Bool
+pub fn EfficiencyReport::output(Self, &Logger) -> Unit
+pub fn EfficiencyReport::to_repr(Self) -> @debug.Repr
+pub fn EfficiencyReport::to_string(Self) -> String
+pub impl Show for EfficiencyReport
+
+pub(all) struct Hotspot {
+  path : String
+  cumulative_bytes : Int
+  files : Int
+  mut wasted_bytes : Int
+} derive(Eq, @debug.Debug)
+pub fn Hotspot::equal(Self, Self) -> Bool
+pub fn Hotspot::not_equal(Self, Self) -> Bool
+pub fn Hotspot::output(Self, &Logger) -> Unit
+pub fn Hotspot::to_repr(Self) -> @debug.Repr
+pub fn Hotspot::to_string(Self) -> String
+pub impl Show for Hotspot
+
+pub(all) struct LayerUsage {
+  layer : Int
+  mut added_paths : Int
+  mut overwritten_paths : Int
+  mut written_bytes : Int
+  mut wasted_bytes : Int
+  mut erased_bytes : Int
+  mut deleted_paths : Int
+} derive(Eq, @debug.Debug)
+pub fn LayerUsage::equal(Self, Self) -> Bool
+pub fn LayerUsage::new(Int) -> Self
+pub fn LayerUsage::not_equal(Self, Self) -> Bool
+pub fn LayerUsage::output(Self, &Logger) -> Unit
+pub fn LayerUsage::to_repr(Self) -> @debug.Repr
+pub fn LayerUsage::to_string(Self) -> String
+pub impl Show for LayerUsage
+
+pub(all) struct PathEfficiency {
+  path : String
+  cumulative_bytes : Int
+  min_bytes : Int
+  versions : Int
+} derive(Eq, @debug.Debug)
+pub fn PathEfficiency::equal(Self, Self) -> Bool
+pub fn PathEfficiency::not_equal(Self, Self) -> Bool
+pub fn PathEfficiency::output(Self, &Logger) -> Unit
+pub fn PathEfficiency::to_repr(Self) -> @debug.Repr
+pub fn PathEfficiency::to_string(Self) -> String
+pub impl Show for PathEfficiency
+
+pub(all) struct PathSize {
+  path : String
+  mut size : Int
+  mut wasted_bytes : Int
+  mut writes : Int
+  mut deleted : Bool
+  mut current_layer : Int?
+} derive(Eq, @debug.Debug)
+pub fn PathSize::equal(Self, Self) -> Bool
+pub fn PathSize::new(String) -> Self
+pub fn PathSize::not_equal(Self, Self) -> Bool
+pub fn PathSize::output(Self, &Logger) -> Unit
+pub fn PathSize::to_repr(Self) -> @debug.Repr
+pub fn PathSize::to_string(Self) -> String
+pub impl Show for PathSize
+
+pub(all) struct Report {
+  layers : Int
+  final_file_bytes : Int
+  final_paths : Int
+  total_bytes : Int
+  overwritten_wasted : Int
+  deleted_wasted : Int
+  efficiency : Efficiency
+  usages : Array[LayerUsage]
+  wasteful_paths : Array[PathSize]
+  hotspots : Array[Hotspot]
+} derive(Eq, @debug.Debug)
+pub fn Report::equal(Self, Self) -> Bool
+pub fn Report::not_equal(Self, Self) -> Bool
+pub fn Report::output(Self, &Logger) -> Unit
+pub fn Report::to_repr(Self) -> @debug.Repr
+pub fn Report::to_string(Self) -> String
+pub impl Show for Report
+
+pub(all) struct VersionTable {
+  versions : Map[String, Array[Int]]
+} derive(Eq, @debug.Debug)
+pub fn VersionTable::equal(Self, Self) -> Bool
+pub fn VersionTable::new() -> Self
+pub fn VersionTable::not_equal(Self, Self) -> Bool
+pub fn VersionTable::to_repr(Self) -> @debug.Repr
+
+// Type aliases
+
+// Traits
