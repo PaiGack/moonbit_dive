@@ -28,13 +28,20 @@
 
 ### CLI 接线
 
-- `cmd/main` 聚合 P1→P2→P3→P4：`dive <image.tar> --rules rules.json`
+- `cmd/main` 聚合 P1→P2→P3→P4：`dive <image> --rules rules.json`
+- 输入按序自动识别三种格式：
+  - `docker save` 产物（docker-archive：`manifest.json` + `<hash>/layer.tar`）—— **必须打通**
+  - OCI Image Layout 目录（`index.json` + `oci-layout`）
+  - stdin 流（`dive -`）
 - 只读分析链路先打通，不要求交互界面
 
 ## 非目标
 
 - 不做交互式 TUI（dive 的 gocui 部分不复刻）
 - 不做 registry 拉取
+- 不做 Docker Engine 客户端（不连 `/var/run/docker.sock`）
+
+接口边界的调研与取舍见 [docker-cli-survey.md](docker-cli-survey.md)。
 
 ## 验收
 
