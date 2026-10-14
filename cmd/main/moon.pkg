@@ -1,5 +1,5 @@
 // import {
-//   "username/moonbit_dive" @lib,
+//   "PaiGack/dive" @lib,
 // }
 
 pkgtype(kind: "executable")

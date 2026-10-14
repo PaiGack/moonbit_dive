@@ -1,8 +1,10 @@
 # 文档索引
 
+本目录存放 `dive` 的设计与拆分规划文档。实现进度以看板 issue 为准。
+
 | 文档 | 内容 |
 |---|---|
-| [split-plan.md](split-plan.md) | dive 四个拆分需求的总体规划、依赖顺序、验收口径 |
+| [split-plan.md](split-plan.md) | 四个拆分包的总体规划、依赖顺序、生态去重与验收口径 |
 | [p1-oci-spec.md](p1-oci-spec.md) | P1 `oci_spec`：OCI image-spec 类型层 |
 | [p2-layer-tree.md](p2-layer-tree.md) | P2 `layer_tree`：tar 层叠文件树 + whiteout diff |
 | [p3-dive-analysis.md](p3-dive-analysis.md) | P3 `dive_analysis`：体积分析与 efficiency score |

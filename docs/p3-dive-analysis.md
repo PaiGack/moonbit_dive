@@ -2,45 +2,43 @@
 
 ## 目标
 
-回答 dive 的核心问题：「这个镜像的体积浪费在哪？效率多少分？」
+在 P2 的文件树之上做体积分析：找出跨层重复写入、被删除又被浪费的空间，
+给出每个路径的 cumulative size，并算一个可比较的 efficiency 分数。
 
 ## 范围
 
-### 统计维度
+### 统计
 
-- **跨层重复文件**：同一路径在多处被写入，只保留最后一次，其余记为浪费
-- **被删文件**：某层写入、后续层 whiteout 删除，体积计为浪费
-- **cumulative size**：按层累计，定位「从第几层开始体积暴涨」
-- **文件类型分布**：按扩展名/顶层目录聚合，找出体积大头
+- 每层新增/修改/删除的字节数与文件数
+- 跨层重复文件：同一路径在多层被写、只有最后一次有效
+- 被删文件浪费：whiteout 删掉的内容仍占 layer 体积
+- cumulative size：某目录子树的总占用，用于热点排序
 
 ### efficiency score
 
-复刻 dive 的加权公式：`efficiency = (sum(fileSizes) - wastedBytes) / sum(fileSizes)`，
-其中 wastedBytes 含重复文件与被删文件。给出百分比与分级（如 >=0.95 为优秀）。
+- 参考 dive 的加权公式（`filetree/efficiency.go`）：Score = 有效字节 / 总字节，
+  其中「有效」= 最后一层仍存在的文件字节
+- 分数取值与公式口径写明在 README，避免与 dive 原版产生歧义
 
 ### 报告输出
 
-- JSON：机器可读，含每层文件数、字节数、重复清单、删除清单
-- HTML：单文件自包含报告，一张层叠条形图 + top-N 浪费文件表（不引入前端依赖，内联 SVG/CSS）
-- 终端文本：`dive` 风格的人类可读摘要
-
-## 依赖
-
-- P2 `layer_tree`（提供树与 diff）
-- P1 `oci_spec`（提供 descriptor 的 size/digest，用于交叉校验）
+- 稳定可快照的文本报告（层列表 + 体积 + 浪费）
+- JSON 报告：结构化字段，供 P4 的门禁判定消费
+- 可选 HTML 报告（若时间不够可后置）
 
 ## 非目标
 
-- 不做交互式 TUI（那是壳，且生态有 `mizchi/tui`；先把库做扎实）
+- 不做门禁阈值判定（P4 的职责）
+- 不做镜像拉取（只吃本地 tar / 已解析的层）
 
 ## 验收
 
-- [ ] 对一个已知浪费的镜像（可构造：故意多写大文件再删），报告出的 wastedBytes 与手工核算一致
-- [ ] efficiency 分数对「无浪费镜像」为 1.0（边界测试）
-- [ ] JSON schema 稳定，有快照测试
-- [ ] HTML 报告可在浏览器直接打开，无外链资源
+- [ ] 对少量 fixture 镜像，手工核算的字节数与实现一致
+- [ ] efficiency score 在「无浪费」「层层覆盖」「删掉大文件」三种极端用例下符合预期
+- [ ] JSON 报告字段有 schema 文档
+- [ ] 文本报告快照稳定
 - [ ] `moon check` / `moon test` 全绿
 
 ## 参考
 
-- dive `dive/filetree/efficiency.go`、`dive/image/analysis.go`
+- dive 的 `dive/filetree/efficiency.go`、`dive/image/analysis.go`（MIT）
