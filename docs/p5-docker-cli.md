@@ -104,6 +104,27 @@ pub(open) trait ImageSource {
   `supported_targets = "-all+native"`；`--from-image` 的端到端覆盖见
   `cmd/main/from_image_wbtest.mbt`（fake docker 走 PATH 探测，不依赖真实 daemon）
 
+## 排查：「跑起来没有任何输出」
+
+`--from-image` 下有两处会表现成「卡住、什么都没打」，成因完全不同，
+别混着猜（issue #42 来回了几轮才拆开）：
+
+1. **取归档那一步超时** —— 转发进来的 socket `_ping` 答得好、`inspect`
+   也答，但真去 `GET /images/{name}/get` 读 body 时对端没了。
+   有 30s 默认超时兜底，到点报 `Cancelled`（`<socket> was cancelled`）。
+   想更早看到就 `--timeout <秒>` 调小。
+   报错只提**第一条**被选中的后端，末尾那条够不着的兜底项不再顶上来；
+   每条后端分别怎么了跟着列在后面（也见 `--verbose` 的 `[ok]`/`[no]`）。
+
+2. **归档解出来了，卡在分析** —— 这时候 `--verbose` 的四行头**已经打完**，
+   说明取归档成功，后面的 gzip 解压 / 叠树还没完。
+   `layer_tree` 自写的 inflate 曾在重叠回拷（`distance < length`）上退化成
+   O(n²)：真实镜像 80MB 的层几十秒都出不来，看着就是挂死。
+   已修为 O(n)（`copy_from_window` 用 `Buffer::view()` 而不是 `to_bytes()`）。
+
+分界线就是那四行 `[docker]` 头：**打完了 = 取归档已经成功**，
+问题在解压/分析；**没打完 = 还卡在取归档**，看第一条后端的错。
+
 ## 非目标
 
 - `docker build` 封装
@@ -129,7 +150,7 @@ pub(open) trait ImageSource {
 | `--from-image`（默认）本地缺失时先拉再取，已有则不动 | ✅ | `pipeline_test.mbt` + `cmd/main/from_image_wbtest.mbt` |
 | `--no-pull` 绝不在本地缺镜像时拉取（纯离线） | ✅ | `cmd/main/from_image_wbtest.mbt` |
 | socket 通 `_ping` 但取不到归档时换下一条候选；「没有镜像」与「后端坏了」分开 | ✅ | `transport_test.mbt` + `cli_source_test.mbt` |
-| `moon check` / `moon test` 全绿 | ✅ | 317 个用例（native），见 `scripts/ci.sh` |
+| `moon check` / `moon test` 全绿 | ✅ | 327 个用例（native），见 `scripts/ci.sh` |
 
 ## 遗留
 
