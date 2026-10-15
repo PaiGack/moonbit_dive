@@ -31,17 +31,23 @@ pub(all) struct Frame {
 ///
 /// 用独立结构而不是直接塞 `image_analysis::Analysis`：渲染层不必知道
 /// `image_analysis` 的内部布局，换数据源（逐层视图 / 效率报告）只要填这几个字段。
-/// 注意 `cumulative_bytes` 是「各版本大小之和」，与报告里的 `wasted_bytes`
-/// 不是同一个口径——这里只做展示，换算由数据源侧完成。
+/// `DetailEntry` 里的 `cumulative` 是「各版本大小之和」，与报告里的
+/// `wasted_bytes`（`cumulative - min`）不是同一个口径——这里只做展示，换算由数据源侧完成。
 pub(all) struct DetailSource {
   /// 路径 → 写入记录
   entries : Map[String, DetailEntry]
-  /// 被浪费的字节合计
+  /// 被浪费的字节合计，口径是 `Σ (cumulative - min)`（dive 的 `inefficientBytes`）
   wasted : Int32
   /// 镜像内所有文件大小合计
   total : Int32
   /// efficiency 分数（0.0–1.0）
   efficiency : Double
+  /// 多写了几份最多的路径，最多 10 条：`(path, versions, size)`
+  ///
+  /// 与 dive 详情面板下方那张 inefficient files 表同一批数字，
+  /// 直接来自 `image_analysis::efficiency_view_rows`（精确的 `cumulative - min`），
+  /// 不是「最终大小 × 版本数」那种近似。
+  top_wasteful : Array[(String, Int32, Int32)]
 } derive(Debug)
 
 ///|
@@ -53,6 +59,13 @@ pub(all) struct DetailEntry {
   cumulative : Int32
   /// 只留一份时需要的字节
   min_bytes : Int32
+  /// 多写了几份：`cumulative - min`，与效率总分同一个口径的精确值
+  ///
+  /// 早先只有 `cumulative - min_bytes` 这个算式，且 `cumulative` 是
+  /// 「最终大小 × 版本数」的**近似**（tar 层里没留历史大小），
+  /// 于是算出来的 overhead 也只是近似。现在 `cumulative` 与 `min_bytes`
+  /// 都来自逐路径版本表，`size` 因此是精确值（issue #72）。
+  size : Int32
 } derive(Eq, Debug)
 
 ///|
@@ -262,6 +275,9 @@ fn draw_detail_pane(screen : Screen, layout : Layout, frame : Frame) -> Unit {
 
 ///|
 /// 详情面板的文本行。
+///
+/// 面板分两段：上面是选中路径的账，下面是整镜像的 inefficient files 表
+/// （dive 面板那三行概览 + 一张表的布局）。
 fn detail_lines(source : DetailSource, path : String) -> Array[String] {
   let lines = [
     truncate_keep_tail(path, 200),
@@ -276,9 +292,8 @@ fn detail_lines(source : DetailSource, path : String) -> Array[String] {
       lines.push("versions    \{entry.versions}")
       lines.push("cumulative  \{human_size(entry.cumulative)}")
       lines.push("min         \{human_size(entry.min_bytes)}")
-      let overhead = entry.cumulative - entry.min_bytes
-      if overhead > 0 {
-        lines.push("overhead    \{human_size(overhead)}")
+      if entry.size > 0 {
+        lines.push("overhead    \{human_size(entry.size)}")
       } else {
         lines.push("overhead    -")
       }
@@ -286,7 +301,52 @@ fn detail_lines(source : DetailSource, path : String) -> Array[String] {
     // 目录本身不占体积（数据源只记文件），这里说明一句，别让读的人以为是缺数据
     None => lines.push("(no size record for this path)")
   }
+  lines.push("")
+  for line in ineffective_rows(source) {
+    lines.push(line)
+  }
   lines
+}
+
+///|
+/// inefficient files 表的文本行（`count / total space / path`，dive 的列名）。
+///
+/// 表头与行都按列补齐：`truncate_to_width` 只在渲染时截断，
+/// 这里补齐宽度是为了让「值 + 路径」两栏在终端里对齐。
+fn ineffective_rows(source : DetailSource) -> Array[String] {
+  let header = "count  total space  path"
+  let rows = [header]
+  if source.top_wasteful.is_empty() {
+    rows.push("(none)")
+    return rows
+  }
+  // 计数与体积各自右对齐到最宽的一行，路径跟着走
+  let mut count_width = 5
+  let mut space_width = 11
+  for _, (_, _, size) in source.top_wasteful {
+    let space = human_size(size)
+    count_width = max(count_width, 2)
+    space_width = max(space_width, display_width(space))
+  }
+  for _, (path, versions, size) in source.top_wasteful {
+    let count = "x\{versions}"
+    let space = human_size(size)
+    rows.push(
+      "\{pad_left_width(count, count_width)}  \{pad_left_width(space, space_width)}  \{truncate_keep_tail(path, 120)}",
+    )
+  }
+  rows
+}
+
+///|
+/// 按显示宽度左补空格到 `width` 列（数字列右对齐用）。
+fn pad_left_width(text : String, width : Int32) -> String {
+  let padding = width - display_width(text)
+  if padding <= 0 {
+    text
+  } else {
+    "\{spaces(padding)}\{text}"
+  }
 }
 
 ///|

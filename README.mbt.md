@@ -56,6 +56,11 @@ moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 这个表的 `size` 是 `cumulative - min`，**与报告里 `wasteful paths` 的 `wasted_bytes`
 不是同一个数**，口径差异见 [`image_analysis/README.mbt.md`](image_analysis/README.mbt.md)。
 
+报告与 TUI 面板上叫 `wasted` 的那个数取的是前者（`cumulative - min`，dive 的
+`inefficientBytes`），所以它与 `wasted.overwritten + deleted` 对不上；JSON 里
+两个都给（`image.wastedBytes` 与 `image.wasted.{overwritten,deleted}`），
+外加 dive 的 `image.userWastedPercent`（分母剔掉 base image）。
+
 `--from-image` 把位置参数当镜像名：本地缺这个镜像时**默认先拉一次**再取，
 对齐原版 dive（Go）——那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就
 `docker pull` 一次。要完全离线（绝不发起网络请求、`inspect` 说没有就直接 `save`）
@@ -77,6 +82,10 @@ docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image
 `[`/`]` 换层，`s` 切排序（按名字 ↔ 按体积），`Tab` 在树与详情之间切焦点，
 `?` 开关帮助浮层，`q`/`Esc` 退出。
 鼠标同样可用：点击选行、滚轮滚鼠标停着的那块面板、右键切目录展开态。
+详情面板跟着光标走：上面是选中路径的账（efficiency / wasted / total +
+versions / cumulative / min / overhead），下面是整镜像的 inefficient files 表
+（`count / total space / path`，与 `--efficiency` 同一批数字）。
+
 它进 alternate screen（退出还原终端，异常退出也还原），只支持 native，
 且需要一个真终端（stdin/stdout 都不是 tty 时退 exit 2）。
 详见 [`tui/README.mbt.md`](tui/README.mbt.md) 与 [`docs/p6-tui.md`](docs/p6-tui.md)。

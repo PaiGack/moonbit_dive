@@ -49,6 +49,7 @@ test "README example" {
 | 逐路径效率表 | `efficiency_view_rows`、`EfficiencyViewOptions`、`render_efficiency_view`、`efficiency_view_to_json` |
 | 目录热点 | `hotspots`、`Hotspot` |
 | 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string`、`report_to_html` |
+| dive 的三个出口 | `wasted_bytes`、`Analysis::user_bytes`、`user_wasted_percent` |
 
 ## efficiency score 口径
 
@@ -68,6 +69,27 @@ test "README example" {
 
 分数与「浪费字节占比」**不是一回事**：前者按路径取 min，重复写同样大小的内容不扣分，
 后者是 `wasted / written`。报告里两个数字都给出来，别混用。
+
+## 三个出口（对齐 dive）
+
+同一批数据 dive 给了三个出口，本仓一一对上：
+
+| dive | 本仓 | 口径 |
+|---|---|---|
+| `efficiencyScore` | `Efficiency::score()` | `Σ min / Σ cumulative` |
+| `inefficientBytes` / 面板 `Potential wasted space` | `wasted_bytes(report)` | `Σ (cumulative - min)`，= `cumulativeBytes - minBytes` |
+| `userWastedPercent` | `user_wasted_percent(report)` | `wasted_bytes / report.user_bytes`（分母不含第 0 层） |
+
+**`wasted_bytes` 不是「真实丢掉的字节」**（那是 `overwritten_wasted + deleted_wasted`）。
+10 字节被 100 字节覆盖时前者 90、后者 10：前者是「多占了几份」，
+后者是「哪一份真的丢了」。文本报告与 HTML 两个数都出，字段名各自写明；
+`Report::inefficient_paths` 就是面板与 HTML `<h2>inefficient files</h2>` 那张表的行
+（与 `--efficiency` 视图同源，精确值 `cumulative - min`降序）。
+
+`Analysis::user_bytes()` 累加第 1 层起每层的净写入（`written - wasted`，删除的账
+记在**删除发生时**所在层的 `wasted_bytes` 里，所以不用再减 `erased`）。
+层数 ≤ 1 时没有用户层，`user_wasted_percent` 定义为 `0`（不返回 NaN / Inf）。
+base image 大、用户只盖几层时它会超过 100%，dive 原版同样如此。
 
 ## 逐路径效率表
 
@@ -100,9 +122,9 @@ test "README efficiency view example" {
 所以随便取一行都能反推总分。排序沿用 `EfficiencyReport.paths` 的顺序
 （waste 降序、同分按 `path_order`）。
 
-**它不等于 `wasteful_paths` 的 `wasted_bytes`**：
+**它不等于 `wasteful_paths[].wastedBytes`**（真实丢掉的字节）：
 
-| 场景 | `wasted_bytes`（覆盖 + 删除的实际字节） | `size`（`cumulative - min`） |
+| 场景 | `wastefulPaths[].wastedBytes` | `size`（`cumulative - min`） |
 |---|---|---|
 | 10 字节写成 10 字节 | 10 | 10 |
 | 10 字节被 100 字节覆盖 | 10 | 90 |
@@ -110,7 +132,9 @@ test "README efficiency view example" {
 | 被 whiteout 删掉 | 原大小 | 原大小（min 取 0） |
 
 两个榜各自的读者不同：前者回答「空间实际丢在哪」，后者回答「是谁把分数拉下来的」。
-两套数字不混在一张表里，也不互相换算。
+两套数字不混在一张表里，也不互相换算——报表面板与 HTML 上叫 `wasted` 的那张卡
+取的是**后者**（dive 的口径），所以它和同一页里 `wasted.overwritten + deleted` 对不上，
+这是有意的。
 
 `EfficiencyViewOptions` 的两个开关：`path` 做前缀过滤（`/app/` 与 `/app` 等价），
 `top` 限条数（负数不截断，CLI 的 `--top 0` 翻成它）。**先过滤再截断**——
@@ -127,7 +151,12 @@ layers: 3
 image:
   current: 16 bytes in 2 paths
   written: 31 bytes
-  wasted: 15 bytes (48.4%)
+  user written: 1 bytes (all layers but the base)
+  wasted: 21 bytes (67.7%)
+    by path (cumulative - min): 21 bytes
+    overwritten: 10 bytes
+    deleted: 5 bytes
+  user wasted: 2100% of 1 bytes
 efficiency: 32.3% (10/31)
 ```
 
@@ -148,7 +177,8 @@ paths by extra writes (cumulative - min), scope: /, showing 3:
 两张表（`wasteful paths` 与这张）在 CLI 里是互斥的开关，不会同时出现。
 
 HTML 报告（`report_to_html`）是同一份 `Report` 的第三个渲染后端：单文件、无外部依赖、
-内联样式，顶部概览卡 + 逐层表 + efficiency 进度条 + 浪费 / 热点两张表。所有路径名都过
+内联样式，顶部概览卡（layers / current / efficiency / wasted / user wasted）+
+efficiency 进度条 + inefficient files / 逐层 / 浪费 / 热点四张表。所有路径名都过
 `html_escape`，`<` `&` 引号不会撑破结构。CLI 用法：
 
 ```bash

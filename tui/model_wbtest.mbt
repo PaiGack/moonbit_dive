@@ -14,13 +14,55 @@ test "detail_source_of maps analysis into per-path entries" {
   }
   let (analysis, report) = analysis_of_decompressed(decompressed).unwrap()
   let source = detail_source_of(analysis, report)
-  // `/app/main` 被写了两次
+  // `/app/main` 被写了两次：4 字节 → 8 字节，精确值来自逐路径版本表
+  // （不是「最终大小 × 版本数」那种近似）
   let entry = source.entries.get("/app/main").unwrap()
   assert_eq(entry.versions, 2)
-  // 累计 = 最终大小 × 版本数（口径见 model.mbt 注释），最小 = 最终大小
-  assert_eq(entry.min_bytes, 8)
-  assert_eq(entry.cumulative, 16)
+  assert_eq(entry.min_bytes, 4)
+  assert_eq(entry.cumulative, 12)
+  assert_eq(entry.size, 8)
   assert_true(source.total > 0)
+}
+
+///|
+/// 面板上下两个数必须自洽（issue #72 的验收）：
+///
+/// - 概览行的 `wasted` = `Σ` 表里每行的 `size`（都是 `cumulative - min` 口径）
+/// - 表里的行数与排序跟 `report.inefficient_paths` 一一对应：
+///   面板与 `--efficiency` 视图看的是同一批数字，不各自算一套
+test "detail source waste total equals the sum of the inefficient rows" {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("app"),
+    @layer_tree.TarEntrySpec::File("app/main", "xxxx"),
+    @layer_tree.TarEntrySpec::File("app/util", "yy"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("app/main", "yyyyyyyy"),
+  ])
+  let layers : Array[BytesView] = [l0, l1]
+  let decompressed = @layer_tree.decompress_layers(layers) catch {
+    err => fail(err.to_string())
+  }
+  let (analysis, report) = analysis_of_decompressed(decompressed).unwrap()
+  let source = detail_source_of(analysis, report)
+  let mut sum = 0
+  for _, (_, _, size) in source.top_wasteful {
+    sum = sum + size
+  }
+  assert_eq(source.wasted, sum)
+  // 与报告里那张表逐行同源（同一批 path / size）
+  assert_eq(source.top_wasteful.length(), report.inefficient_paths.length())
+  for index, row in report.inefficient_paths {
+    let (path, versions, size) = source.top_wasteful[index]
+    assert_eq(path, row.path)
+    assert_eq(versions, row.versions)
+    assert_eq(size, row.cumulative_bytes - row.min_bytes)
+  }
+  // 面板的 `wasted` 是 dive 口径，不是「真实丢掉的字节」
+  assert_eq(
+    source.wasted,
+    report.efficiency.cumulative_bytes - report.efficiency.min_bytes,
+  )
 }
 
 ///|

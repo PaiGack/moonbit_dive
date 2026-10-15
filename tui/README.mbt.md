@@ -118,6 +118,34 @@ moon run --target native cmd/main -- demo-image.tar --tui --layer 0
 光标行不上色（位置已经由行首的 `>` / `:` 标出）。颜色含义见状态行右侧的图例。
 被删掉的路径不在这一层的树上，没有行给它红字——删除这件事看详情面板与只读报告。
 
+## 详情面板
+
+右栏跟着光标走，分两段（对齐 dive 的 `view/image_details.go`）：
+
+```
+/etc/hosts
+                     ← 选中路径的账（没写过就是 `(no size record for this path)`）
+efficiency  91%
+wasted      12 MB
+total       142 MB
+versions    2
+cumulative  1.2 KB
+min         10 B
+overhead    1.2 KB
+
+count  total space  path          ← 整镜像的 inefficient files 表
+   x2       1.2 KB  /node_modul...
+   x2          8 B  /app/util.js
+```
+
+- 概览三行的 `wasted` 取 `Σ (cumulative - min)`（dive 的 `inefficientBytes`），
+  **不是**「真实丢掉的字节」（`overwritten + deleted`）——面板与效率分数该说同一件事
+- 下方那张表的列名与口径都照 dive：`count` 是写了几版，`total space` 是
+  `cumulative - min`，与 efficiency 总分的分子分母同源
+- 数字**全部**来自 `image_analysis` 的既有出口（`EfficiencyReport.paths` /
+  `Report::inefficient_paths`），模型层不重算，更没有「最终大小 × 版本数」
+  那种近似（issue #72 之前 `model.mbt` 里有过一段，已删）
+
 ## 设计取舍
 
 ### 按列而不是按字符排版
@@ -231,6 +259,15 @@ tty 0.5.0 对带子参数的 `CSI <` 直接判 `Unknown`，
 
 树是嵌套的、按键是线性的，每帧现算可见行既慢又难保证光标稳定；
 一次性算出来，键盘只在数组上移动光标。
+
+### 面板的数字不重算
+
+`model.mbt` 只做搬运：路径账与那张表都来自 `EfficiencyReport.paths` 与
+`Report::inefficient_paths`（后者就是 `efficiency_view_rows`，与 `--efficiency`
+视图同一批行）。早先面板的 `cumulative` 是 `最终大小 × 版本数` 的近似
+（注释自己认账），算出来的 overhead 与 `--efficiency` 表对不上；
+#72 之后两边是同一个数，`model_wbtest.mbt` 有一条用例按「Σ 表里的 size == 面板的
+wasted」钉住这层自洽。
 
 ### 量化到可测的部分
 
