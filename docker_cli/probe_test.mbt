@@ -59,22 +59,29 @@ test "DOCKER_CLI promotes the chosen tool" {
 ///|
 /// 探测不到任何后端时给 NoBackend，错误信息里逐条列出尝试过的候选。
 ///
-/// 显式给一个空的 PATH，把探测钉死在隔离环境里：装了 docker 的机器
-/// （比如 CI 容器）上，若回落到进程 PATH 或系统目录，`Cli(Docker)` 会被
-/// 判成可用，探测提前选中，这条测试也就跑不出来了。
+/// `PATH` 必须显式指向空目录，两层原因叠在一起：
+///
+/// - `env` 里没有 `PATH` 时 `probe_backends` 会回落到进程环境；
+/// - `resolve_executable` 还会兜 `/usr/bin` 这类系统目录
+///   （GUI / cron 场景的兜底，本身是对的）。
+///
+/// 于是「这台机器装没装 docker」直接决定用例过不过：CI 镜像里
+/// `/usr/bin/docker` 是真实存在的，`Cli(Docker)` 会被判成可用，
+/// 探测提前选中，`candidate is None` 就不成立。
 async test "probing failure lists every attempt" {
+  let dir = @fs.tmpdir(prefix="dive-probe-")
   let candidates = [
     @docker_cli.BackendCandidate::Socket("/definitely/missing.sock"),
     @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
   ]
-  let probed = @docker_cli.probe_backends(candidates, {
-    "PATH": "/definitely/missing/bin",
-  })
+  // 空临时目录：既没有 docker，也不会被 /usr/bin 兜底捡回来
+  let probed = @docker_cli.probe_backends(candidates, { "PATH": dir })
   assert_true(probed.candidate is None)
   assert_eq(probed.attempts.length(), 2)
   let described = @docker_cli.describe_backends(probed)
   assert_true(described.contains("/definitely/missing.sock"))
   assert_true(described.contains("docker"))
+  @fs.rmdir(dir, recursive=true)
 }
 
 ///|
@@ -119,12 +126,18 @@ async test "a non-socket path is not treated as a healthy socket" {
 
 ///|
 /// 无 daemon 环境下 resolve_backend 抛 NoBackend，不 panic。
+///
+/// `PATH` 同样钉在空临时目录上：只放一个 socket 候选时看似跟 PATH 无关，
+/// 但探到了真实 docker 就会走另一条分支，用例变成「取决于机器装没装」。
+/// `PATH` 不显式钉死时还要小心递归：进程 PATH 上就装着 docker 的机器上，
+/// 探测会先选中它，这里就不再是 NoBackend。
 async test "resolve_backend reports NoBackend without a daemon" {
+  let dir = @fs.tmpdir(prefix="dive-probe-")
   let candidates = [
     @docker_cli.BackendCandidate::Socket("/definitely/missing.sock"),
   ]
   let error = try {
-    @docker_cli.resolve_backend(candidates, {}) |> ignore
+    @docker_cli.resolve_backend(candidates, { "PATH": dir }) |> ignore
     fail("should fail")
   } catch {
     err => err
@@ -132,4 +145,5 @@ async test "resolve_backend reports NoBackend without a daemon" {
   let text = error.to_string()
   assert_true(text.contains("no usable docker backend"))
   assert_true(text.contains("DOCKER_CLI"))
+  @fs.rmdir(dir, recursive=true)
 }
