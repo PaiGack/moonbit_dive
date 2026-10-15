@@ -308,6 +308,7 @@ async fn load_source(
     timeout_ms=options.docker_timeout_ms,
     candidates?,
     pull_if_missing=!options.no_pull,
+    on_stage=fn(stage) { describe_stage(options, stage) },
   ) catch {
     // NoBackend / ExecutableNotFound / InvalidReference / Backend 都归到 Docker：
     // `Show` 已经把这些转成人话（含安装提示与子进程 stderr）
@@ -315,22 +316,16 @@ async fn load_source(
   }
   // 探测记录走 stderr，别混进报告：报告还可能被 `-o` / 管道消费
   if options.verbose {
-    eprintln(
-      "[docker] using \{@docker_cli.ImageBackend::to_string(resolved.backend)}",
-    )
-    if options.no_pull {
-      eprintln("[docker] --no-pull: will not fetch a missing image")
-    } else {
-      eprintln("[docker] will pull the image if it is missing locally")
-    }
-    eprintln("[docker] timeout: \{options.docker_timeout_ms / 1000}s per call")
-    eprintln(
-      "[docker] a backend that cannot serve the image hands off to the next candidate",
-    )
     let described = @docker_cli.describe_backends(resolved.probed)
     if !described.is_empty() {
       eprintln(described)
     }
+    eprintln("[docker] fetched \{archive.length()} bytes")
+  }
+  // 解压 + 叠树是纯本地计算，但大镜像上并不快（见 `layer_tree` 的 gzip 注释）。
+  // 这里点一句，免得「取完归档到出报告之间」被当成又卡住了。
+  if options.verbose {
+    eprintln("[docker] parsing archive (decompress + stack layers)...")
   }
   // name 用来标注报告 / 注解：告诉读的人「这不是本地 tar，是取回来的镜像」
   @image_ci.ImageSource::from_tar_bytes(
@@ -338,6 +333,41 @@ async fn load_source(
     name="\{options.image} (from-image)",
   ) catch {
     err => raise CommandError::Image(err.to_string())
+  }
+}
+
+///|
+/// 取归档过程中的阶段回调：`--from-image` 下**边做边打**，而不是等结束再补一份报告。
+///
+/// 之前这些行是在 `fetch_archive_verbose` **返回之后**统一打印的，
+/// 于是「will pull / timeout 30s」出现在「已经拉完」之后，读起来像倒放；
+/// 更糟的是取归档阶段一旦没输出，用户会以为进程卡死（issue #42 的现场）。
+fn describe_stage(options : Options, stage : @docker_cli.FetchStage) -> Unit {
+  if !options.verbose {
+    return
+  }
+  match stage {
+    Resolved(backend) => {
+      eprintln("[docker] using \{@docker_cli.ImageBackend::to_string(backend)}")
+      if options.no_pull {
+        eprintln("[docker] --no-pull: will not fetch a missing image")
+      } else {
+        eprintln("[docker] will pull the image if it is missing locally")
+      }
+      eprintln(
+        "[docker] timeout: \{options.docker_timeout_ms / 1000}s per call",
+      )
+      eprintln(
+        "[docker] a backend that cannot serve the image hands off to the next candidate",
+      )
+    }
+    Trying(backend) =>
+      eprintln(
+        "[docker] trying \{@docker_cli.ImageBackend::to_string(backend)}...",
+      )
+    Pulling(reference) =>
+      eprintln("[docker] no local image, pulling \{reference}")
+    Saving(reference) => eprintln("[docker] saving \{reference}...")
   }
 }
 

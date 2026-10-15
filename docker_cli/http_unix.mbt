@@ -76,7 +76,7 @@ pub async fn http_over_unix(
   }
   if timeout_ms > 0 {
     let result = @async.with_timeout_opt(timeout_ms, () => work()) catch {
-      err => raise Backend(socket_path, -1, err.to_string())
+      err => raise unwrap_backend_text(socket_path, err.to_string())
     }
     match result {
       Some(response) => response
@@ -84,8 +84,44 @@ pub async fn http_over_unix(
     }
   } else {
     work() catch {
-      err => raise Backend(socket_path, -1, err.to_string())
+      err => raise describe_socket_failure(socket_path, err)
     }
+  }
+}
+
+///|
+/// 把 unix socket 上的失败收成一条 `Backend`，**不重复套壳**。
+///
+/// `connect_error` / `read_response` 抛出来的已经是带上下文的 `Backend`，
+/// 这里若原样再包一层 `Backend(path, -1, err.to_string())`，
+/// 用户看到的就是 `X failed: X failed: ...`——同一条路径被念两遍。
+/// 只有非 `Backend` 的错（事件循环取消之类）才需要补一层上下文。
+fn describe_socket_failure(
+  socket_path : String,
+  err : DockerCliError,
+) -> DockerCliError {
+  match err {
+    Backend(_, _, _) => err
+    _ => Backend(socket_path, -1, err.to_string())
+  }
+}
+
+///|
+/// `with_timeout_opt` 会把内部抛出的错转成 `Error`，丢掉 `DockerCliError` 的变体信息。
+/// 若内部本来就已经是 `Backend(path, ...)`，它的 `Show` 文本已经带了 `path failed: `，
+/// 再包一层就是 `path failed: path failed: ...`——同一条路径念两遍。
+///
+/// 这里按文本前缀识别并**原样透传**：只把「还没带路径前缀」的错补上上下文。
+fn unwrap_backend_text(socket_path : String, text : String) -> DockerCliError {
+  let prefix = "\{socket_path} failed"
+  if text.has_prefix(prefix) {
+    // 文本已自带 `<path> failed[: ...]`，把它拆回 detail 交给 `Show` 再拼一次，
+    // 结果与原来等价，但不会再叠加一层。
+    let rest = text[prefix.length():].to_owned()
+    let detail = if rest.has_prefix(": ") { rest[2:].to_owned() } else { rest }
+    Backend(socket_path, -1, detail)
+  } else {
+    Backend(socket_path, -1, text)
   }
 }
 
