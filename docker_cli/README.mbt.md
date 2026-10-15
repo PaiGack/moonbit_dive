@@ -79,6 +79,13 @@ DOCKER_HOST（unix://） → /var/run/docker.sock → docker → podman → nerd
 - socket：先看文件类型，再发一个**有超时的** `_ping`。文件是 socket
   ≠ daemon 可用——CNB / 容器里 `/var/run/docker.sock` 常由外层转发进来，
   `connect(2)` 立刻成功但对端不通。不通就算这个候选不可用，让给后面的 CLI
+
+**探测通过 ≠ 这条路推得动。** 转发进来的 socket 可能 `_ping` 答得好好的，
+真去 `GET /images/{name}/get` 时才发现对端没有那个镜像——探测阶段看不出来。
+所以选中的后端如果取不到归档，链路会顺着候选列表往下换一条再试
+（`save_or_pull_across_backends` + `backend_chain`）：socket 不行就换 PATH 上的
+docker，`DOCKER_CLI` 那个 docker 不行就换 socket。换路是**包的内部行为**，
+调用方仍然只看到「一个镜像名 → 一个归档」。
 - CLI：看 `PATH` 上解析不解析得到（再兜 `/usr/bin`、`/usr/local/bin` 等几个常见位置）
 
 探测结果通过 `describe_backends` 一行一条打出来，排查时不用猜：
@@ -105,6 +112,7 @@ socket 在、`connect` 也成功，但对端不通——`timeout_ms = 0` 会让�
 | 错误 | 场景 |
 |---|---|
 | `NoBackend` | 一个后端都探不到，信息里逐条列出尝试过谁、为什么失败 |
+| `ImageNotFound` | 后端答「本地没有这个镜像」——**不是故障**，可据此去拉 / 换路 |
 | `Backend(name, code, stderr)` | 后端跑了但失败，子进程 stderr 原样透传 |
 | `ExecutableNotFound` | 可执行文件不存在或无法 spawn |
 | `Cancelled` | 超过 `timeout_ms`，子进程已被 cancel |
@@ -127,9 +135,12 @@ daemon 会在流里回 200 之后再吐 `{"errorDetail":{"message":"..."}}`。
 「拉失败了但没人知道」的假成功去 `save`。老 daemon / 中间代理只回 `"error"` 字段，
 也一并识别。
 
-「本地没有就先拉」由 `save_maybe_pulling` 收口，**触发条件是 `inspect` 说本地没有**，
+「本地没有就先拉」由 `save_maybe_pulling` 收口，**触发条件是 `inspect` 明确说没有**
+（`ImageNotFound`：Engine 的 404、CLI 的 `No such image`），
 不是「`save` 失败就拉」——`save` 的失败面太宽（daemon 卡住、权限、磁盘满），
 一律去拉会用一次不必要的网络请求盖住真正的错误。
+`inspect` 给出别的错（超时、连不上）说明**这条路本身不行**，该做的是换一条，
+不是拉一次。
 
 `cmd/main` 的默认就是「缺了就拉」（对齐原版 dive），`--no-pull` 关掉它，
 `save_maybe_pulling(pull_if_missing=true/false)` 两端各对应一个开关。

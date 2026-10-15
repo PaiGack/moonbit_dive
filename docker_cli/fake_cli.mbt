@@ -79,7 +79,10 @@ pub fn fake_recording_cli(
     #|case "$1" in
     #|  inspect)
     #|    printf '%s' 'INSPECT_JSON'
-    #|    exit INSPECT_CODE
+    #|    if [ 'INSPECT_CODE_IS_ZERO' != '0' ]; then
+    #|      echo "Error response from daemon: No such image: the requested image" >&2
+    #|    fi
+    #|    exit CODE_PLACEHOLDER
     #|    ;;
     #|  save)
     #|    cat 'ARCHIVE_PATH'
@@ -98,7 +101,12 @@ pub fn fake_recording_cli(
   .replace(old="ARCHIVE_PATH", new=archive_path)
   .replace(old="INSPECT_JSON", new=inspect_json)
   .replace(old="PULL_OUTPUT", new=pull_output)
-  .replace(old="INSPECT_CODE", new=inspect_code.to_string())
+  .replace(old="CODE_PLACEHOLDER", new=inspect_code.to_string())
+  // `String::replace` 只换第一处，两个占位符得分开写
+  .replace(
+    old="INSPECT_CODE_IS_ZERO",
+    new=if inspect_code == 0 { "0" } else { "1" },
+  )
 }
 
 ///|

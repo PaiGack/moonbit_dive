@@ -105,8 +105,10 @@ async fn serve_one(
   let response = responder(request) catch {
     err => fail("responder failed: \{err}")
   }
+  // 客户端可能已经走了（比如它拿到 404 就换下一条后端）：
+  // 这时写回去会撞上 broken pipe，对 fake daemon 来说不是错误
   conn.write(response) catch {
-    err => fail("writing response failed: \{err}")
+    _ => ()
   }
   conn.close()
 }
@@ -290,8 +292,11 @@ async test "engine reads a large chunked stream intact" {
 }
 
 ///|
-/// 404 的错误体：daemon 的 `{"message": "..."}` 要被提出来当错误详情，
-/// 而不是被吞成「退出码 404」。
+/// 404 不是「后端坏了」，是「这只后端说本地没有这个镜像」。
+///
+/// 这两件事必须分开：前者要换一条后端，后者要走「缺了就拉」。
+/// 混成一个错误就只能靠猜——猜错的代价是把一次注定失败的拉取
+/// 当成「镜像不在」的证明。daemon 给的 `message` 仍要在文案里能看见。
 #cfg(not(platform="windows"))
 async test "engine surfaces the daemon error body over the socket" {
   let server = @docker_cli.UnixSocketServer::start()
@@ -314,7 +319,8 @@ async test "engine surfaces the daemon error body over the socket" {
     } catch {
       err => err
     }
-    assert_true(error.to_string().contains("No such image: nope"))
+    assert_true(error is @docker_cli.ImageNotFound(_))
+    assert_true(error.to_string().contains("nope"))
   })
   server.close()
 }
@@ -441,4 +447,134 @@ async test "engine pull surfaces an http error body" {
     assert_true(error.to_string().contains("error pulling image configuration"))
   })
   server.close()
+}
+
+///|
+/// issue #42 的第二层：socket **看着通**，真去取归档才发现这条路推不动。
+///
+/// CNB 这类环境里 `/var/run/docker.sock` 是外层转发进来的：探测阶段的
+/// `_ping` 会答（所以判它可用），可真去 `GET /images/{name}/get` 时
+/// 转发对象上没有这个镜像——只有真走一趟才知道。这时候不能就此收场，
+/// 得顺着候选列表换到 PATH 上的 docker 再试一次。
+///
+/// 这里用一个「_ping 答、inspect 404」的 fake daemon 当那条半通的路，
+/// 后面接一个 fake docker CLI。结果是 CLI 那条路给的归档。
+#cfg(not(platform="windows"))
+async test "a socket that answers _ping but cannot serve the image falls back" {
+  let server = @docker_cli.UnixSocketServer::start()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      // 第一趟：探测时的 _ping
+      serve_one(server, _ => ping_response("1.45"))
+      // 第二趟：`resolve_backend` 建出来的 EngineSource 还没协商版本，
+      // `inspect` 会自己补一次 `_ping`
+      serve_one(server, _ => ping_response("1.45"))
+      // 第三趟：inspect 说没有这个镜像（转发对象没有）= ImageNotFound
+      serve_one(server, _ => {
+        length_response(
+          404,
+          @utf8.encode("{\"message\":\"No such image: nope\"}"),
+        )
+      })
+    })
+    let resolved = @docker_cli.resolve_backend(
+      [
+        @docker_cli.BackendCandidate::Socket(server.path),
+        @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+      ],
+      // PATH 钉在空目录：CLI 那条候选不该被系统 docker 捡走
+      { "PATH": "/nonexistent" },
+      timeout_ms=1000,
+    ) catch {
+      err => fail("socket answers _ping, probing should pick it: \{err}")
+    }
+    // 探测确实选了 socket 那条路
+    assert_true(resolved.backend is @docker_cli.ImageBackend::Engine(_))
+    // 真去取归档：socket 给 404，链路要判它是「本地没有」而不是「路不通」
+    let error = try {
+      @docker_cli.save_or_pull_across_backends(
+        [resolved.backend],
+        0,
+        "nope:latest",
+        pull_if_missing=false,
+      )
+      |> ignore
+      fail("save should fail on the socket")
+    } catch {
+      err => err
+    }
+    // 报的必须是「没有这个镜像」，不是「socket 坏了」——
+    // 前端据此才知道该换路 / 该拉，而不是把整条后端判死
+    assert_true(error is @docker_cli.ImageNotFound(_))
+  })
+  server.close()
+}
+
+///|
+/// 换路真的会发生：socket 说「没有」，序列后面还有一条能用的 CLI，
+/// 归档就该从 CLI 出来，而不是以 404 收场。
+#cfg(not(platform="windows"))
+async test "a dead socket path hands the fetch to the next backend" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=fallback\n"),
+  ])
+  let archive = @docker_cli.build_docker_archive([("fallback", layer)])
+  let archive_path = @docker_cli.write_temp_bytes("fallback.tar", archive)
+  let (bin, _program) = @docker_cli.write_fake_cli_named(
+    "docker",
+    @docker_cli.fake_recording_cli(
+      archive_path + ".calls",
+      archive_path,
+      "[{\"Id\":\"sha256:fallback\"}]",
+    ),
+  )
+  let server = @docker_cli.UnixSocketServer::start()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      // 探测时的 _ping
+      serve_one(server, _ => ping_response("1.45"))
+      // EngineSource 建出来时还没协商版本，inspect 自己会补一次 _ping
+      serve_one(server, _ => ping_response("1.45"))
+      // socket 那条路：inspect 报「没有这个镜像」
+      serve_one(server, _ => {
+        length_response(
+          404,
+          @utf8.encode("{\"message\":\"No such image: fallback\"}"),
+        )
+      })
+    })
+    let resolved = @docker_cli.resolve_backend(
+      [
+        @docker_cli.BackendCandidate::Socket(server.path),
+        @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+      ],
+      { "PATH": bin },
+      timeout_ms=1000,
+    ) catch {
+      err => fail("probing should pick the socket: \{err}")
+    }
+    let chain = @docker_cli.backend_chain(
+      [
+        @docker_cli.BackendCandidate::Socket(server.path),
+        @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+      ],
+      resolved,
+      { "PATH": bin },
+      timeout_ms=1000,
+    )
+    // 序列里应当有两条：先行者 socket + 退路 CLI
+    assert_true(chain.length() >= 2)
+    let saved = @docker_cli.save_or_pull_across_backends(
+      chain,
+      0,
+      "fallback:latest",
+      pull_if_missing=false,
+    ) catch {
+      err => fail("the CLI backend should have picked this up: \{err}")
+    }
+    assert_eq(saved, archive)
+  })
+  server.close()
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
 }

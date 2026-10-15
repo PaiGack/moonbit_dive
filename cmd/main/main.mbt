@@ -324,6 +324,9 @@ async fn load_source(
       eprintln("[docker] will pull the image if it is missing locally")
     }
     eprintln("[docker] timeout: \{options.docker_timeout_ms / 1000}s per call")
+    eprintln(
+      "[docker] a backend that cannot serve the image hands off to the next candidate",
+    )
     let described = @docker_cli.describe_backends(resolved.probed)
     if !described.is_empty() {
       eprintln(described)

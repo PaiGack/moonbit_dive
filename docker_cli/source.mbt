@@ -151,53 +151,31 @@ pub async fn fetch_archive(
   pull_if_missing~ : Bool = false,
 ) -> Bytes raise DockerCliError {
   let candidates = default_candidates(env)
-  let resolved = resolve_backend(candidates, env, timeout_ms~)
-  let archive = save_maybe_pulling(
-    resolved.backend,
+  let (archive, _resolved) = fetch_archive_with_backends(
     reference,
+    candidates,
+    env,
+    timeout_ms~,
     pull_if_missing~,
   )
   archive
 }
 
 ///|
-/// 「本地没有就先拉」的策略，`fetch_archive` 与 `fetch_archive_verbose` 共用。
+/// 单条后端上的「本地没有就先拉」策略。`fetch_archive` 一族走的是
+/// `save_or_pull_across_backends`（多一条后端会换路），这里保留单条入口
+/// 给「就认这一个后端」的调用方与测试。
 ///
-/// 触发条件是 **`inspect` 说本地没有**，不是「`save` 失败了就拉」：
-/// `save` 的失败面太宽（daemon 卡住、权限、磁盘满），
-/// 一律当成「镜像不在」会拿一次不必要的网络拉取盖住真正的错误，
-/// 排查时看到的是 pull 的报错而不是最初那个。
+/// 触发条件是 **`inspect` 明确说本地没有**（`ImageNotFound`），
+/// 不是「`save` 失败了就拉」：`save` 的失败面太宽（daemon 卡住、权限、磁盘满），
+/// 一律当成「镜像不在」会拿一次不必要的网络拉取盖住真正的错误。
+/// `inspect` 给别的错说明**这条路本身不行**，该做的是换路，不是拉。
 pub async fn save_maybe_pulling(
   backend : ImageBackend,
   reference : String,
   pull_if_missing~ : Bool = false,
 ) -> Bytes raise DockerCliError {
-  if pull_if_missing && !image_is_local(backend, reference) {
-    ImageSource::pull(backend, reference)
-  }
-  ImageSource::save(backend, reference)
-}
-
-///|
-/// 本地有没有这个镜像。拿不到确定答案时返回 `false`（即「当作没有」）。
-///
-/// `inspect` 失败的原因分得没那么细：daemon 挂了、socket 权限不对、
-/// 名字不合法都会落到同一个 catch 里。这时候认成「本地没有」去拉一次，
-/// 拉不动的话错误信息里会有 pull 的具体原因，比 inspect 的泛泛报错更有用；
-/// 拉得动就说明本地确实没有。反过来把「不确定」当「有」，
-/// 用户会拿到一个说不清为什么失败的 `save`。
-async fn image_is_local(
-  backend : ImageBackend,
-  reference : String,
-) -> Bool noraise {
-  let found : Bool = try
-    ImageSource::inspect(backend, reference) |> ignore
-  catch {
-    _ => false
-  } noraise {
-    _ => true
-  }
-  found
+  save_or_pull_once(backend, reference, pull_if_missing~)
 }
 
 ///|
@@ -218,13 +196,195 @@ pub async fn fetch_archive_verbose(
     Some(candidates) => candidates
     None => default_candidates(env)
   }
+  fetch_archive_with_backends(
+    reference,
+    candidates,
+    env,
+    timeout_ms~,
+    pull_if_missing~,
+  )
+}
+
+///|
+/// 取归档的公共实现：先把候选列表做成一条**有退路**的后端序列，
+/// 再顺着它取；一条路取不到就换下一条。
+///
+/// 这是 issue #42 的第二层。第一层（探测时发个有超时的 `_ping`）只挡得住
+/// 「socket 根本不通」；挡不住「socket 通、`_ping` 答，但真去
+/// `GET /images/{name}/get` 时才发现对端没有这个镜像」——CNB 这类环境里
+/// `/var/run/docker.sock` 是外层转发进来的，正是这个样子。要分清
+/// 「这条路推不动」，只有真走一趟取归档。
+async fn fetch_archive_with_backends(
+  reference : String,
+  candidates : Array[BackendCandidate],
+  env : Map[String, String],
+  timeout_ms~ : Int32,
+  pull_if_missing~ : Bool,
+) -> (Bytes, ResolvedBackend) raise DockerCliError {
   let resolved = resolve_backend(candidates, env, timeout_ms~)
-  let archive = save_maybe_pulling(
-    resolved.backend,
+  let backends = backend_chain(candidates, resolved, env, timeout_ms~)
+  let archive = save_or_pull_across_backends(
+    backends,
+    0,
     reference,
     pull_if_missing~,
   )
   (archive, resolved)
+}
+
+///|
+/// 「一条路取不到就换下一条」：从 `index` 开始顺着后端序列往下试。
+///
+/// 每一条上的动作都是同一套（顺序与原版 dive 对齐）：
+///
+/// 1. `inspect`——说本地有就直接 `save`，不再上网；
+/// 2. 说本地没有且 `pull_if_missing`——`pull` 一次再 `save`；
+/// 3. 这一步整条都失败——记下原因，换下一条路，直到序列走完。
+///
+/// `inspect` 的失败要分清：`ImageNotFound` 才是「本地没有」，
+/// 其余（超时、连不上、名字非法）是「这条路本身不行」——后者直接换路，
+/// 不拿一次注定失败的拉取盖住真原因。
+///
+/// 失败原因不吞：候选全试完时把最后一条的原因报出来，
+/// 用户要的是「为什么都不行」，不是一句「取不到」。
+pub async fn save_or_pull_across_backends(
+  backends : Array[ImageBackend],
+  index : Int32,
+  reference : String,
+  pull_if_missing~ : Bool = false,
+) -> Bytes raise DockerCliError {
+  let mut last : DockerCliError? = None
+  let mut position = index
+  let count = backends.length()
+  while position < count {
+    let outcome : Result[Bytes, DockerCliError] = try
+      save_or_pull_once(backends[position], reference, pull_if_missing~)
+    catch {
+      err => Err(err)
+    } noraise {
+      archive => Ok(archive)
+    }
+    match outcome {
+      Ok(archive) => return archive
+      // 这条路走不通：记下原因，接着试下一条
+      Err(err) => last = Some(err)
+    }
+    position = position + 1
+  }
+  match last {
+    Some(err) => raise err
+    None => raise NoBackend("no backend available to fetch \{reference}")
+  }
+}
+
+///|
+/// 在**一条**后端上取归档：先问本地有没有，缺了就拉，最后取。
+///
+/// 这是原版 dive 的顺序，也是这里的契约：`inspect` 说本地有就绝不上网。
+/// `inspect` 的「没有」与「这条路不行」由 `ImageNotFound` 分开，
+/// 见 `is_missing_image`。
+async fn save_or_pull_once(
+  backend : ImageBackend,
+  reference : String,
+  pull_if_missing~ : Bool,
+) -> Bytes raise DockerCliError {
+  if pull_if_missing && !image_is_local(backend, reference) {
+    ImageSource::pull(backend, reference)
+  }
+  ImageSource::save(backend, reference)
+}
+
+///|
+/// 本地有没有这个镜像。
+///
+/// `ImageNotFound` 是后端给的确定答案（Engine 404 / CLI 的 `No such image`），
+/// 那才算「没有」。其余失败（超时、连不上、名字非法）一律上抛——
+/// 把「不确定」当成「没有」会去拉一次，然后拿网络层的错误盖住真原因，
+/// 而真原因往往是「这条路本身不行」，该做的是换一条路。
+async fn image_is_local(
+  backend : ImageBackend,
+  reference : String,
+) -> Bool raise DockerCliError {
+  let inspected : Result[ImageInfo, DockerCliError] = try
+    ImageSource::inspect(backend, reference)
+  catch {
+    err => Err(err)
+  } noraise {
+    info => Ok(info)
+  }
+  match inspected {
+    Ok(_) => true
+    Err(err) =>
+      match err {
+        ImageNotFound(_) => false
+        _ => raise err
+      }
+  }
+}
+
+///|
+/// 候选列表 + 探测结果 → 可直接调用的后端序列，**从选中的那条开始**。
+///
+/// 「从选中的那条开始往后走」本身就是「这条路推不动就换下一条」：
+/// CNB 这类环境里 socket 由外层转发进来，探测阶段 `_ping` 会答（判它可用），
+/// 可真去取归档时才发现对端没有那个镜像——这时序列后面还有 PATH 上的
+/// docker。反过来 `DOCKER_CLI` 指的 docker 推不动时，后面也还留着 socket。
+/// 两种方向不用分别写，一条按探测顺序排的序列就够。
+///
+/// 建不出来的候选（socket 路径拼不出 URI、可执行文件不在）直接跳过：
+/// 它们连「试一次」的机会都不该有。
+pub async fn backend_chain(
+  candidates : Array[BackendCandidate],
+  resolved : ResolvedBackend,
+  env : Map[String, String],
+  timeout_ms~ : Int32,
+) -> Array[ImageBackend] noraise {
+  let start = if resolved.probed.index < 0 { 0 } else { resolved.probed.index }
+  let backends : Array[ImageBackend] = []
+  for index in start..<candidates.length() {
+    match build_backend(candidates[index], env, timeout_ms~) {
+      Some(backend) => backends.push(backend)
+      None => ()
+    }
+  }
+  backends
+}
+
+///|
+/// 单个候选 → 可直接调用的后端。socket 路径拼不出 URI、可执行文件不在时给 `None`。
+async fn build_backend(
+  candidate : BackendCandidate,
+  env : Map[String, String],
+  timeout_ms~ : Int32,
+) -> ImageBackend? noraise {
+  match candidate {
+    Socket(path) => {
+      let uri = match parse_unix_uri("unix://\{path}") {
+        Some(uri) => uri
+        None => return None
+      }
+      Some(ImageBackend::Engine(EngineSource::new(uri, timeout_ms~)))
+    }
+    Program(program, tool) =>
+      Some(ImageBackend::Cli(DockerCliSource::new(program, tool~, timeout_ms~)))
+    Cli(tool) => {
+      let name = Show::to_string(tool)
+      let resolved : String? = try
+        resolve_executable(name, path_of(env))
+      catch {
+        _ => None
+      } noraise {
+        program => program
+      }
+      match resolved {
+        Some(path) =>
+          Some(
+            ImageBackend::Cli(DockerCliSource::new(path, tool~, timeout_ms~)),
+          )
+        None => None
+      }
+    }
+  }
 }
 
 ///|
