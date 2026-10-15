@@ -46,6 +46,8 @@ test "draw paints the status bar" {
   let status = screen.row_string(23)
   assert_true(status.contains("q"))
   assert_true(status.contains("1/3"))
+  // 排序口径跟着光标位置一起显示（#51 的 `s` 键）
+  assert_true(status.contains("name"))
 }
 
 ///|

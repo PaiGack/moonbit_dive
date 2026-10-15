@@ -12,7 +12,8 @@ MoonBit 重写 [wagoodman/dive](https://github.com/wagoodman/dive)（Go，MIT）
 - `image_ci`：镜像体积门禁规则 DSL 与 CLI（exit code / CI 注解）——**已落地**，见 [`image_ci/README.mbt.md`](image_ci/README.mbt.md)
 - `docker_cli`：Docker Engine 封装（docker/podman/nerdctl CLI 后端 + unix socket Engine 后端），把镜像名变成 tar/layout（独立包，不被前四包依赖）
 - `tui`：全屏交互式看树（基于 `moonbit-community/tty`，native only），alternate screen + 带边框分栏，
-  树与详情可 `Tab` 切焦点、`?` 出帮助，把逐层视图接成可上下走、可折叠、可切层的画面
+  树与详情可 `Tab` 切焦点、`?` 出帮助，把逐层视图接成可上下走、可折叠、可切层的画面；
+  键鼠都能用（点击选行 / 滚轮滚面板 / 右键切展开）
 
 ## 用一下
 
@@ -73,7 +74,9 @@ moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image` 给镜像名）。
 
 `--tui` 打开全屏交互式看树：`↑↓`/`jk` 走行，`←→`/`hl` 收起展开，`Enter` 切展开态，
-`[`/`]` 换层，`Tab` 在树与详情之间切焦点，`?` 开关帮助浮层，`q`/`Esc` 退出。
+`[`/`]` 换层，`s` 切排序（按名字 ↔ 按体积），`Tab` 在树与详情之间切焦点，
+`?` 开关帮助浮层，`q`/`Esc` 退出。
+鼠标同样可用：点击选行、滚轮滚鼠标停着的那块面板、右键切目录展开态。
 它进 alternate screen（退出还原终端，异常退出也还原），只支持 native，
 且需要一个真终端（stdin/stdout 都不是 tty 时退 exit 2）。
 详见 [`tui/README.mbt.md`](tui/README.mbt.md) 与 [`docs/p6-tui.md`](docs/p6-tui.md)。

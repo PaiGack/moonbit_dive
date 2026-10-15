@@ -78,3 +78,42 @@ test "window_size falls back to 80x24" {
   assert_eq(size.cols, 80)
   assert_eq(size.rows, 24)
 }
+
+///|
+/// 在一对管道上建 tty，跑 `f`，返回 tty 写出去的全部字节（与
+/// `terminal_paint_wbtest.mbt` 的同名工具同形；黑盒测试里看不到内部包）。
+async fn mouse_pipe_tty(f : async (@tty.Tty) -> Unit) -> String {
+  let (input, input_writer) = @async/pipe.pipe()
+  let (output_reader, output) = @async/pipe.pipe()
+  input_writer.close()
+  let tty = @tty.Tty::new(input, output)
+  f(tty)
+  tty.close()
+  let text = output_reader.read_all().text()
+  output_reader.close()
+  text
+}
+
+///|
+/// 鼠标跟踪的开关与进出全屏配对：开了就得关，且关在切回主屏之前——
+/// 漏关掉会让退出后的 shell 把每次点击吐成 `\x1b[<...` 垃圾（#51）。
+async test "app enables and disables mouse tracking around the alt screen" {
+  let written = mouse_pipe_tty(tty => {
+    // 复刻 `run_app` 的进出顺序：进全屏 → 开鼠标 → ... → 关鼠标 → 离屏
+    let alt = AltScreen::new()
+    alt.enter(tty)
+    tty.enable_mouse(@tty.MouseTrackingMode::Click)
+    tty.disable_mouse()
+    alt.leave(tty)
+  })
+  // SGR 鼠标 + 按下跟踪
+  assert_true(written.contains("\u{1b}[?1006h"))
+  assert_true(written.contains("\u{1b}[?1000h"))
+  // 退出侧：三个模式位都要关
+  assert_true(written.contains("\u{1b}[?1000l"))
+  assert_true(written.contains("\u{1b}[?1006l"))
+  // 关鼠标排在离开 alternate screen 之前
+  let mouse_off = written.find("\u{1b}[?1006l").unwrap()
+  let leave_alt = written.find("\u{1b}[?1049l").unwrap()
+  assert_true(mouse_off < leave_alt)
+}

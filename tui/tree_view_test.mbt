@@ -184,3 +184,79 @@ test "tree view handles an empty tree" {
   view.expand()
   assert_eq(view.cursor, 0)
 }
+
+///|
+/// 坐标反查与「行下标 → 屏幕行」互逆：画在第 `row` 行的项，
+/// 反查 `row` 一定拿回它自己。
+test "tree view maps screen rows back to indices" {
+  let tree = sample_tree()
+  let view = TreeView::from_tree(tree, 0, 3)
+  view.page_height = 4
+  for row = 0; row < 4; row = row + 1 {
+    let index = view.index_at_screen_row(row).unwrap()
+    assert_eq(view.visible[index].path, view.visible[row].path)
+  }
+}
+
+///|
+/// 滚动后反查跟着 offset 走，不然点击会整体偏一行。
+test "tree view reverse lookup follows the scroll offset" {
+  let tree = sample_tree()
+  let view = TreeView::from_tree(tree, 0, 3)
+  view.page_height = 3
+  view.move_to_end()
+  view.clamp_offset()
+  assert_eq(view.offset, 3)
+  assert_eq(view.index_at_screen_row(0), Some(3))
+  assert_eq(view.index_at_screen_row(2), Some(5))
+}
+
+///|
+/// 点在面板空白格（可视行之外）给 `None`，不夹到首行/末行。
+test "tree view reverse lookup gives none for empty rows" {
+  let tree = sample_tree()
+  let view = TreeView::from_tree(tree, 0, 3)
+  view.page_height = 20
+  // 只有 6 行内容，第 6 行（0 起）以下是空的
+  assert_eq(view.index_at_screen_row(6), None)
+  assert_eq(view.index_at_screen_row(-1), None)
+  // 画帧前 `page_height` 是 0：整块都算不可命中
+  let fresh = TreeView::from_tree(tree, 0, 3)
+  assert_eq(fresh.index_at_screen_row(0), None)
+}
+
+///|
+/// 点中就落光标；点空白不动它（也不假装动了）。
+test "tree view selects a row under the screen coordinate" {
+  let tree = sample_tree()
+  let view = TreeView::from_tree(tree, 0, 3)
+  view.page_height = 4
+  assert_true(view.select_at_screen_row(2))
+  assert_eq(view.cursor, 2)
+  assert_false(view.select_at_screen_row(19))
+  assert_eq(view.cursor, 2)
+}
+
+///|
+/// 按大小排序：目录在前，文件按体积降序，同体积按路径。
+test "tree view sorts rows by size on demand" {
+  let tree = @layer_tree.FileTree::new()
+  let tar = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("small"),
+    @layer_tree.TarEntrySpec::File("small/tiny", "a"),
+    @layer_tree.TarEntrySpec::File("big", "aaaaaaaaaa"),
+    @layer_tree.TarEntrySpec::File("mid", "aaaaa"),
+  ])
+  @layer_tree.apply_layer(tree, tar, 0) catch {
+    err => fail(err.to_string())
+  }
+  let by_name = TreeView::from_tree(tree, 0, 1)
+  assert_eq(by_name.visible[0].path, "/big")
+  let by_size = TreeView::from_tree_sorted(tree, 0, 1, true)
+  assert_true(by_size.sort_by_size)
+  // 目录 `small` 排最前，后面是文件按体积降序
+  assert_eq(by_size.visible[0].path, "/small")
+  assert_eq(by_size.visible[1].path, "/big")
+  assert_eq(by_size.visible[2].path, "/mid")
+  assert_eq(by_size.visible[3].path, "/small/tiny")
+}

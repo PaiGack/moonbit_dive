@@ -169,3 +169,29 @@ test "apply_action clamps layer switching" {
   assert_false(apply_action(Action::NextLayer, state))
   assert_eq(state.view.layer, 1)
 }
+
+///|
+/// `s` 切排序口径：切一次按大小，再切一次回名字。
+test "apply_action toggles the sort order" {
+  let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
+  assert_false(state.view.sort_by_size)
+  assert_false(apply_action(Action::ToggleSort, state))
+  assert_true(state.view.sort_by_size)
+  assert_false(apply_action(Action::ToggleSort, state))
+  assert_false(state.view.sort_by_size)
+}
+
+///|
+/// `s` 的键位映射。
+test "action_of_key maps the sort key" {
+  assert_eq(action_of_key(key(@input.KeyCode::Char('s'))), Action::ToggleSort)
+}
+
+///|
+/// 换层保留排序口径：切到大小序再换层，不该悄悄回到名字序。
+test "layer switching keeps the sort order" {
+  let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
+  ignore(apply_action(Action::ToggleSort, state))
+  assert_false(apply_action(Action::NextLayer, state))
+  assert_true(state.view.sort_by_size)
+}
