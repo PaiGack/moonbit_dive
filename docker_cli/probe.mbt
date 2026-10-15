@@ -40,11 +40,16 @@ pub fn unix_socket_of(host : String) -> String? {
 /// 依次探测候选，停在第一个可用的上。`DOCKER_CLI` 若显式指定，
 /// 会提到最前面——用户都写死了，别跟他争。
 ///
-/// 探测本身只做「能不能用」的判定，不真的跑 `save`：
-/// socket 看文件在不在，CLI 看 PATH 上解析不解析得到。
+/// 探测只做「能不能用」的判定，不真的跑 `save`：
+/// socket 发一个**有超时的** `_ping`（文件在 ≠ daemon 活着，见 `socket_health`），
+/// CLI 看 PATH 上解析不解析得到。
+///
+/// `timeout_ms` 是单次探测的时间上限。`<= 0` 表示不设超时——
+/// 那正是「socket 半死 → 静默挂住」的老问题，测试里显式传 0 时自己负责。
 pub async fn probe_backends(
   candidates : Array[BackendCandidate],
   env : Map[String, String],
+  timeout_ms~ : Int32 = 0,
 ) -> ProbedBackend {
   let ordered = with_cli_override(candidates, env)
   let path = path_of_env(env)
@@ -53,7 +58,12 @@ pub async fn probe_backends(
   let allow_fallback = env.get("PATH") is None
   let attempts = []
   for index, candidate in ordered {
-    let (ok, reason) = health_check(candidate, path, allow_fallback~)
+    let (ok, reason) = health_check(
+      candidate,
+      path,
+      timeout_ms~,
+      allow_fallback~,
+    )
     attempts.push({ candidate, ok, reason, })
     if ok {
       return { index, candidate: Some(candidate), attempts, }
@@ -72,7 +82,16 @@ pub fn probe_order_for_test(
 }
 
 ///|
-/// `DOCKER_CLI=/opt/bin/docker` 时，把它对应的候选提到第一位。
+/// `DOCKER_CLI=/opt/bin/docker` 时，把它**这个文件**提到第一位。
+///
+/// 关键是「这个文件」：先前的实现只按 basename 认工具，然后把它折回
+/// `Cli(tool)`，等于把 `DOCKER_CLI` 里的路径扔了——探测和调用都变成
+/// 「去 PATH 上找叫 docker 的东西」。用户显式写了路径却根本不生效，
+/// 正是这个坑（`DOCKER_CLI=/opt/bin/docker` 而 `docker` 不在 PATH 时
+/// 会直接报 `not found on PATH`）。
+///
+/// 文件名认不出来时也照样用这个路径，工具类型按 docker 记——用户都写死了，
+/// 别跟他争。
 fn with_cli_override(
   candidates : Array[BackendCandidate],
   env : Map[String, String],
@@ -81,24 +100,45 @@ fn with_cli_override(
     None => candidates
     Some(program) => {
       let name = base_name_of(program)
-      let promoted = []
+      let tool = match tool_of_name(name) {
+        Some(tool) => tool
+        None => CliTool::Docker
+      }
+      // 同名的 `Cli(tool)` 候选要摘掉，避免同一个工具探两遍
       let rest = []
       for candidate in candidates {
         match candidate {
-          BackendCandidate::Cli(tool) if Some(tool) == tool_of_name(name) => ()
+          BackendCandidate::Cli(candidate_tool) if candidate_tool == tool => ()
           _ => rest.push(candidate)
         }
       }
-      if tool_of_name(name) is Some(_) {
-        // 显式指定了 DOCKER_CLI：即使文件名不认识，也当 docker 用
-        let tool = match tool_of_name(name) {
-          Some(tool) => tool
-          None => CliTool::Docker
-        }
-        promoted.push(BackendCandidate::Cli(tool))
-      }
-      promoted + rest
+      [BackendCandidate::Program(program, tool)] + rest
     }
+  }
+}
+
+///|
+/// 一个候选最终会用哪个可执行文件。
+///
+/// `Program` 原样返回它带的路径（`DOCKER_CLI` 的语义就是「用这个文件」）；
+/// `Cli` 按 `PATH` + 常见目录解析。与 `resolve_backend` 的选择口径一致，
+/// 测试用它钉住「`DOCKER_CLI` 在 PATH 之外也得能用」这条。
+pub async fn resolve_candidate_for_test(
+  candidate : BackendCandidate,
+  env : Map[String, String],
+) -> String? {
+  let path = path_of_env(env)
+  let allow_fallback = env.get("PATH") is None
+  match candidate {
+    Socket(_) => None
+    Program(program, _) =>
+      if is_executable_file(program) {
+        Some(program)
+      } else {
+        None
+      }
+    Cli(tool) =>
+      resolve_executable_opts(Show::to_string(tool), path, allow_fallback~)
   }
 }
 
@@ -128,30 +168,79 @@ fn tool_of_name(name : String) -> CliTool? {
 
 ///|
 /// 单个候选的可用性判定。
-#warnings("-unused_async")
 async fn health_check(
   candidate : BackendCandidate,
   path : String,
+  timeout_ms~ : Int32,
   allow_fallback~ : Bool,
 ) -> (Bool, String) {
   match candidate {
-    Socket(path) => {
-      let kind = @fs.kind(path) catch { _ => @fs.FileKind::Unknown }
-      if kind is @fs.FileKind::Socket {
-        (true, "socket exists")
-      } else if kind is @fs.FileKind::Unknown {
-        (false, "socket not found at \{path}")
-      } else {
-        (false, "\{path} exists but is not a socket")
+    Socket(path) =>
+      match socket_health(path, timeout_ms~) {
+        Some(reason) => (false, reason)
+        None => (true, "socket answers _ping")
       }
-    }
     Cli(tool) =>
       match
         resolve_executable_opts(Show::to_string(tool), path, allow_fallback~) {
         Some(found) => (true, "found at \{found}")
         None => (false, "not found on PATH")
       }
+    // `DOCKER_CLI` 给的是路径：就看这个路径在不在、可不可执行，
+    // 不回落 PATH / 常见目录——用户指的是哪个文件就是哪个
+    Program(program, _) =>
+      if is_executable_file(program) {
+        (true, "explicit DOCKER_CLI at \{program}")
+      } else {
+        (false, "DOCKER_CLI=\{program} is not an executable file")
+      }
   }
+}
+
+///|
+/// socket 候选的真实可用性：先看文件是不是 socket，再发一个**有超时的** `_ping`。
+///
+/// 「文件是个 socket」不等于「daemon 活着」。CNB / 容器里常见的情形是
+/// `/var/run/docker.sock` 由外层**转发**进来：文件在、`connect(2)` 也立刻成功，
+/// 但对端（真正的 daemon）可能不通。旧实现只看文件类型就判「可用」，
+/// 于是后面的请求停在「等状态行」上不动——用户看到的就是「跑起来啥也没有」。
+///
+/// 这里把这一步前移成一个有界的探活：通了才算可用，不通就把 socket 这个候选
+/// 让给后面的 CLI 候选，并在探测记录里写明为什么（`--verbose` 能看见）。
+/// `timeout_ms <= 0` 时不设上限——只在测试里有意义，生产入口默认非 0。
+///
+/// 返回 `None` 表示健康，`Some(reason)` 是失败原因（给人看的一行话）。
+async fn socket_health(path : String, timeout_ms~ : Int32) -> String? {
+  let kind = @fs.kind(path) catch { _ => @fs.FileKind::Unknown }
+  if kind is @fs.FileKind::Unknown {
+    return Some("socket not found at \{path}")
+  }
+  if !(kind is @fs.FileKind::Socket) {
+    return Some("\{path} exists but is not a socket")
+  }
+  let uri = match parse_unix_uri("unix://\{path}") {
+    Some(uri) => uri
+    None => return Some("\{path} is not a usable unix socket path")
+  }
+  // `_ping` 不带版本前缀，是全版本 daemon 都有的端点
+  let ping = http_over_unix(
+    uri.path,
+    {
+      http_method: "GET",
+      path: "/_ping",
+      host: uri.host,
+      headers: [],
+      body: b"",
+    },
+    timeout_ms,
+  ) catch {
+    err =>
+      return Some("\{path} is a socket but does not answer: \{err.to_string()}")
+  }
+  if ping.status != 200 {
+    return Some("\{path} answered _ping with HTTP \{ping.status}")
+  }
+  None
 }
 
 ///|

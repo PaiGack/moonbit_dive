@@ -40,12 +40,20 @@ pub(open) trait ImageSource {
 
 ### CLI 后端
 
-- 可执行文件发现：`DOCKER_CLI` 显式指定 → PATH 查找 → 常见安装路径兜底
+- 可执行文件发现：`DOCKER_CLI` 显式指定的**路径** → PATH 查找 → 常见安装路径兜底。
+  `DOCKER_CLI` 是「用这个文件」，不是「去 PATH 上找这个名字」：
+  它在候选里是独立的 `BackendCandidate::Program(路径, 工具)`，
+  不再折回 `Cli(工具名)`——否则路径被丢掉，PATH 上没有同名文件时会
+  报 `not found on PATH`，用户写死的程序根本不会被调用
 - **不整体读进 `String`**：`run_cli` 走 `read_from_process` 拿 `Bytes`；
   `save_to_file` 再进一步，stdout 直接 `redirect_to_file`，大镜像不驻留内存
 - 退出码与 stderr 透传：`Backend(name, code, stderr)`，排查不靠猜
 - 超时与中断：`with_timeout_opt` 包住「spawn + 读两个流 + wait」，
   超时后 `hard_cancel()` 给子进程 SIGKILL
+- **默认超时 30s**（`default_timeout_ms`），不是「不设超时」：
+  `/var/run/docker.sock` 由外层转发时，socket 在、`connect` 也成功，
+  但对端不通——没有超时就会停在「等状态行」上永远不返回（见 issue #42）。
+  `cmd/main --timeout <秒>` 可调大，只认正整数
 
 ### Engine 后端
 
@@ -55,6 +63,9 @@ pub(open) trait ImageSource {
   老 daemon 不回该头时退回 `1.24`
 - `GET /images/{name}/get` 响应是 tar 流，直接喂给 P2，不落盘
 - `DOCKER_HOST`：只支持 `unix://`；`tcp://` / `ssh://` / context store 见「后续」
+- **探测阶段真发一次 `_ping`**：socket 文件存在 ≠ daemon 可用。
+  转发进来的 socket 会 accept 但不回，旧实现只看文件类型就判可用，
+  之后的请求就悬住了。有界探活把这一步前移，不通就换候选
 
 ### 与四包的接线
 
@@ -70,6 +81,8 @@ pub(open) trait ImageSource {
   # 本地缺镜像时默认先拉一次（对齐原版 dive）；--no-pull 关掉，纯离线绝不发网络请求
   moon run --target native cmd/main -- nginx:latest --from-image
   moon run --target native cmd/main -- nginx:latest --from-image --no-pull
+  # 单次 docker 调用的超时（秒），默认 30；拉大镜像时调大
+  moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
   # 与既有开关组合，行为不变
   moon run --target native cmd/main -- nginx:latest --from-image --rules rules.json --format annotations
   ```

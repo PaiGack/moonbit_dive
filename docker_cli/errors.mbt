@@ -32,10 +32,17 @@ pub impl Show for DockerCliError with fn to_string(self) {
       "  or run DOCKER_HOST=unix:///var/run/docker.sock, or pass a tar file directly"
     Backend(name, code, stderr) => {
       let trimmed = stderr.trim()
-      if trimmed.is_empty() {
-        "\{name} exited with code \{code}"
+      // code < 0 表示「不是子进程退出」：Engine 的 HTTP 失败、建连失败都走这条路。
+      // 硬写成 `exited with code -1` 会把人往「子进程挂了」的方向带偏。
+      let prefix = if code < 0 {
+        "\{name} failed"
       } else {
-        "\{name} exited with code \{code}: \{trimmed}"
+        "\{name} exited with code \{code}"
+      }
+      if trimmed.is_empty() {
+        prefix
+      } else {
+        "\{prefix}: \{trimmed}"
       }
     }
     ExecutableNotFound(name) => "executable not found: \{name}"

@@ -67,8 +67,14 @@ pub extend CliTool with Show::{to_string, output}
 pub(all) enum BackendCandidate {
   /// `DOCKER_HOST=unix://...` 显式指定的 socket
   Socket(String)
-  /// CLI 可执行文件
+  /// CLI 可执行文件，按 `CliTool` 的名字去 PATH 上找
   Cli(CliTool)
+  /// `DOCKER_CLI` 显式指定的可执行文件路径。
+  ///
+  /// 单独成一个变体而不是复写 `Cli`：`DOCKER_CLI=/opt/bin/docker` 的语义是
+  /// 「就用这个文件」，不是「去 PATH 上找叫 docker 的东西」。把它折回
+  /// `Cli(tool)` 会让那个路径被丢掉——用户写死的程序根本不会被调用。
+  Program(String, CliTool)
 } derive(Eq, Debug)
 
 ///|
@@ -82,6 +88,7 @@ impl Show for BackendCandidate with fn to_string(self) {
   match self {
     Socket(path) => "unix://\{path}"
     Cli(tool) => "\{tool}"
+    Program(path, _) => path
   }
 }
 
