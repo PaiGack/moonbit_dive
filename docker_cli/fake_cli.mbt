@@ -58,6 +58,50 @@ pub fn fake_inspect_and_save(
 }
 
 ///|
+/// 造一个假 CLI：把每次调用的子命令与参数追加到 `log_path`，然后按 `case` 分派。
+///
+/// `inspect` / `save` / `pull` 分别吐 `inspect_json` / 归档 / `pull_output`，
+/// 用来验证「本地有没有镜像 → 要不要 pull → pull 之后才 save」这条策略：
+/// 光看最终产物分不清中间做过什么，得看日志里的**调用顺序**。
+/// `inspect_code` 非 0 时 inspect 走失败分支，模拟「本地没有这个镜像」。
+///
+/// 命令名靠 `basename "$0"` 取，测 `podman` / `nerdctl` 时可以换个文件名。
+pub fn fake_recording_cli(
+  log_path : String,
+  archive_path : String,
+  inspect_json : String,
+  pull_output~ : String = "Pull complete\n",
+  inspect_code~ : Int32 = 0,
+) -> String {
+  let script =
+    #|#!/bin/sh
+    #|printf '%s\\n' "$*" >> 'LOG_PATH'
+    #|case "$1" in
+    #|  inspect)
+    #|    printf '%s' 'INSPECT_JSON'
+    #|    exit INSPECT_CODE
+    #|    ;;
+    #|  save)
+    #|    cat 'ARCHIVE_PATH'
+    #|    ;;
+    #|  pull)
+    #|    printf '%s' 'PULL_OUTPUT'
+    #|    ;;
+    #|  *)
+    #|    echo "unexpected command: $1" >&2
+    #|    exit 2
+    #|    ;;
+    #|esac
+    #|
+  script
+  .replace(old="LOG_PATH", new=log_path)
+  .replace(old="ARCHIVE_PATH", new=archive_path)
+  .replace(old="INSPECT_JSON", new=inspect_json)
+  .replace(old="PULL_OUTPUT", new=pull_output)
+  .replace(old="INSPECT_CODE", new=inspect_code.to_string())
+}
+
+///|
 /// 造一个「`inspect` 报错」的假 docker：非零退出 + stderr 有内容，
 /// 用来验证错误信息会透传子进程的 stderr。
 pub fn fake_failing_cli(message : String, code : Int32) -> String {

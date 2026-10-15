@@ -38,10 +38,11 @@ test "top rejects non-numeric input" {
 }
 
 ///|
-/// `--from-image` / `--verbose` 默认关；给了要能认出来。
+/// `--from-image` / `--pull` / `--verbose` 默认关；给了要能认出来。
 test "from-image and verbose flags are parsed" {
   let options = parse_options(["nginx:latest"])
   assert_false(options.from_image)
+  assert_false(options.pull)
   assert_false(options.verbose)
 
   let options = parse_options(["nginx:latest", "--from-image", "--verbose"])
@@ -51,6 +52,21 @@ test "from-image and verbose flags are parsed" {
   assert_eq(options.image, "nginx:latest")
   assert_eq(options.format, "text")
   assert_eq(options.layer, None)
+  // 不给 `--pull` 就不该顺手开启拉取
+  assert_false(options.pull)
+}
+
+///|
+/// `--pull` 单独给（没有 `--from-image`）也解析得出来，但取归档时不生效：
+/// 位置参数仍是文件，链路完全不碰 docker。
+test "pull is parsed but inert without from-image" {
+  let options = parse_options(["demo.tar", "--pull"])
+  assert_true(options.pull)
+  assert_false(options.from_image)
+
+  let options = parse_options(["nginx:latest", "--from-image", "--pull"])
+  assert_true(options.pull)
+  assert_true(options.from_image)
 }
 
 ///|

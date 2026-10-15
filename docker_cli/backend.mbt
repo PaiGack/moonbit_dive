@@ -4,6 +4,12 @@
 pub(open) trait ImageSource {
   async fn inspect(Self, String) -> ImageInfo raise DockerCliError
   async fn save(Self, String) -> Bytes raise DockerCliError
+  /// 把镜像拉到本地。本地已有（或拉取过程判定为「已存在」）时是空操作。
+  ///
+  /// 单独成一个方法而不是折进 `save`：`save` 的契约是「本地必须已有」，
+  /// 拉了才 save 属于调用方（`cmd/main --from-image`）的策略，
+  /// 包一层 `pull` 让这个策略显式、可关、可单独测。
+  async fn pull(Self, String) -> Unit raise DockerCliError
 }
 
 ///|

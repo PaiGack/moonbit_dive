@@ -77,3 +77,131 @@ async test "cli backend output feeds P2 end to end" {
   remove_fake_cli(program)
   remove_temp_bytes(archive_path)
 }
+
+///|
+/// 「本地没有就先拉」的调用顺序：`inspect` 说没有 → `pull` → `save`。
+///
+/// 顺序是这个能力的全部内容：光看最终归档分不清中间做没做 pull，
+/// 拿 fake CLI 的调用日志才验得住。
+async test "pull_if_missing inspects, pulls, then saves" {
+  let dir = @fs.tmpdir(prefix="dive-pullflow-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  let archive = @docker_cli.build_docker_archive([
+    ("beef", @layer_tree.build_tar([File("etc/os-release", "ID=moonbit")])),
+  ])
+  let archive_path = @docker_cli.write_temp_bytes("pullflow.tar", archive)
+  let script = @docker_cli.fake_recording_cli(
+    log,
+    archive_path,
+    "[]",
+    inspect_code=1,
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+  let resolved = @docker_cli.resolve_backend(
+    [@docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker)],
+    { "PATH": bin },
+  ) catch {
+    err => fail("resolve should succeed: \{err}")
+  }
+  let saved = @docker_cli.save_maybe_pulling(
+    resolved.backend,
+    "example:latest",
+    pull_if_missing=true,
+  ) catch {
+    err => fail("save_maybe_pulling should succeed: \{err}")
+  }
+  assert_eq(saved, archive)
+  let calls = @fs.read_file(log).text()
+  // 三次调用按序发生：先问本地有没有，没有就拉，拉完再取归档
+  assert_true(calls.has_prefix("inspect example:latest"))
+  assert_true(calls.contains("pull example:latest"))
+  assert_true(calls.contains("save example:latest"))
+  assert_true(
+    calls.find("pull example:latest") < calls.find("save example:latest"),
+  )
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
+  @fs.rmdir(dir, recursive=true)
+}
+
+///|
+/// 本地已经有了就**不拉**：`pull_if_missing` 不能变成「每次运行都上网」。
+async test "pull_if_missing leaves a local image alone" {
+  let dir = @fs.tmpdir(prefix="dive-pulllocal-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  let archive = @docker_cli.build_docker_archive([
+    ("beef", @layer_tree.build_tar([File("etc/os-release", "ID=moonbit")])),
+  ])
+  let archive_path = @docker_cli.write_temp_bytes("pulllocal.tar", archive)
+  let script = @docker_cli.fake_recording_cli(
+    log, archive_path, "[{\"Id\":\"sha256:beef\"}]",
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+  let resolved = @docker_cli.resolve_backend(
+    [@docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker)],
+    { "PATH": bin },
+  ) catch {
+    err => fail("resolve should succeed: \{err}")
+  }
+  ignore(
+    @docker_cli.save_maybe_pulling(
+      resolved.backend,
+      "example:latest",
+      pull_if_missing=true,
+    ) catch {
+      err => fail("save_maybe_pulling should succeed: \{err}")
+    },
+  )
+  let calls = @fs.read_file(log).text()
+  assert_true(calls.contains("inspect example:latest"))
+  assert_true(calls.contains("save example:latest"))
+  assert_true(!calls.contains("pull example:latest"))
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
+  @fs.rmdir(dir, recursive=true)
+}
+
+///|
+/// 不给 `pull_if_missing`（缺省）时一次 `inspect` 都不做：默认行为与以前完全一致，
+/// 不会因为多了个开关就平白多一次 daemon 往返。
+async test "without pull_if_missing the backend is used as before" {
+  let dir = @fs.tmpdir(prefix="dive-nopull-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  let archive = @docker_cli.build_docker_archive([
+    ("beef", @layer_tree.build_tar([File("etc/os-release", "ID=moonbit")])),
+  ])
+  let archive_path = @docker_cli.write_temp_bytes("nopull.tar", archive)
+  let script = @docker_cli.fake_recording_cli(
+    log,
+    archive_path,
+    "[]",
+    inspect_code=1,
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+  let resolved = @docker_cli.resolve_backend(
+    [@docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker)],
+    { "PATH": bin },
+  ) catch {
+    err => fail("resolve should succeed: \{err}")
+  }
+  let saved = @docker_cli.save_maybe_pulling(resolved.backend, "example:latest") catch {
+    err => fail("save_maybe_pulling should succeed: \{err}")
+  }
+  assert_eq(saved, archive)
+  let calls = @fs.read_file(log).text()
+  assert_true(!calls.contains("inspect"))
+  assert_true(!calls.contains("pull"))
+  assert_true(calls.contains("save example:latest"))
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
+  @fs.rmdir(dir, recursive=true)
+}

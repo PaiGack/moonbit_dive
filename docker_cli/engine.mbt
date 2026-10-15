@@ -120,12 +120,16 @@ impl ImageSource for EngineSource with fn save(self, reference) {
 
 ///|
 /// `POST /images/create?fromImage=<name>&tag=<tag>`，把镜像拉到本地。
-/// `pull` 是可选能力（issue #17 标了「本地缺失时」），
-/// 这里只做触发 + 结果判定，不解析流式进度。
-pub async fn EngineSource::pull(
-  self : EngineSource,
-  reference : String,
-) -> Unit raise DockerCliError {
+///
+/// 响应是 `application/vnd.docker.raw-stream`：一行一个 JSON 事件，
+/// 形如 `{"status":"Pulling fs layer","id":"0a3621ec1dd4"}`，
+/// 出错时是 `{"errorDetail":{"message":"..."}}`。
+/// 这里**真解析**这些事件：HTTP 200 不代表拉成功——
+/// daemon 会在流里回 200 之后再吐 `errorDetail`（镜像不存在、认证失败、
+/// registry 不可达都走这条路）。只看状态码会把失败当成成功。
+///
+/// 进度本身不打日志：这是包一层的能力，输出归调用方管。
+impl ImageSource for EngineSource with fn pull(self, reference) {
   guard_engine_reference(reference)
   if self.api_prefix.is_empty() {
     self.negotiate() |> ignore
@@ -145,6 +149,53 @@ pub async fn EngineSource::pull(
   )
   if response.status != 200 {
     raise Backend(self.uri.path, response.status, error_body(response))
+  }
+  match pull_error_of_stream(bytes_to_string(response.body)) {
+    Some(message) => raise Backend(self.uri.path, response.status, message)
+    None => ()
+  }
+}
+
+///|
+/// 从 pull 的 raw-stream 里挖出第一条 `error` / `errorDetail.message`。
+///
+/// 逐行解析、坏行直接跳过：daemon 的进度行与错误行混在一条流里，
+/// 一条解析不了的噪声不该让整个判定失败（失败判定要保守，
+/// 但「流里有明确错误」这件事必须被抓到）。
+pub fn pull_error_of_stream(stream : String) -> String? {
+  for line in stream.split("\n") {
+    let text = line.trim()
+    if !text.has_prefix("{") {
+      continue
+    }
+    let parsed = @json.parse(text) catch { _ => continue }
+    match pull_error_of_event(parsed) {
+      Some(message) => return Some(message)
+      None => ()
+    }
+  }
+  None
+}
+
+///|
+/// 单个事件对象里的错误字段。优先 `errorDetail.message`（新版 daemon），
+/// 退回 `error`（老版 daemon 与部分代理）。
+fn pull_error_of_event(event : Json) -> String? {
+  let fields = match event {
+    Object(fields) => fields
+    _ => return None
+  }
+  match fields.get("errorDetail") {
+    Some(Object(detail)) =>
+      match detail.get("message") {
+        Some(String(message)) => return Some(message)
+        _ => ()
+      }
+    _ => ()
+  }
+  match fields.get("error") {
+    Some(String(message)) => Some(message)
+    _ => None
   }
 }
 
@@ -233,7 +284,7 @@ fn error_body(response : HttpResponse) -> String {
 }
 
 ///|
-pub extend EngineSource with ImageSource::{inspect, save}
+pub extend EngineSource with ImageSource::{inspect, save, pull}
 
 ///|
 /// 测试入口：暴露版本前缀拼接。
