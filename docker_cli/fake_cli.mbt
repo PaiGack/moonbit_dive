@@ -149,10 +149,19 @@ pub async fn remove_temp_bytes(path : String) -> Unit {
 /// 与 `fake_inspect_and_save` 分开：大归档的用例只关心 `save`，
 /// 让脚本尽量简单，别在 shell 层引入额外开销。
 /// 归档由 `write_large_archive` 流式生成，脚本只负责把它转出去。
+///
+/// `inspect` 回 `[{...}]`（= 本地已有）、`pull` 是空操作：
+/// 「本地缺镜像就拉」现在是默认行为，用例若不声明本地已有，
+/// 链路会先走一次 `pull`，这些只关心 `save` 的用例就会被带偏。
 pub fn fake_cat_cli(archive_path : String) -> String {
   let script =
     #|#!/bin/sh
     #|case "$1" in
+    #|  inspect)
+    #|    echo '[{"Id":"sha256:local"}]'
+    #|    ;;
+    #|  pull)
+    #|    ;;
     #|  save)
     #|    cat 'ARCHIVE_PATH'
     #|    ;;

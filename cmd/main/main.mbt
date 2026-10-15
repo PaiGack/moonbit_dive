@@ -8,8 +8,9 @@
 /// 3. `image_analysis` 出体积报告
 /// 4. `image_ci` 按规则判定，输出人类可读 / JSON / CI 注解
 ///
-/// `--pull` 只跟 `--from-image` 一起用：本地没有这个镜像时先去 daemon 拉一次，
-/// 默认（不给 `--pull`）绝不发起网络请求，`docker save` 找不到就是找不到。
+/// `--from-image` 时的「本地没有就先拉」默认**开着**，对齐原版 dive（Go）：
+/// 那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就 `docker pull` 一次。
+/// 想完全离线（不给任何网络请求）就用 `--no-pull`。
 ///
 /// `--layer` / `--path` / `--efficiency` 是 dive 交互界面的只读替身：没有 TUI，
 /// 但能逐层看文件树、按目录下钻、按「多写了几份」看哪条路径拖了效率。
@@ -95,8 +96,8 @@ fn cli() -> @argparse.Command {
         about="treat the positional as an image reference (docker/podman/nerdctl or docker socket)",
       ),
       @argparse.FlagArg(
-        "pull",
-        about="pull the image when it is missing locally (with --from-image)",
+        "no-pull",
+        about="with --from-image, do not pull a missing image (offline: never touch the network)",
       ),
       @argparse.FlagArg(
         "verbose",
@@ -124,8 +125,8 @@ struct Options {
   efficiency : Bool
   /// 把位置参数当镜像名，走 `docker_cli` 取归档
   from_image : Bool
-  /// `--from-image` 时本地没有就先去 `pull`（默认只认本地）
-  pull : Bool
+  /// `--no-pull`：`--from-image` 时本地缺镜像也不拉，绝不发起网络请求
+  no_pull : Bool
   /// 打 `docker_cli` 的后端探测记录
   verbose : Bool
   top : Int32
@@ -149,7 +150,7 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     path: optional_value(matches, "path"),
     efficiency: flag_of(matches, "efficiency"),
     from_image: flag_of(matches, "from-image"),
-    pull: flag_of(matches, "pull"),
+    no_pull: flag_of(matches, "no-pull"),
     verbose: flag_of(matches, "verbose"),
     top: top_of(matches),
   }
@@ -261,8 +262,10 @@ fn report_error(error : CommandError) -> Unit {
 ///   再喂给既有的 `ImageSource::from_tar_bytes`——**不新开分析链路**
 ///
 /// 显式开关优先：不给 `--from-image` 就绝不连 daemon，
-/// 避免「给个文件却去连 docker」这种意外行为；不给 `--pull` 就绝不发起拉取
-/// （`--pull` 单独给也没用，必须与 `--from-image` 同时在场）。
+/// 避免「给个文件却去连 docker」这种意外行为。
+///
+/// `--from-image` 下本地缺镜像默认会拉一次（对齐原版 dive），
+/// `--no-pull` 关掉它——关掉后就是纯离线，`docker save` 找不到就是找不到。
 async fn load_source(
   options : Options,
   env~ : Map[String, String] = @docker_cli.process_env(),
@@ -277,7 +280,7 @@ async fn load_source(
     options.image,
     env~,
     candidates?,
-    pull_if_missing=options.pull && options.from_image,
+    pull_if_missing=!options.no_pull,
   ) catch {
     // NoBackend / ExecutableNotFound / InvalidReference / Backend 都归到 Docker：
     // `Show` 已经把这些转成人话（含安装提示与子进程 stderr）
@@ -288,8 +291,10 @@ async fn load_source(
     eprintln(
       "[docker] using \{@docker_cli.ImageBackend::to_string(resolved.backend)}",
     )
-    if options.pull {
-      eprintln("[docker] --pull: will fetch the image if it is missing locally")
+    if options.no_pull {
+      eprintln("[docker] --no-pull: will not fetch a missing image")
+    } else {
+      eprintln("[docker] will pull the image if it is missing locally")
     }
     let described = @docker_cli.describe_backends(resolved.probed)
     if !described.is_empty() {

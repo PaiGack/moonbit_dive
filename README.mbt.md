@@ -34,8 +34,8 @@ moon run --target native cmd/main -- demo-image.tar --efficiency --format json
 # 不落盘直接分析在线镜像：位置参数当镜像名，走 docker_cli 取归档
 moon run --target native cmd/main -- nginx:latest --from-image
 moon run --target native cmd/main -- nginx:latest --from-image --verbose
-# 本地没有这个镜像时先拉一次（默认只认本地）
-moon run --target native cmd/main -- nginx:latest --from-image --pull
+# 完全离线：本地缺镜像也不拉，一次网络请求都不发
+moon run --target native cmd/main -- nginx:latest --from-image --no-pull
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
@@ -47,8 +47,10 @@ moon run --target native cmd/main -- nginx:latest --from-image --pull
 这个表的 `size` 是 `cumulative - min`，**与报告里 `wasteful paths` 的 `wasted_bytes`
 不是同一个数**，口径差异见 [`image_analysis/README.mbt.md`](image_analysis/README.mbt.md)。
 
-`--from-image` 把位置参数当镜像名：默认只认本地（**不给 `--pull` 绝不发起网络请求**），
-`--pull` 时若 `inspect` 说本地没有就先拉再取；后端探测与降级见
+`--from-image` 把位置参数当镜像名：本地缺这个镜像时**默认先拉一次**再取，
+对齐原版 dive（Go）——那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就
+`docker pull` 一次。要完全离线（绝不发起网络请求、`inspect` 说没有就直接 `save`）
+加 `--no-pull`。后端探测与降级见
 [`docker_cli/README.mbt.md`](docker_cli/README.mbt.md)。
 
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
