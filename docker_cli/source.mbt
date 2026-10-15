@@ -58,6 +58,18 @@ pub(all) struct ResolvedBackend {
 pub extend ResolvedBackend with @debug.Debug::{to_repr}
 
 ///|
+/// 一次后端调用的默认超时（毫秒）。
+///
+/// 不能是 0（无超时）：`/var/run/docker.sock` 在 CNB 这类环境里是**转发进来**的，
+/// socket 文件在、`connect` 也能立刻成功，但对端（真正的 daemon）可能根本不通。
+/// 没有超时的话，请求会停在「等状态行」上**永远不返回**，用户看到的是
+/// 「完全没有任何输出」——排查成本远超一次明确的超时错误。
+///
+/// 30 秒是「够慢的拉取起步、又不至于让人以为卡死」的折中；
+/// 真要长时间拉大镜像，调用方显式传更大的 `timeout_ms`。
+pub let default_timeout_ms : Int32 = 30000
+
+///|
 /// 按候选顺序探测出第一个可用后端，并构造好对应的 `ImageBackend`。
 ///
 /// 一个都探不到时抛 `NoBackend`，错误信息里带上每个候选的失败原因——
@@ -65,9 +77,9 @@ pub extend ResolvedBackend with @debug.Debug::{to_repr}
 pub async fn resolve_backend(
   candidates : Array[BackendCandidate],
   env : Map[String, String],
-  timeout_ms~ : Int32 = 0,
+  timeout_ms~ : Int32 = default_timeout_ms,
 ) -> ResolvedBackend raise DockerCliError {
-  let probed = probe_backends(candidates, env) catch {
+  let probed = probe_backends(candidates, env, timeout_ms~) catch {
     err => raise NoBackend("backend probing failed: \{err}")
   }
   match probed.candidate {
@@ -82,6 +94,15 @@ pub async fn resolve_backend(
         probed,
       }
     }
+    // `Program` 是 `DOCKER_CLI` 写死的路径，直接用；`Cli` 才去 PATH 上重解析。
+    // 两者分开是为了不让「探测用的名字」和「调用用的名字」再对不上一次。
+    Some(BackendCandidate::Program(program, tool)) =>
+      {
+        backend: ImageBackend::Cli(
+          DockerCliSource::new(program, tool~, timeout_ms~),
+        ),
+        probed,
+      }
     Some(BackendCandidate::Cli(tool)) => {
       let name = Show::to_string(tool)
       let program = match
@@ -126,7 +147,7 @@ pub fn process_env() -> Map[String, String] {
 pub async fn fetch_archive(
   reference : String,
   env~ : Map[String, String] = process_env(),
-  timeout_ms~ : Int32 = 0,
+  timeout_ms~ : Int32 = default_timeout_ms,
   pull_if_missing~ : Bool = false,
 ) -> Bytes raise DockerCliError {
   let candidates = default_candidates(env)
@@ -189,7 +210,7 @@ async fn image_is_local(
 pub async fn fetch_archive_verbose(
   reference : String,
   env~ : Map[String, String] = process_env(),
-  timeout_ms~ : Int32 = 0,
+  timeout_ms~ : Int32 = default_timeout_ms,
   candidates? : Array[BackendCandidate],
   pull_if_missing~ : Bool = false,
 ) -> (Bytes, ResolvedBackend) raise DockerCliError {

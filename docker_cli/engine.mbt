@@ -44,7 +44,11 @@ pub async fn EngineSource::negotiate(
     self.timeout_ms,
   )
   if response.status != 200 {
-    raise Backend(self.uri.path, response.status, "GET /_ping failed")
+    raise Backend(
+      self.uri.path,
+      -1,
+      "GET /_ping answered HTTP \{response.status}",
+    )
   }
   let version = match response.header("API-Version") {
     Some(value) => value.trim()
@@ -82,7 +86,12 @@ impl ImageSource for EngineSource with fn inspect(self, reference) {
     self.timeout_ms,
   )
   if response.status != 200 {
-    raise Backend(self.uri.path, response.status, error_body(response))
+    raise Backend(
+      self.uri.path,
+      -1,
+      "GET /images/\{reference}/json answered HTTP \{response.status}: " +
+      error_body(response),
+    )
   }
   parse_inspect(CliTool::Docker, response.body, reference)
 }
@@ -106,14 +115,15 @@ impl ImageSource for EngineSource with fn save(self, reference) {
     self.timeout_ms,
   )
   if response.status != 200 {
-    raise Backend(self.uri.path, response.status, error_body(response))
-  }
-  if response.body.is_empty() {
     raise Backend(
       self.uri.path,
-      response.status,
-      "save produced an empty archive",
+      -1,
+      "GET /images/\{reference}/get answered HTTP \{response.status}: " +
+      error_body(response),
     )
+  }
+  if response.body.is_empty() {
+    raise Backend(self.uri.path, -1, "save produced an empty archive")
   }
   response.body
 }
@@ -148,10 +158,16 @@ impl ImageSource for EngineSource with fn pull(self, reference) {
     self.timeout_ms,
   )
   if response.status != 200 {
-    raise Backend(self.uri.path, response.status, error_body(response))
+    raise Backend(
+      self.uri.path,
+      -1,
+      "POST /images/create answered HTTP \{response.status}: " +
+      error_body(response),
+    )
   }
+  // 200 只是「流开了」：真正的失败藏在流里的 errorDetail，见 pull_error_of_stream
   match pull_error_of_stream(bytes_to_string(response.body)) {
-    Some(message) => raise Backend(self.uri.path, response.status, message)
+    Some(message) => raise Backend(self.uri.path, -1, message)
     None => ()
   }
 }

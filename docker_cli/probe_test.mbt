@@ -37,23 +37,56 @@ test "non-unix DOCKER_HOST is skipped" {
 }
 
 ///|
-/// `DOCKER_CLI` 指定的工具被提到最前面，其余候选顺序不动。
-test "DOCKER_CLI promotes the chosen tool" {
+/// `DOCKER_CLI` 指定的文件被提到最前面，其余候选顺序不动。
+///
+/// 提上来的是 `Program(路径, ...)` 而**不是** `Cli(工具名)`：
+/// `DOCKER_CLI` 写的是「用哪个文件」，不是「去 PATH 上找哪个名字」。
+/// 折回 `Cli(tool)` 会把路径扔掉，用户写死的程序根本不会被调用。
+test "DOCKER_CLI promotes the explicit program" {
   let env = { "DOCKER_CLI": "/opt/bin/podman" }
   let candidates = @docker_cli.default_candidates(env)
   let promoted = @docker_cli.probe_order_for_test(candidates, env)
   assert_eq(
     promoted[0],
-    @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Podman),
+    @docker_cli.BackendCandidate::Program(
+      "/opt/bin/podman",
+      @docker_cli.CliTool::Podman,
+    ),
   )
-  // 原来的 podman 位置不能重复出现
+  // 同名工具的 PATH 候选要摘掉：同一个 podman 不该探两遍
   let podman_count = promoted.fold(init=0, (acc, candidate) => {
     match candidate {
       @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Podman) => acc + 1
+      @docker_cli.BackendCandidate::Program(_, @docker_cli.CliTool::Podman) =>
+        acc + 1
       _ => acc
     }
   })
   assert_eq(podman_count, 1)
+}
+
+///|
+/// `DOCKER_CLI` 指向 PATH 之外的文件时，探测要认这个路径本身。
+///
+/// 这是 issue #42 的一个真实坑：`DOCKER_CLI=/opt/bin/docker` 而 `docker`
+/// 不在 PATH 上时，旧实现拿 basename 去 PATH 上找 → 报 `not found on PATH`，
+/// 用户写死的路径等于白写。
+async test "DOCKER_CLI outside PATH is still usable" {
+  // 真造一个目录外的可执行文件：PATH 指向别处，路径本身才作数
+  let dir = @fs.tmpdir(prefix="dive-docker-cli-")
+  let program = "\{dir}/docker"
+  @fs.write_file(program, "#!/bin/sh\nexit 0\n", permission=0o755)
+  let env = {
+    "DOCKER_CLI": program,
+    // PATH 里没有 docker
+    "PATH": "/nonexistent",
+  }
+  let resolved = @docker_cli.resolve_candidate_for_test(
+    @docker_cli.BackendCandidate::Program(program, @docker_cli.CliTool::Docker),
+    env,
+  )
+  assert_eq(resolved, Some(program))
+  @fs.rmdir(dir, recursive=true)
 }
 
 ///|
@@ -146,4 +179,66 @@ async test "resolve_backend reports NoBackend without a daemon" {
   assert_true(text.contains("no usable docker backend"))
   assert_true(text.contains("DOCKER_CLI"))
   @fs.rmdir(dir, recursive=true)
+}
+
+///|
+/// socket 文件在、但对端不答：探测要判它**不可用**，而不是当选中的后端。
+///
+/// 这是 issue #42「完全没有任何输出」的根因。CNB / 容器里
+/// `/var/run/docker.sock` 是外层转发进来的：文件在、`connect(2)` 也立刻成功，
+/// 但对端（真 daemon）不通。旧实现只看文件类型就判可用，之后的请求
+/// 停在「等状态行」上永远不返回 —— 用户看到的就是「跑起来啥也没有」。
+///
+/// 现在探测阶段就发一次有超时的 `_ping`：不答就换下一个候选，并把原因写进记录。
+#cfg(not(platform="windows"))
+async test "a socket that never answers _ping is not healthy" {
+  let server = @docker_cli.UnixSocketServer::start()
+  // accept 之后什么都不回：模拟半死的转发 socket
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      let conn = server.accept() catch { _ => return }
+      @async.sleep(3000)
+      conn.close()
+    })
+    let probed = @docker_cli.probe_backends(
+      [@docker_cli.BackendCandidate::Socket(server.path)],
+      {},
+      timeout_ms=300,
+    )
+    assert_true(probed.candidate is None)
+    assert_true(probed.attempts[0].reason.contains("does not answer"))
+  })
+  server.close()
+}
+
+///|
+/// socket 真能答 `_ping` 时才算健康，理由里写明是探活过的。
+#cfg(not(platform="windows"))
+async test "a socket that answers _ping is healthy" {
+  let server = @docker_cli.UnixSocketServer::start()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      serve_one(server, _request => {
+        @utf8.encode("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+      })
+    })
+    let probed = @docker_cli.probe_backends(
+      [@docker_cli.BackendCandidate::Socket(server.path)],
+      {},
+      timeout_ms=1000,
+    )
+    assert_eq(probed.index, 0)
+    assert_true(probed.attempts[0].reason.contains("_ping"))
+  })
+  server.close()
+}
+
+///|
+/// 默认超时必须是**有限**的。
+///
+/// 这条是一条「不许再退回无超时」的守门：0 表示永远等下去，
+/// 半死的 daemon 就会让 `dive --from-image` 静默挂住——
+/// 与 `--verbose` 都打不出任何东西的表现完全一致。
+test "the default timeout is finite" {
+  assert_true(@docker_cli.default_timeout_ms > 0)
 }
