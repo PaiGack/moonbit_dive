@@ -13,6 +13,14 @@ pub fn build_report(Analysis, @layer_tree.FileTree) -> Report
 
 pub fn efficiency_of_versions(Map[String, Array[Int]]) -> EfficiencyReport
 
+pub fn efficiency_view_rows(EfficiencyReport, EfficiencyViewOptions) -> Array[PathEfficiencyRow]
+
+pub let efficiency_view_schema_version : Int
+
+pub fn efficiency_view_to_json(EfficiencyReport, EfficiencyViewOptions) -> Json
+
+pub fn efficiency_view_to_json_string(EfficiencyReport, EfficiencyViewOptions) -> String
+
 pub fn file_sizes(@layer_tree.FileTree) -> Map[String, Int]
 
 pub fn hotspots(@layer_tree.FileTree, depth? : Int, limit? : Int) -> Array[Hotspot]
@@ -22,6 +30,8 @@ pub fn html_escape(String) -> String
 pub let json_report_schema_version : Int
 
 pub fn percent(Double) -> String
+
+pub fn render_efficiency_view(EfficiencyReport, EfficiencyViewOptions) -> String
 
 pub fn render_text_report(Report) -> String
 
@@ -82,6 +92,15 @@ pub fn EfficiencyReport::to_repr(Self) -> @debug.Repr
 pub fn EfficiencyReport::to_string(Self) -> String
 pub impl Show for EfficiencyReport
 
+pub(all) struct EfficiencyViewOptions {
+  path : String?
+  top : Int
+} derive(Eq, @debug.Debug)
+pub fn EfficiencyViewOptions::equal(Self, Self) -> Bool
+pub fn EfficiencyViewOptions::new(path? : String?, top? : Int) -> Self
+pub fn EfficiencyViewOptions::not_equal(Self, Self) -> Bool
+pub fn EfficiencyViewOptions::to_repr(Self) -> @debug.Repr
+
 pub(all) struct Hotspot {
   path : String
   cumulative_bytes : Int
@@ -124,6 +143,20 @@ pub fn PathEfficiency::output(Self, &Logger) -> Unit
 pub fn PathEfficiency::to_repr(Self) -> @debug.Repr
 pub fn PathEfficiency::to_string(Self) -> String
 pub impl Show for PathEfficiency
+
+pub(all) struct PathEfficiencyRow {
+  path : String
+  versions : Int
+  cumulative_bytes : Int
+  min_bytes : Int
+  size : Int
+} derive(Eq, @debug.Debug)
+pub fn PathEfficiencyRow::equal(Self, Self) -> Bool
+pub fn PathEfficiencyRow::not_equal(Self, Self) -> Bool
+pub fn PathEfficiencyRow::output(Self, &Logger) -> Unit
+pub fn PathEfficiencyRow::to_repr(Self) -> @debug.Repr
+pub fn PathEfficiencyRow::to_string(Self) -> String
+pub impl Show for PathEfficiencyRow
 
 pub(all) struct PathSize {
   path : String
