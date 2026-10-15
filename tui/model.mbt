@@ -37,16 +37,19 @@ pub fn detail_source_of(
 }
 
 ///|
-/// 从逐层视图建一次分析（详情面板要靠它）。
+/// 从**已解压**的层建一次分析（详情面板要靠它）。
 ///
-/// `browse_layers` 已经解压过每一层，这里再 `analyze_layers` 走一遍是重复劳动，
-/// 但两条链路的产物形态不同（一个是树快照、一个是体积统计），
-/// 本轮先把两条都留着；合并成一次遍历单开 issue 做，不在接线里顺手改。
-pub fn analysis_of_layers(
-  layers : Array[BytesView],
+/// 收 `DecompressedLayers` 而不是原始字节：`browse_decompressed` 用的就是它，
+/// 这里再解压一遍纯属白干（issue #52）。两条链路的产物形态仍然不同
+/// （一个是树快照、一个是体积统计），但输入已经是同一批 tar 字节。
+///
+/// 返回的 `FileTree` 是分析过程中推进到最后一层的树，交给 `build_report`
+/// 出热点——和 `browse_layers` 最后一张快照是同一棵树的内容。
+pub fn analysis_of_decompressed(
+  layers : @layer_tree.DecompressedLayers,
 ) -> (@image_analysis.Analysis, @image_analysis.Report)? {
   let tree = @layer_tree.FileTree::new()
-  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
+  let analysis = @image_analysis.analyze_decompressed(tree, layers) catch {
     _ => return None
   }
   let report = @image_analysis.build_report(analysis, tree)

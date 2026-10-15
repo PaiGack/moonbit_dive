@@ -57,7 +57,8 @@ test "README example" {
 | 层应用 | `apply_layer`、`apply_layer_with_media_type`、`apply_layers_with_diffs` |
 | whiteout | `whiteout_kind`、`WhiteoutKind`、`remove_subtree`、`make_opaque` |
 | 层间 diff | `diff_snapshots`、`diff_against_empty`、`Diff` |
-| 逐层浏览 | `browse_layers`、`LayerView`、`LayerView::subtree`、`LayerView::changed_paths` |
+| 逐层浏览 | `browse_layers`、`browse_decompressed`、`LayerView`、`LayerView::subtree`、`LayerView::changed_paths` |
+| 解压一次多路复用 | `decompress_layers`、`DecompressedLayers` |
 | 树渲染 | `render_tree`、`render_tree_between`、`render_diff` |
 
 ## whiteout 语义
@@ -113,6 +114,35 @@ test "README layer browse" {
   )
 }
 ```
+
+## 解压一次，两条链路共用
+
+逐层浏览与跨层体积分析吃的是同一批层。让两条链路各自解压一遍，在大镜像上就是
+白多花一次解压的时间、峰值内存也翻倍（issue #52）。所以解压单独抽一步：
+
+```mbt check
+///|
+test "README decompress once" {
+  let layer0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("app/main.js", "v1"),
+  ])
+  let layer1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("app/main.js", "v2"),
+  ])
+  let layers : Array[BytesView] = [layer0, layer1]
+  // 解压一遍：`decompressed` 记录的就是解压次数（等于层数）
+  let decompressed = @layer_tree.decompress_layers(layers) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(decompressed.decompressed, 2)
+  // 逐层视图从这里出，不再碰原始字节
+  let views = @layer_tree.browse_decompressed(decompressed)
+  assert_eq(views.length(), 2)
+}
+```
+
+`browse_layers` / `analyze_layers` 这些收原始字节的入口都保留，
+它们内部就是「先 `decompress_layers` 再走已解压入口」，语义完全一致。
 
 ## 设计要点
 

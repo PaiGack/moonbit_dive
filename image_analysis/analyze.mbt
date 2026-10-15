@@ -54,20 +54,26 @@ pub fn analyze_layers(
   layers : Array[BytesView],
   media_types~ : Array[String] = [],
 ) -> Analysis raise @layer_tree.LayerError {
+  analyze_decompressed(
+    tree,
+    @layer_tree.decompress_layers(layers, media_types~),
+  )
+}
+
+///|
+/// 从已解压的层记账：与 `analyze_layers` 同一套口径，只是不再解压。
+///
+/// 拆出来是给「一次解压、两条链路共用」用的（issue #52）：
+/// `browse_decompressed` 出逐层快照，这里出跨层统计，两边的输入是同一批 tar 字节。
+pub fn analyze_decompressed(
+  tree : @layer_tree.FileTree,
+  decompressed : @layer_tree.DecompressedLayers,
+) -> Analysis raise @layer_tree.LayerError {
   let ledger = Ledger::new()
-  for index, stream in layers {
-    let media_type = if index < media_types.length() {
-      media_types[index]
-    } else {
-      "none"
-    }
-    let algorithm = @layer_tree.compression_of(media_type)
-    let raw = @layer_tree.decompress_layer(stream, algorithm) catch {
-      err => raise @layer_tree.Decompress(err)
-    }
+  for index, raw in decompressed.raws {
     analyze_layer(tree, raw, index, ledger)
   }
-  ledger.finish(tree, layers.length())
+  ledger.finish(tree, decompressed.raws.length())
 }
 
 ///|

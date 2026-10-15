@@ -113,3 +113,66 @@ test "layer view to_string mentions the layer" {
   }
   assert_true(views[0].to_string().contains("L0"))
 }
+
+///|
+/// 一批层只解压一遍：解压次数必须等于层数，而不是「层数 × 链路数」。
+///
+/// issue #52 的验收条件。TUI 启动要同时拿逐层快照与跨层统计，
+/// 两边共用 `DecompressedLayers`，解压就不该再发生第二次。
+test "decompress_layers decompresses each layer exactly once" {
+  let layers : Array[BytesView] = [
+    build_tar([File("a", "1")]),
+    build_tar([File("b", "2")]),
+    build_tar([File("c", "3")]),
+  ]
+  let decompressed = decompress_layers(layers) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(decompressed.raws.length(), 3)
+  assert_eq(decompressed.decompressed, 3)
+}
+
+///|
+/// 压缩层同样只解压一遍，且解压产物是真 tar（能直接叠树）。
+test "decompress_layers unwraps compressed layers once" {
+  let plain = build_tar([File("app/main", "hello")])
+  let gzipped = gzip_compress(plain)
+  let compressed : Array[BytesView] = [gzipped, gzipped]
+  let decompressed = decompress_layers(compressed, media_types=[
+    "application/vnd.oci.image.layer.v1.tar+gzip", "application/vnd.oci.image.layer.v1.tar+gzip",
+  ]) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(decompressed.decompressed, 2)
+  assert_eq(decompressed.raws[0].length(), plain.length())
+}
+
+///|
+/// 从已解压层建视图，与 `browse_layers` 的结果逐字段一致——
+/// 「一次解压」不能顺手改掉视图语义。
+test "browse_decompressed matches browse_layers" {
+  let layers : Array[BytesView] = [
+    build_tar([Dir("etc"), File("etc/hosts", "a"), File("etc/passwd", "b")]),
+    gzip_compress(
+      build_tar([Whiteout("etc", "passwd"), File("etc/hosts", "ac")]),
+    ),
+  ]
+  let media_types = [
+    "application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip",
+  ]
+  let direct = browse_layers(layers, media_types~) catch {
+    err => fail(err.to_string())
+  }
+  let decompressed = decompress_layers(layers, media_types~) catch {
+    err => fail(err.to_string())
+  }
+  let merged = browse_decompressed(decompressed)
+  assert_eq(merged.length(), direct.length())
+  for index, view in merged {
+    assert_eq(view.layer, direct[index].layer)
+    assert_eq(view.tree.size(), direct[index].tree.size())
+    assert_eq(view.diff.added, direct[index].diff.added)
+    assert_eq(view.diff.modified, direct[index].diff.modified)
+    assert_eq(view.diff.removed, direct[index].diff.removed)
+  }
+}

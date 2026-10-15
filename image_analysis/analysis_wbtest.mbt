@@ -191,6 +191,60 @@ test "waste ranking lists the worst paths first" {
 }
 
 ///|
+/// 「先解压再记账」与 `analyze_layers` 必须给出同一份账。
+///
+/// issue #52 合并了两条链路，验收要求「报告数字与合并前一致」：
+/// 这里把同一批层分别喂给两条入口，逐字段比对，合并只许省掉一次解压，
+/// 不许动任何数字。
+test "analyze_decompressed agrees with analyze_layers" {
+  let layers : Array[BytesView] = [
+    layer_fixture([
+      @layer_tree.TarEntrySpec::Dir("app"),
+      @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),
+      @layer_tree.TarEntrySpec::File("app/README.md", "hello"),
+    ]),
+    @layer_tree.gzip_compress(
+      layer_fixture([
+        @layer_tree.TarEntrySpec::File("app/main.js", "0123456789abcdef"),
+      ]),
+    ),
+    layer_fixture([@layer_tree.TarEntrySpec::Whiteout("app", "README.md")]),
+  ]
+  let media_types = [
+    "application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip",
+    "application/vnd.oci.image.layer.v1.tar",
+  ]
+  let direct_tree = @layer_tree.FileTree::new()
+  let direct = analyze_layers(direct_tree, layers, media_types~) catch {
+    err => fail(err.to_string())
+  }
+  let merged_tree = @layer_tree.FileTree::new()
+  let decompressed = @layer_tree.decompress_layers(layers, media_types~) catch {
+    err => fail(err.to_string())
+  }
+  let merged = analyze_decompressed(merged_tree, decompressed) catch {
+    err => fail(err.to_string())
+  }
+  // 统计本身逐字段一致
+  assert_eq(merged.layers, direct.layers)
+  assert_eq(merged.final_file_bytes, direct.final_file_bytes)
+  assert_eq(merged.final_paths, direct.final_paths)
+  assert_eq(merged.overwritten_wasted, direct.overwritten_wasted)
+  assert_eq(merged.deleted_wasted, direct.deleted_wasted)
+  assert_eq(merged.total_bytes(), direct.total_bytes())
+  assert_eq(merged.usages, direct.usages)
+  assert_eq(merged.versions, direct.versions)
+  // 报告也逐字段一致（含 hotspots 用的那棵树）
+  let direct_report = build_report(direct, direct_tree)
+  let merged_report = build_report(merged, merged_tree)
+  assert_eq(merged_report, direct_report)
+  assert_eq(
+    render_text_report(merged_report),
+    render_text_report(direct_report),
+  )
+}
+
+///|
 test "analyze fails loudly on a broken tar" {
   let tree = @layer_tree.FileTree::new()
   let broken : Array[BytesView] = [b"\x00\x01\x02"]
