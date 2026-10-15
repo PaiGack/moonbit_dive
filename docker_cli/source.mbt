@@ -280,18 +280,15 @@ pub async fn save_or_pull_across_backends(
   pull_if_missing~ : Bool = false,
   on_stage~ : (FetchStage) -> Unit = fn(_) { () },
 ) -> Bytes raise DockerCliError {
-  let mut last : DockerCliError? = None
+  let attempts : Array[String] = []
+  let mut first : DockerCliError? = None
   let mut position = index
   let count = backends.length()
   while position < count {
-    on_stage(Trying(backends[position]))
+    let backend = backends[position]
+    on_stage(Trying(backend))
     let outcome : Result[Bytes, DockerCliError] = try
-      save_or_pull_once(
-        backends[position],
-        reference,
-        pull_if_missing~,
-        on_stage~,
-      )
+      save_or_pull_once(backend, reference, pull_if_missing~, on_stage~)
     catch {
       err => Err(err)
     } noraise {
@@ -300,13 +297,55 @@ pub async fn save_or_pull_across_backends(
     match outcome {
       Ok(archive) => return archive
       // 这条路走不通：记下原因，接着试下一条
-      Err(err) => last = Some(err)
+      Err(err) => {
+        attempts.push("  \{backend} — \{err.to_string()}")
+        if first is None {
+          first = Some(err)
+        }
+      }
     }
     position = position + 1
   }
-  match last {
-    Some(err) => raise err
+  // 报**第一条**（也就是被选中的那条后端）的原因，不是最后一条。
+  //
+  // 「最后一条」几乎总是候选序列尾巴上那些够不着的兜底项：DOCKER_HOST 指的
+  // socket 超时之后，序列还会去敲不存在的 `/var/run/docker.sock`，它的
+  // ENOENT 会盖住真正的超时。用户看到一句「/var/run/docker.sock failed:
+  // connect failed: errno 2」，既不像超时、也不是他实际用的后端——
+  // 只能对着它猜。
+  //
+  // 错误**类型**保持第一条原样（超时仍是 `Cancelled`、后端故障仍是 `Backend`），
+  // 只是把「每条后端分别怎么了」并进 detail：调用方按类型判断，
+  // 读日志的人拿到完整的故事。
+  match first {
+    Some(err) => raise with_attempts(err, attempts)
     None => raise NoBackend("no backend available to fetch \{reference}")
+  }
+}
+
+///|
+/// 把「每条后端分别怎么了」并进主错误的 detail，类型不变。
+fn with_attempts(
+  err : DockerCliError,
+  attempts : Array[String],
+) -> DockerCliError {
+  if attempts.length() <= 1 {
+    // 只有一条路时主错误已经把话说完了，再加一遍是噪声
+    return err
+  }
+  let trail = "\nbackends tried:\n" + attempts.join("\n")
+  // 只往 `Show` 会把 detail 原样放在结尾的变体上追加。
+  // `Cancelled(name)` 会渲染成「<name> was cancelled」、
+  // `ExecutableNotFound(name)` 渲染成「executable not found: <name>」，
+  // 往它们的 payload 上拼 trail 会把句子拼坏，故只保留原样——
+  // 这两种情况的标题已经说清楚了，逐条原因留给 `--verbose`。
+  match err {
+    NoBackend(detail) => NoBackend(detail + trail)
+    Backend(name, code, detail) => Backend(name, code, detail + trail)
+    Archive(detail) => Archive(detail + trail)
+    InvalidReference(detail) => InvalidReference(detail + trail)
+    ImageNotFound(reference) => ImageNotFound(reference + trail)
+    _ => err
   }
 }
 

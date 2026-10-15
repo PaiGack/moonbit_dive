@@ -113,6 +113,11 @@ socket 在、`connect` 也成功，但对端不通——`timeout_ms = 0` 会让�
 （`fetched N bytes` → `parsing archive (decompress + stack layers)...`），
 免得中间那段沉默被当成卡死。
 
+超时到点报的是 `Cancelled`（`<socket> was cancelled`）：一句「超时」。
+不要让它变成「`connect failed: errno 2`」那种玄学——那既不像超时、
+也不是你实际用的那条后端。一条路推不动换下一条时，**报第一条**（被选中的那条）
+的原因，末尾那些够不着的兜底项不再顶上来；每条后端分别怎么了跟在后面。
+
 ## 错误语义
 
 | 错误 | 场景 |

@@ -578,3 +578,209 @@ async test "a dead socket path hands the fetch to the next backend" {
   @docker_cli.remove_fake_cli_dir(bin)
   @docker_cli.remove_temp_bytes(archive_path)
 }
+
+///|
+/// 响应头发出去之后就不动了——这正是 CNB 里转发进来的 socket 的形态：
+/// 文件在、`connect` 成功、状态行和头都答得出来，真读 body 时对端却没影了。
+///
+/// 期望：请求在超时内返回 `Cancelled`（说的是「超时」，不是某个 errno），
+/// 而且错误信息里路径**只出现一次**——不能是
+/// 「<path> failed: <path> failed: connect failed: errno 2」。
+#cfg(not(platform="windows"))
+async test "a socket that stalls mid-body surfaces a timeout, not a mangled errno" {
+  let server = @docker_cli.UnixSocketServer::start()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      let conn = server.accept() catch { err => fail("accept failed: \{err}") }
+      ignore(@docker_cli.read_until(conn, CRLFCRLF) catch { _ => b"" })
+      // 头说 chunked，body 一个字节都不给，然后一直挂着
+      conn.write(
+        @utf8.encode(
+          "HTTP/1.1 200 OK\r\n" + "Transfer-Encoding: chunked\r\n" + "\r\n",
+        ),
+      ) catch {
+        _ => ()
+      }
+      @async.sleep(5000)
+      conn.close()
+    })
+    let error = try {
+      @docker_cli.http_over_unix(
+        server.path,
+        {
+          http_method: "GET",
+          path: "/images/nope:latest/get",
+          host: "localhost",
+          headers: [],
+          body: b"",
+        },
+        200,
+      )
+      |> ignore
+      fail("a stalled body must not return a response")
+    } catch {
+      err => err
+    }
+    // 超时是 `Cancelled`：一句「超时」，不是「connect failed: errno 2」
+    assert_true(error is @docker_cli.Cancelled(_))
+    let text = Show::to_string(error)
+    assert_true(text.contains("was cancelled"))
+    // 路径只出现一次：不再是把渲染过的错误再包一层
+    assert_eq(count_occurrences(text, server.path), 1)
+  })
+  server.close()
+}
+
+///|
+/// 候选全失败时，报的必须是**第一条**（也就是被选中的那条后端）的原因。
+///
+/// 序列通常长这样：DOCKER_HOST 指的 socket → 不存在的 `/var/run/docker.sock`
+/// → PATH 上的 CLI。真正在用的第一条超时之后，尾巴上那条够不着的兜底项
+/// 会给出一个「connect failed: errno 2」，如果拿它当结果，用户看到的是
+/// 「不是我用过的后端」「不像超时」的一句玄学——只能自己猜。
+#cfg(not(platform="windows"))
+async test "when every backend fails the first backend's reason is reported" {
+  let first = @docker_cli.DockerCliSource::new(
+    @docker_cli.fake_failing_cli("first backend is down", 1),
+  )
+  let second = @docker_cli.DockerCliSource::new(
+    @docker_cli.fake_failing_cli("second backend is down", 1),
+  )
+  let error = try {
+    @docker_cli.save_or_pull_across_backends(
+      [
+        @docker_cli.ImageBackend::Cli(first),
+        @docker_cli.ImageBackend::Cli(second),
+      ],
+      0,
+      "nope:latest",
+      pull_if_missing=false,
+    )
+    |> ignore
+    fail("both backends fail, this must not return")
+  } catch {
+    err => err
+  }
+  let text = Show::to_string(error)
+  // 第一条的原因在，最后一条的原因不在主句里（只出现在逐条列表里）
+  assert_true(text.contains("first backend is down"))
+  assert_true(text.contains("backends tried"))
+  assert_true(text.contains("second backend is down"))
+}
+
+///|
+/// 一条 lane 的一轮：socket 后端说「没有这个镜像」，序列后面还有一条能用的
+/// CLI，归档就该从 CLI 出来。返回 `""` 表示这一轮正常，否则是失败原因。
+///
+/// 返回字符串而不是直接 `fail()`，是为了让并发 lane 把各自的失败收集起来
+/// 一次报出来——第一个失败就把整轮掐掉的话，看不到「失败了多少次」，
+/// 也就分不清是环境噪声还是稳定复现。
+#cfg(not(platform="windows"))
+async fn eagain_round(round : Int32) -> String {
+  // 归档每轮现造：与 `save` 出来的字节逐位比对，顺带把负载抬到真实水位
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=eagain-\{round}\n"),
+  ])
+  let archive = @docker_cli.build_docker_archive([("eagain", layer)])
+  let archive_path = write_temp_bytes("eagain-\{round}.tar", archive)
+  let (bin, _program) = @docker_cli.write_fake_cli_named(
+    "docker",
+    @docker_cli.fake_recording_cli(
+      archive_path + ".calls",
+      archive_path,
+      "[{\"Id\":\"sha256:eagain\"}]",
+    ),
+  )
+  let server = @docker_cli.UnixSocketServer::start() catch {
+    err => return "server: \{err}"
+  }
+  let reason = try {
+    @async.with_task_group(group => {
+      group.spawn_bg(no_wait=true, () => {
+        serve_one(server, _ => ping_response("1.45"))
+        serve_one(server, _ => ping_response("1.45"))
+        serve_one(server, _ => {
+          length_response(
+            404,
+            @utf8.encode("{\"message\":\"No such image: eagain\"}"),
+          )
+        })
+      })
+      let resolved = @docker_cli.resolve_backend(
+        [
+          @docker_cli.BackendCandidate::Socket(server.path),
+          @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+        ],
+        { "PATH": bin },
+        timeout_ms=1000,
+      ) catch {
+        err => fail("round \{round}: probe failed: \{err}")
+      }
+      let chain = @docker_cli.backend_chain(
+        [
+          @docker_cli.BackendCandidate::Socket(server.path),
+          @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+        ],
+        resolved,
+        { "PATH": bin },
+        timeout_ms=1000,
+      )
+      let saved = @docker_cli.save_or_pull_across_backends(
+        chain,
+        0,
+        "eagain:latest",
+        pull_if_missing=false,
+      ) catch {
+        err => fail("round \{round}: \{err}")
+      }
+      if saved != archive {
+        fail(
+          "round \{round}: archive mismatch, \{saved.length()} vs \{archive.length()} bytes",
+        )
+      }
+    })
+    ""
+  } catch {
+    err => err.to_string()
+  }
+  server.close()
+  @docker_cli.remove_fake_cli_dir(bin)
+  remove_temp_bytes(archive_path)
+  reason
+}
+
+///|
+/// 并发的 CLI 读取不能把瞬时的 `EAGAIN` 当成后端故障，也不能丢字节。
+///
+/// 复现手法：多条 lane 同时跑「unix socket 后端说没有 + CLI 兜底」这条完整链路
+/// （就是上面换路用例的形状），每条 lane 再循环多轮。同一事件循环上既有 socket
+/// 收发、又有子进程 spawn / 读管道，与 `moon test` 默认 10 路并发跑测试的情形
+/// 一致——单跑一个用例复现不了，必须凑齐并发度。
+///
+/// 触发的是 `moonbitlang/async` 用边沿触发（`EPOLLET`）注册管道 fd 的窗口：
+/// `wait_read()` 刚返回、真正 `read(2)` 却拿到 `EAGAIN`（就绪边沿被别处消费掉了）。
+/// 底层只重试一次，第二次仍 `EAGAIN` 就抛出来。修复前这会变成
+/// `Backend("read", ...)`——报出来跟「docker 用不了」一模一样，而子进程
+/// 其实好得很；若拿一次性的 `read_all()` 去重试，更会退化成「退出码 0、
+/// 输出为空」的假成功，比报错更难查。
+///
+/// 所以这里不只断言「不报错」，还逐字节校验归档内容。
+#cfg(not(platform="windows"))
+async test "concurrent cli reads survive transient EAGAIN without losing bytes" {
+  let failures = []
+  @async.with_task_group(group => {
+    for lane in 0..<10 {
+      group.spawn_bg(no_wait=true, () => {
+        for round in 0..<30 {
+          let reason = eagain_round(lane * 100 + round)
+          if reason != "" {
+            failures.push(reason)
+          }
+        }
+      })
+    }
+  })
+  if failures.length() > 0 {
+    fail("cli reads failed \{failures.length()} times: \{failures[0]}")
+  }
+}

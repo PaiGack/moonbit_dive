@@ -75,3 +75,31 @@ async test "run_cli does not deadlock when stderr floods the pipe" {
   }
   remove_fake_cli(program)
 }
+
+///|
+/// 分块读要把跨块边界的字节原样拼回来。
+///
+/// `read_to_bytes` 改成一段段读、为的是**重试时能保住已读到的部分**：
+/// `read_all()` 是一次性的，中途抛错整体作废，重跑一遍会丢掉这一轮之前
+/// 攒下的字节——对 `save` 出来的归档就是「退出码 0、输出为空」。
+/// 这个用例守住拼接语义：子进程吐的长度跨过多个 `read_chunk_size`。
+#cfg(not(platform="windows"))
+async test "chunked read reassembles bytes across chunk boundaries" {
+  // 刻意不是块大小的整数倍，最后一块是短读
+  let payload = "abcdefghij".repeat(20_000)
+  let script =
+    #|#!/bin/sh
+    #|cat PAYLOAD_PATH
+    #|
+  let payload_path = write_temp_bytes("chunked.txt", @utf8.encode(payload))
+  let program = write_fake_cli(
+    script.replace(old="PAYLOAD_PATH", new=payload_path),
+  )
+  let (code, stdout, _stderr) = run_cli(program, [], 0) catch {
+    err => fail("run_cli failed: \{err}")
+  }
+  assert_eq(code, 0)
+  assert_eq(@utf8.decode(stdout), payload)
+  remove_fake_cli(program)
+  remove_temp_bytes(payload_path)
+}

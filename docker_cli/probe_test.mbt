@@ -247,7 +247,8 @@ test "the default timeout is finite" {
 }
 
 ///|
-/// 子串出现次数，用来断言「路径只被念一遍」。
+/// 子串出现次数：`probe_test` 用它确认「路径只被念一遍」，
+/// `transport_test` 的 stall 用例也复用同一条断言。
 fn count_occurrences(text : String, needle : String) -> Int32 {
   let mut count = 0
   let mut rest = text

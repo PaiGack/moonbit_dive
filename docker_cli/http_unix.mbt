@@ -75,8 +75,18 @@ pub async fn http_over_unix(
     read_response(connection, socket_path)
   }
   if timeout_ms > 0 {
+    // 超时不走 `catch`：`moonbitlang/async` 的取消**不是**一个可捕获的错误
+    // （见 `with_timeout_opt` 的注释——`catch` 抓不到取消），超时只会让
+    // `with_timeout_opt` 返回 `None`。所以这里的 `catch` 只接 `work()` 自己
+    // 抛的错，原样带出去即可。
+    //
+    // 之前是 `catch { err => raise Backend(socket_path, -1, err.to_string()) }`：
+    // 把一个已经成型的 `Backend` 渲染成字符串再塞回 `Backend`，
+    // `Show` 再渲染一次，用户看到的是
+    // 「/var/run/docker.sock failed: /var/run/docker.sock failed: connect failed: errno 2」。
+    // 一次失败被描述两遍，排查的人只能猜。
     let result = @async.with_timeout_opt(timeout_ms, () => work()) catch {
-      err => raise unwrap_backend_text(socket_path, err.to_string())
+      err => raise preserve(err)
     }
     match result {
       Some(response) => response
@@ -90,12 +100,34 @@ pub async fn http_over_unix(
 }
 
 ///|
+/// `catch` 拿到的是 `Error`，这里把它还原成 `DockerCliError`。
+///
+/// 能原样还原的直接还原（保住 `name` / `code` 这些结构化字段，
+/// `Show` 只渲染一次）；认不出来的才折成 `Backend`。
+///
+/// 这一步是超时分支专用：`with_timeout_opt` 会把内部抛出的错转成 `Error`，
+/// 类型信息在那一下就没了，只能在这里按变体接回来。
+fn preserve(err : Error) -> DockerCliError {
+  match err {
+    DockerCliError::NoBackend(detail) => NoBackend(detail)
+    DockerCliError::Backend(name, code, detail) => Backend(name, code, detail)
+    DockerCliError::ExecutableNotFound(name) => ExecutableNotFound(name)
+    DockerCliError::Cancelled(name) => Cancelled(name)
+    DockerCliError::Archive(detail) => Archive(detail)
+    DockerCliError::InvalidReference(detail) => InvalidReference(detail)
+    DockerCliError::ImageNotFound(reference) => ImageNotFound(reference)
+    _ => Backend("http", -1, err.to_string())
+  }
+}
+
+///|
 /// 把 unix socket 上的失败收成一条 `Backend`，**不重复套壳**。
 ///
-/// `connect_error` / `read_response` 抛出来的已经是带上下文的 `Backend`，
-/// 这里若原样再包一层 `Backend(path, -1, err.to_string())`，
-/// 用户看到的就是 `X failed: X failed: ...`——同一条路径被念两遍。
-/// 只有非 `Backend` 的错（事件循环取消之类）才需要补一层上下文。
+/// `connect_error` / `read_response` 抛出来的已经是带上下文的 `Backend`
+/// （`Show` 会渲染成 `<path> failed: <detail>`），这里若原样再包一层
+/// `Backend(path, -1, err.to_string())`，用户看到的就是
+/// `<path> failed: <path> failed: ...`——同一条路径被念两遍。
+/// 只有非 `Backend` 的错才需要补一层上下文。
 fn describe_socket_failure(
   socket_path : String,
   err : DockerCliError,
@@ -107,30 +139,14 @@ fn describe_socket_failure(
 }
 
 ///|
-/// `with_timeout_opt` 会把内部抛出的错转成 `Error`，丢掉 `DockerCliError` 的变体信息。
-/// 若内部本来就已经是 `Backend(path, ...)`，它的 `Show` 文本已经带了 `path failed: `，
-/// 再包一层就是 `path failed: path failed: ...`——同一条路径念两遍。
-///
-/// 这里按文本前缀识别并**原样透传**：只把「还没带路径前缀」的错补上上下文。
-fn unwrap_backend_text(socket_path : String, text : String) -> DockerCliError {
-  let prefix = "\{socket_path} failed"
-  if text.has_prefix(prefix) {
-    // 文本已自带 `<path> failed[: ...]`，把它拆回 detail 交给 `Show` 再拼一次，
-    // 结果与原来等价，但不会再叠加一层。
-    let rest = text[prefix.length():].to_owned()
-    let detail = if rest.has_prefix(": ") { rest[2:].to_owned() } else { rest }
-    Backend(socket_path, -1, detail)
-  } else {
-    Backend(socket_path, -1, text)
-  }
-}
-
-///|
 /// 把建连失败收成 `Backend`：unix socket 上「连不上」
 /// 通常意味着 daemon 没起，错误信息要能让用户看懂。
+///
+/// 已经是 `Backend` 的就不再包一层：`Show` 会按 `name` 渲染成
+/// 「<name> failed: <detail>」，再包一次就是「<name> failed: <name> failed: ...」。
 fn connect_error(path : String, err : DockerCliError) -> DockerCliError {
   match err {
-    Backend(_, _, detail) => Backend(path, -1, detail)
+    Backend(_, _, _) => err
     _ => Backend(path, -1, err.to_string())
   }
 }

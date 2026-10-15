@@ -372,10 +372,20 @@ fn copy_from_window(
   if back <= 0 || back > produced {
     raise Gzip("distance points before the start of the output")
   }
+  // 逐字节推进：`back < length` 时源区间会盖到正在写的位置，
+  // 必须一边写一边读，不能整段复制。
+  //
+  // 读回已写内容用 `Buffer::view()`（与缓冲区共享存储的零拷贝视图，O(1)），
+  // **不要**用 `to_bytes()`——它是整体拷贝，每写一个字节都拷一遍，
+  // 让一次解压退化成 O(n²)：真实镜像的 80MB 层会「跑起来没有任何输出」，
+  // 看上去就是挂死。
+  //
+  // 视图在缓冲区扩容后会失效（长度停在扩容前、覆盖不到新写的字节），
+  // 因此先取一次、按需重取：每次重取是 O(1)，于是整段回拷是 O(length)。
+  // 这也正是重叠拷贝的要求——刚写下的字节要能立刻被后面的读取看到。
   let mut view : ArrayView[Byte] = output.view()
   for index = 0; index < length; index = index + 1 {
     let source = produced - back + index
-    // 视图必须覆盖 `source`：缓冲区扩容后旧视图会短一截，这时重新取。
     if source >= view.length() {
       view = output.view()
     }
