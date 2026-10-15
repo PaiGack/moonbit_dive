@@ -8,6 +8,10 @@ import {
   "moonbitlang/x/fs",
 }
 
+import {
+  "moonbitlang/async/fs" @async_fs,
+} for "wbtest"
+
 pkgtype(kind: "executable")
 
 // `--from-image` 走 docker_cli（子进程 / unix socket），只有 native 有入口；

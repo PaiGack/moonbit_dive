@@ -165,3 +165,63 @@ test "engine extracts daemon error messages" {
   }
   assert_eq(@docker_cli.error_body_for_test(plain), "internal server error")
 }
+
+///|
+/// pull 的 raw-stream 里没有 error 字段时算成功：进度行、`status`、`id` 都要能跳过。
+test "pull stream without errors is a success" {
+  let stream =
+    #|{"status":"Pulling from library/nginx","id":"latest"}
+    #|{"status":"Pulling fs layer","id":"0a3621ec1dd4"}
+    #|{"status":"Download complete","id":"f55e02ea8cde"}
+    #|
+  assert_true(@docker_cli.pull_error_of_stream(stream) is None)
+}
+
+///|
+/// HTTP 200 之后 daemon 仍会在流里吐 `errorDetail`：
+/// 镜像不存在、认证失败、registry 连不上都走这条路，只看状态码会把失败当成功。
+test "pull stream error detail is surfaced" {
+  let stream =
+    #|{"status":"Pulling from library/nope","id":"latest"}
+    #|{"errorDetail":{"message":"manifest for nope:latest not found"},"error":"manifest for nope:latest not found"}
+    #|
+  assert_eq(
+    @docker_cli.pull_error_of_stream(stream),
+    Some("manifest for nope:latest not found"),
+  )
+}
+
+///|
+/// 老 daemon / 中间代理只回 `error`，没有 `errorDetail`，同样要抓住。
+test "pull stream falls back to the plain error field" {
+  let line =
+    #|{"error":"Get https://registry-1.docker.io/: dial tcp: i/o timeout"}
+  assert_eq(
+    @docker_cli.pull_error_of_stream(line),
+    Some("Get https://registry-1.docker.io/: dial tcp: i/o timeout"),
+  )
+}
+
+///|
+/// 进度流里混着非 JSON 噪声（代理插的日志行、被截断的半行）不该让判定失败，
+/// 但噪声**之后**的真错误仍要被抓到。
+test "pull stream skips noise but keeps looking for errors" {
+  let stream =
+    #|Connecting to registry...
+    #|{"status":"Pulling fs layer"
+    #|
+    #|{"errorDetail":{"message":"unauthorized: authentication required"}}
+    #|
+  assert_eq(
+    @docker_cli.pull_error_of_stream(stream),
+    Some("unauthorized: authentication required"),
+  )
+}
+
+///|
+/// 空流（daemon 直接关连接）当作成功：后面 `save` 会因为「本地没有」失败，
+/// 错误信息比这里凭空造一个更准。
+test "an empty pull stream is not an error" {
+  assert_true(@docker_cli.pull_error_of_stream("") is None)
+  assert_true(@docker_cli.pull_error_of_stream("\n\n") is None)
+}

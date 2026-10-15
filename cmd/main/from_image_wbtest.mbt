@@ -155,3 +155,98 @@ async test "verbose does not change the fetched result" {
   @docker_cli.remove_fake_cli_dir(dir)
   @docker_cli.remove_temp_bytes(archive_path)
 }
+
+///|
+/// 端到端：`--from-image --pull` 遇上「本地没有」的镜像时，先 pull 再 save，
+/// 拿到的归档照样走既有分析链路。
+///
+/// 这是 issue #42 的验收动作：`save` 对未知镜像会安静地吐空归档，
+/// 没有 `--pull` 时用户只能自己先 `docker pull`。
+async test "from-image with pull fetches a missing image first" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let archive = @docker_cli.build_docker_archive(
+    [("cafe", layer)],
+    config="cafe.json",
+    config_json=(
+      #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:cafe"] } }
+    ),
+  )
+  let archive_path = @docker_cli.write_temp_bytes("pull.tar", archive)
+  let dir = @async_fs.tmpdir(prefix="dive-from-image-pull-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  // `inspect` 失败 = daemon 说本地没有这个镜像
+  let script = @docker_cli.fake_recording_cli(
+    log,
+    archive_path,
+    "[]",
+    inspect_code=1,
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+
+  let options = Options::from_matches(
+    cli().parse(argv=["example:latest", "--from-image", "--pull"]) catch {
+      err => fail("should parse: \{err}")
+    },
+  )
+  assert_true(options.pull)
+  let source = load_source(options, env={ "PATH": bin }, candidates=cli_only()) catch {
+    err => fail("from-image should load: \{describe_error(err)}")
+  }
+  assert_eq(source.layers.length(), 1)
+
+  let calls = @async_fs.read_file(log).text()
+  assert_true(calls.contains("pull example:latest"))
+  assert_true(
+    calls.find("pull example:latest") < calls.find("save example:latest"),
+  )
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
+  @docker_cli.remove_fake_cli_dir(dir)
+}
+
+///|
+/// 本地已有镜像时 `--pull` 不发起拉取：开关是「缺失才拉」，不是「每次都拉」。
+async test "from-image with pull leaves a local image alone" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let archive = @docker_cli.build_docker_archive(
+    [("cafe", layer)],
+    config="cafe.json",
+    config_json=(
+      #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:cafe"] } }
+    ),
+  )
+  let archive_path = @docker_cli.write_temp_bytes("local.tar", archive)
+  let dir = @async_fs.tmpdir(prefix="dive-from-image-local-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  let script = @docker_cli.fake_recording_cli(
+    log, archive_path, "[{\"Id\":\"sha256:cafe\"}]",
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+
+  let options = Options::from_matches(
+    cli().parse(argv=["example:latest", "--from-image", "--pull"]) catch {
+      err => fail("should parse: \{err}")
+    },
+  )
+  let source = load_source(options, env={ "PATH": bin }, candidates=cli_only()) catch {
+    err => fail("from-image should load: \{describe_error(err)}")
+  }
+  assert_eq(source.layers.length(), 1)
+
+  let calls = @async_fs.read_file(log).text()
+  assert_true(calls.contains("inspect example:latest"))
+  assert_true(!calls.contains("pull example:latest"))
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
+  @docker_cli.remove_fake_cli_dir(dir)
+}

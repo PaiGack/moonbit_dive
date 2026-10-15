@@ -58,6 +58,19 @@ impl ImageSource for DockerCliSource with fn save(self, reference) {
 }
 
 ///|
+impl ImageSource for DockerCliSource with fn pull(self, reference) {
+  guard_reference(reference)
+  let (code, _stdout, stderr) = run_cli(
+    self.program,
+    pull_args(reference),
+    self.timeout_ms,
+  )
+  if code != 0 {
+    raise Backend(self.program, code, bytes_to_string(stderr))
+  }
+}
+
+///|
 /// `docker save` / `podman save` / `nerdctl save` 的参数形态。
 ///
 /// docker 与 nerdctl 的 `save` 默认输出 docker-archive 格式；
@@ -67,6 +80,15 @@ pub fn save_args(tool : CliTool, reference : String) -> Array[String] {
     Docker | Nerdctl => ["save", reference]
     Podman => ["save", "--format", "docker-archive", reference]
   }
+}
+
+///|
+/// `docker pull` / `podman pull` / `nerdctl pull` 参数形态一致：
+/// 镜像引用是唯一的位置参数，没有工具差异（与 `save` / `inspect` 不同）。
+///
+/// 进度打到 stdout（docker 还要 TTY 才好看），这里不看进度、只认退出码。
+pub fn pull_args(reference : String) -> Array[String] {
+  ["pull", reference]
 }
 
 ///|
@@ -88,7 +110,7 @@ fn guard_reference(reference : String) -> Unit raise DockerCliError {
 }
 
 ///|
-pub extend DockerCliSource with ImageSource::{inspect, save}
+pub extend DockerCliSource with ImageSource::{inspect, save, pull}
 
 ///|
 /// 把 `save` 的结果直接落到文件，中途不把整段归档拼进内存。

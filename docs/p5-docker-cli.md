@@ -17,7 +17,7 @@
    - unix socket 上的 HTTP/1.1 请求与响应（chunked + `application/vnd.docker.raw-stream`）
    - `GET /images/{name}/json`（inspect）
    - `GET /images/{name}/get`（save，流式归档）
-   - `POST /images/create?fromImage=`（pull，可选）
+   - `POST /images/create?fromImage=`（pull，含 raw-stream 错误判定）
    - `_ping` 做可用性探测与 API 版本协商
 
 ## 范围
@@ -67,6 +67,8 @@ pub(open) trait ImageSource {
   moon run --target native cmd/main -- nginx:latest --from-image
   # 后端与探测过程可见（[ok]/[no] 一行一条，走 stderr）
   moon run --target native cmd/main -- nginx:latest --from-image --verbose
+  # 本地没有这个镜像时先去 daemon 拉一次（默认只认本地，绝不发起网络请求）
+  moon run --target native cmd/main -- nginx:latest --from-image --pull
   # 与既有开关组合，行为不变
   moon run --target native cmd/main -- nginx:latest --from-image --rules rules.json --format annotations
   ```
@@ -76,6 +78,11 @@ pub(open) trait ImageSource {
   打人话 + 安装提示，不吞 docker 的 stderr，按「入参/环境不对」退 exit 2。
 - **不做自动魔数嗅探**：只认显式 `--from-image`，避免「给个文件却去连 daemon」这种意外行为。
   原先设想的「探测顺序里自动识别镜像名」不再做。
+- **拉取也是显式开关**：`--pull` 只在 `--from-image` 在场时生效，
+  触发条件是 `inspect` 说本地没有，**不是**「`save` 失败了就拉」——
+  `save` 的失败面太宽（daemon 卡住、权限、磁盘满），
+  一律去拉会拿一次不必要的网络请求盖住真正的错误。
+  不给 `--pull` 时链路与以前完全一致，一次 `inspect` 都不多做。
 - 单独成包，**不进入 P1–P4 依赖链**；只用默认离线能力时 `dive x.tar` 的链路不受影响
 - 本包只有 native 入口（子进程 / unix socket），因此 `cmd/main` 也声明
   `supported_targets = "-all+native"`；`--from-image` 的端到端覆盖见
@@ -102,7 +109,9 @@ pub(open) trait ImageSource {
 | `cmd/main --from-image` 端到端跑出体积报告（可 fake CLI） | ✅ | `cmd/main/from_image_wbtest.mbt`：fake docker 走 PATH 探测 → 既有链路 |
 | 无 daemon 时错误明确、exit 2、不 panic、不吞 stderr | ✅ | `cmd/main/from_image_wbtest.mbt` + `docker_cli/errors.mbt` 的 `Show` |
 | 不给 `--from-image` 时行为完全不变 | ✅ | `cli_wbtest.mbt`：默认 `from_image=false`，走文件路径 |
-| `moon check` / `moon test` 全绿 | ✅ | 292 个用例（native），见 `scripts/ci.sh` |
+| Engine `pull` 的 raw-stream 错误判定（`errorDetail` / `error`） | ✅ | `engine_test.mbt` + `transport_test.mbt` |
+| `--from-image --pull` 本地缺失时先拉再取，已有则不动 | ✅ | `pipeline_test.mbt` + `cmd/main/from_image_wbtest.mbt` |
+| `moon check` / `moon test` 全绿 | ✅ | 313 个用例（native），见 `scripts/ci.sh` |
 
 ## 遗留
 
@@ -121,8 +130,11 @@ pub(open) trait ImageSource {
    `write_large_archive` 流式现造 100MB 归档，
    `save_to_file_memory_test.mbt` 用 `/proc/self/status` 的 `VmRSS`
    断言写入后内存不随归档体积涨（对照实验：缓冲路径会涨 ~127MB，用例会失败）。
-3. **Engine 后端的 `pull`**：实现了 `POST /images/create`，但没有流式进度解析，
-   也没有「本地缺失时自动 pull」的接线（范围外，另议）。
+3. ~~**Engine 后端的 `pull`**~~ → 见 issue #42：
+   `POST /images/create` 的 raw-stream **真解析**（`pull_error_of_stream`），
+   HTTP 200 之后 daemon 吐的 `errorDetail` 不再被当成成功；
+   `cmd/main` 加 `--pull`，本地缺镜像时先 `inspect` 判缺失、再 `pull`、最后 `save`。
+   进度事件本身仍不打日志（输出归调用方管）。
 
 ## 测试基础设施
 

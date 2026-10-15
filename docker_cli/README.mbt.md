@@ -55,7 +55,8 @@ async test "README example" {
 | 探测与降级 | `default_candidates`、`probe_backends`、`resolve_backend`、`describe_backends` |
 | 一步取归档 | `fetch_archive`、`fetch_archive_verbose` |
 | CLI 后端 | `save_args`、`inspect_args`、`run_cli`、`run_cli_to_file`、`DockerCliSource::save_to_file` |
-| Engine 后端 | `http_over_unix`、`EngineSource::negotiate`、`EngineSource::pull` |
+| Engine 后端 | `http_over_unix`、`EngineSource::negotiate`、`EngineSource::pull`、`pull_error_of_stream` |
+| 拉取策略 | `save_maybe_pulling`、`fetch_archive(pull_if_missing=true)`、`DockerCliSource::pull`、`pull_args` |
 | unix 地址 | `parse_unix_uri`、`UnixUri` |
 | docker-archive | `parse_docker_archive`、`extract_layers`、`primary_entry`、`layer_id_of` |
 
@@ -93,6 +94,66 @@ CLI 看 `PATH` 上解析不解析得到（再兜 `/usr/bin`、`/usr/local/bin` �
 | `InvalidReference` | 空镜像名，在进子进程之前就拦下 |
 
 无 daemon 环境（CI 常见）下探测失败只会得到明确的 `NoBackend` 与安装提示，不 panic。
+
+## 本地没有就先拉
+
+`pull` 是 `ImageSource` 的第三个方法（与 `inspect` / `save` 并列），
+两条后端各自的实现：
+
+- CLI 后端：`<tool> pull <ref>`
+- Engine 后端：`POST /images/create?fromImage=<name>&tag=<tag>`
+
+Engine 那条的响应是 `application/vnd.docker.raw-stream`，**HTTP 200 不代表拉成功**：
+daemon 会在流里回 200 之后再吐 `{"errorDetail":{"message":"..."}}`。
+`pull_error_of_stream` 逐行解析这些事件，抓到错误就报 `Backend`，否则会拿一个
+「拉失败了但没人知道」的假成功去 `save`。老 daemon / 中间代理只回 `"error"` 字段，
+也一并识别。
+
+「本地没有就先拉」由 `save_maybe_pulling` 收口，**触发条件是 `inspect` 说本地没有**，
+不是「`save` 失败就拉」——`save` 的失败面太宽（daemon 卡住、权限、磁盘满），
+一律去拉会用一次不必要的网络请求盖住真正的错误：
+
+```moonbit check
+///|
+async test "README pull example" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let archive = @docker_cli.build_docker_archive([("beef", layer)])
+  let archive_path = @docker_cli.write_temp_bytes("readme-pull.tar", archive)
+  let dir = @fs.tmpdir(prefix="dive-readme-pull-")
+  let log = "\{dir}/calls.log"
+  // inspect 失败 = daemon 说本地没有；日志记下每次调用，好验证顺序
+  let script = @docker_cli.fake_recording_cli(
+    log,
+    archive_path,
+    "[]",
+    inspect_code=1,
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+  let resolved = @docker_cli.resolve_backend(
+    [@docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker)],
+    { "PATH": bin },
+  ) catch {
+    err => fail("resolve failed: \{err}")
+  }
+  let saved = @docker_cli.save_maybe_pulling(
+    resolved.backend,
+    "nginx:latest",
+    pull_if_missing=true,
+  ) catch {
+    err => fail("save_maybe_pulling failed: \{err}")
+  }
+  assert_eq(saved, archive)
+  let calls = @fs.read_file(log).text()
+  assert_true(calls.contains("pull nginx:latest"))
+  assert_true(calls.find("pull nginx:latest") < calls.find("save nginx:latest"))
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_fake_cli_dir(dir)
+  @docker_cli.remove_temp_bytes(archive_path)
+}
+```
 
 ## 设计要点
 
@@ -165,6 +226,7 @@ listen / accept 只服务测试，不进成品包的公开 API。
 
 CLI 侧：`cmd/main` 用显式开关 `--from-image` 把位置参数当镜像名接到本包
 （`moon run --target native cmd/main -- nginx:latest --from-image`），
+本地没有就 `--pull` 先拉一次（`moon run --target native cmd/main -- nginx:latest --from-image --pull`），
 取到归档后走既有的 `ImageSource::from_tar_bytes`；`--verbose` 打 `describe_backends`
 的探测记录（`[ok]/[no]` 一行一条，走 stderr）。
 端到端（fake docker，不依赖真实 daemon）见 `cmd/main/from_image_wbtest.mbt`，

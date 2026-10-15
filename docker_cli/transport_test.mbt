@@ -340,3 +340,105 @@ async test "engine reports a missing daemon instead of panicking" {
   assert_true(error.to_string().contains("connect failed"))
   @fs.rmdir(dir, recursive=true)
 }
+
+///|
+/// `POST /images/create` 的传输层：请求行要带上 `fromImage` / `tag`，
+/// 响应体（raw-stream）要原样读回来交给错误判定。
+#cfg(not(platform="windows"))
+async test "engine pulls over the socket" {
+  let server = @docker_cli.UnixSocketServer::start()
+  let seen = []
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      serve_one(server, request => {
+        seen.push(request)
+        chunked_response(
+          9,
+          @utf8.encode(
+            "{\"status\":\"Pulling fs layer\",\"id\":\"0a3621ec1dd4\"}\n" +
+            "{\"status\":\"Download complete\"}\n",
+          ),
+        )
+      })
+    })
+    let source = @docker_cli.EngineSource::new(
+      @docker_cli.parse_unix_uri("unix://\{server.path}").unwrap(),
+    )
+    @docker_cli.EngineSource::set_api_version(source, "1.45")
+    source.pull("nginx:latest") catch {
+      err => fail("pull over socket failed: \{err}")
+    }
+  })
+  assert_eq(seen.length(), 1)
+  let request = @utf8.decode(seen[0])
+  assert_true(
+    request.has_prefix(
+      "POST /v1.45/images/create?fromImage=nginx&tag=latest HTTP/1.1\r\n",
+    ),
+  )
+  server.close()
+}
+
+///|
+/// HTTP 200 但流里有 `errorDetail`：`pull` 必须报错。
+/// 只看状态码的实现会在这里悄悄放行，然后 `save` 拿着「本地没有」去猜。
+#cfg(not(platform="windows"))
+async test "engine pull fails when the stream carries an error" {
+  let server = @docker_cli.UnixSocketServer::start()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      serve_one(server, _ => {
+        length_response(
+          200,
+          @utf8.encode(
+            "{\"status\":\"Pulling from library/nope\"}\n" +
+            "{\"errorDetail\":{\"message\":\"manifest for nope:latest not found\"}}\n",
+          ),
+        )
+      })
+    })
+    let source = @docker_cli.EngineSource::new(
+      @docker_cli.parse_unix_uri("unix://\{server.path}").unwrap(),
+    )
+    @docker_cli.EngineSource::set_api_version(source, "1.45")
+    let error = try {
+      source.pull("nope:latest") |> ignore
+      fail("pull should fail on a stream error")
+    } catch {
+      err => err
+    }
+    assert_true(
+      error.to_string().contains("manifest for nope:latest not found"),
+    )
+  })
+  server.close()
+}
+
+///|
+/// `POST /images/create` 直接回 404：错误体里的 `message` 要被提出来。
+#cfg(not(platform="windows"))
+async test "engine pull surfaces an http error body" {
+  let server = @docker_cli.UnixSocketServer::start()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      serve_one(server, _ => {
+        length_response(
+          500,
+          @utf8.encode("{\"message\":\"error pulling image configuration\"}"),
+        )
+      })
+    })
+    let source = @docker_cli.EngineSource::new(
+      @docker_cli.parse_unix_uri("unix://\{server.path}").unwrap(),
+    )
+    @docker_cli.EngineSource::set_api_version(source, "1.45")
+    let error = try {
+      source.pull("nginx:latest") |> ignore
+      fail("pull should fail on 500")
+    } catch {
+      err => err
+    }
+    assert_true(error.to_string().contains("error pulling image configuration"))
+  })
+  server.close()
+}

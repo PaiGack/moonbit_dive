@@ -28,6 +28,14 @@ impl ImageSource for ImageBackend with fn save(self, reference) {
 }
 
 ///|
+impl ImageSource for ImageBackend with fn pull(self, reference) {
+  match self {
+    Cli(source) => ImageSource::pull(source, reference)
+    Engine(source) => ImageSource::pull(source, reference)
+  }
+}
+
+///|
 impl Show for ImageBackend with fn to_string(self) {
   match self {
     Cli(source) => "cli:\{source.program}"
@@ -119,10 +127,56 @@ pub async fn fetch_archive(
   reference : String,
   env~ : Map[String, String] = process_env(),
   timeout_ms~ : Int32 = 0,
+  pull_if_missing~ : Bool = false,
 ) -> Bytes raise DockerCliError {
   let candidates = default_candidates(env)
   let resolved = resolve_backend(candidates, env, timeout_ms~)
-  ImageSource::save(resolved.backend, reference)
+  let archive = save_maybe_pulling(
+    resolved.backend,
+    reference,
+    pull_if_missing~,
+  )
+  archive
+}
+
+///|
+/// 「本地没有就先拉」的策略，`fetch_archive` 与 `fetch_archive_verbose` 共用。
+///
+/// 触发条件是 **`inspect` 说本地没有**，不是「`save` 失败了就拉」：
+/// `save` 的失败面太宽（daemon 卡住、权限、磁盘满），
+/// 一律当成「镜像不在」会拿一次不必要的网络拉取盖住真正的错误，
+/// 排查时看到的是 pull 的报错而不是最初那个。
+pub async fn save_maybe_pulling(
+  backend : ImageBackend,
+  reference : String,
+  pull_if_missing~ : Bool = false,
+) -> Bytes raise DockerCliError {
+  if pull_if_missing && !image_is_local(backend, reference) {
+    ImageSource::pull(backend, reference)
+  }
+  ImageSource::save(backend, reference)
+}
+
+///|
+/// 本地有没有这个镜像。拿不到确定答案时返回 `false`（即「当作没有」）。
+///
+/// `inspect` 失败的原因分得没那么细：daemon 挂了、socket 权限不对、
+/// 名字不合法都会落到同一个 catch 里。这时候认成「本地没有」去拉一次，
+/// 拉不动的话错误信息里会有 pull 的具体原因，比 inspect 的泛泛报错更有用；
+/// 拉得动就说明本地确实没有。反过来把「不确定」当「有」，
+/// 用户会拿到一个说不清为什么失败的 `save`。
+async fn image_is_local(
+  backend : ImageBackend,
+  reference : String,
+) -> Bool noraise {
+  let found : Bool = try
+    ImageSource::inspect(backend, reference) |> ignore
+  catch {
+    _ => false
+  } noraise {
+    _ => true
+  }
+  found
 }
 
 ///|
@@ -137,15 +191,20 @@ pub async fn fetch_archive_verbose(
   env~ : Map[String, String] = process_env(),
   timeout_ms~ : Int32 = 0,
   candidates? : Array[BackendCandidate],
+  pull_if_missing~ : Bool = false,
 ) -> (Bytes, ResolvedBackend) raise DockerCliError {
   let candidates = match candidates {
     Some(candidates) => candidates
     None => default_candidates(env)
   }
   let resolved = resolve_backend(candidates, env, timeout_ms~)
-  let archive = ImageSource::save(resolved.backend, reference)
+  let archive = save_maybe_pulling(
+    resolved.backend,
+    reference,
+    pull_if_missing~,
+  )
   (archive, resolved)
 }
 
 ///|
-pub extend ImageBackend with ImageSource::{inspect, save}
+pub extend ImageBackend with ImageSource::{inspect, save, pull}

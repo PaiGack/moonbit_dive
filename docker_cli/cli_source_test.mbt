@@ -229,3 +229,68 @@ async test "spawn retry uses a fresh pipe pair and keeps the output" {
   remove_fake_cli(program)
   remove_temp_bytes(archive_path)
 }
+
+///|
+/// `pull` 的参数形态：镜像引用是唯一的位置参数，三个工具没有差异。
+test "cli pull takes just the reference" {
+  assert_eq(@docker_cli.pull_args("nginx:latest"), ["pull", "nginx:latest"])
+  assert_eq(@docker_cli.pull_args("host:5000/app:1.2"), [
+    "pull", "host:5000/app:1.2",
+  ])
+}
+
+///|
+/// CLI 后端的 `pull`：真的跑了 `<tool> pull <ref>`，非零退出把 stderr 透传。
+async test "cli backend pulls through a fake executable" {
+  let dir = @fs.tmpdir(prefix="dive-pull-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  let program = write_fake_cli(
+    fake_recording_cli(log, "\{dir}/unused.tar", "[]"),
+  )
+  let source = @docker_cli.DockerCliSource::new(
+    program,
+    tool=@docker_cli.CliTool::Docker,
+  )
+  source.pull("nginx:latest") catch {
+    err => fail("pull should succeed: \{err}")
+  }
+  let logged = @fs.read_file(log).text()
+  assert_true(logged.has_prefix("pull nginx:latest"))
+  assert_true(logged.contains("pull nginx:latest"))
+
+  remove_fake_cli(program)
+  @fs.rmdir(dir, recursive=true)
+}
+
+///|
+/// `pull` 失败（镜像不存在 / registry 不可达）要把子进程的 stderr 带出来，
+/// 不能只给一句「退出码非 0」。
+async test "cli pull surfaces stderr on failure" {
+  let program = write_fake_cli(fake_failing_cli("manifest unknown: nope", 1))
+  let source = @docker_cli.DockerCliSource::new(program)
+  let error = try {
+    source.pull("nope:latest") |> ignore
+    fail("pull should fail")
+  } catch {
+    err => err
+  }
+  assert_true(error.to_string().contains("manifest unknown: nope"))
+  remove_fake_cli(program)
+}
+
+///|
+/// 空镜像名在进子进程之前就拦下。
+async test "cli pull rejects an empty reference" {
+  let program = write_fake_cli("#!/bin/sh\nexit 0\n")
+  let source = @docker_cli.DockerCliSource::new(program)
+  let error = try {
+    source.pull("   ") |> ignore
+    fail("pull should reject an empty reference")
+  } catch {
+    err => err
+  }
+  assert_true(error.to_string().contains("invalid image reference"))
+  remove_fake_cli(program)
+}

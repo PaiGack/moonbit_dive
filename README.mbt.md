@@ -30,6 +30,12 @@ moon run --target native cmd/main -- demo-image.tar --layer 1 --path /app
 moon run --target native cmd/main -- demo-image.tar --efficiency
 moon run --target native cmd/main -- demo-image.tar --efficiency --top 20 --path /app
 moon run --target native cmd/main -- demo-image.tar --efficiency --format json
+
+# 不落盘直接分析在线镜像：位置参数当镜像名，走 docker_cli 取归档
+moon run --target native cmd/main -- nginx:latest --from-image
+moon run --target native cmd/main -- nginx:latest --from-image --verbose
+# 本地没有这个镜像时先拉一次（默认只认本地）
+moon run --target native cmd/main -- nginx:latest --from-image --pull
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
@@ -41,8 +47,12 @@ moon run --target native cmd/main -- demo-image.tar --efficiency --format json
 这个表的 `size` 是 `cumulative - min`，**与报告里 `wasteful paths` 的 `wasted_bytes`
 不是同一个数**，口径差异见 [`image_analysis/README.mbt.md`](image_analysis/README.mbt.md)。
 
+`--from-image` 把位置参数当镜像名：默认只认本地（**不给 `--pull` 绝不发起网络请求**），
+`--pull` 时若 `inspect` 说本地没有就先拉再取；后端探测与降级见
+[`docker_cli/README.mbt.md`](docker_cli/README.mbt.md)。
+
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
-docker save 产物、OCI Image Layout 目录、单层 tar。
+docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image` 给镜像名）。
 
 详见 [`docs/`](docs/README.md) 下的设计文档；进度看板见 issue #8；docker cli 封装见 issue #17。
 
