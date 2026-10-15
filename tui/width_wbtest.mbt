@@ -23,3 +23,22 @@ test "display_width sums per-char widths" {
   assert_eq(display_width("中a"), 3)
   assert_eq(display_width("中中"), 4)
 }
+
+///|
+/// cluster 划分：ZWJ 序列、组合记号、旗帜、普通字各自成簇。
+test "graphemes splits zwj sequences and flags" {
+  assert_eq(graphemes("👨‍👩‍👧‍👦").count(), 1)
+  assert_eq(graphemes("👨‍🚀👩‍🚀").count(), 2)
+  assert_eq(graphemes("a\u{0301}b").count(), 2)
+  assert_eq(graphemes("🇯🇵🇺🇸x").count(), 3)
+  assert_eq(graphemes("").count(), 0)
+}
+
+///|
+/// 单个 cluster 的宽度口径。
+test "cluster_width picks the first visible codepoint" {
+  assert_eq(cluster_width("👨‍🚀"), 2)
+  assert_eq(cluster_width("a\u{0301}"), 1)
+  assert_eq(cluster_width("\u{0301}"), 0)
+  assert_eq(cluster_width("1\u{FE0F}\u{20E3}"), 2)
+}

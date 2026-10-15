@@ -18,7 +18,7 @@
 | 阻塞项 | 结论 |
 |---|---|
 | a. async 版本对齐 | tty 0.5.0 声明 `async@0.22.4`，本仓 `0.22.5`；实测在本仓工具链下编译通过，`moon update` 能过 |
-| b. 第三方文本库 | 本轮**不引** `grapheme` / `unicodewidth`，宽度自研（见下）；真要做 grapheme cluster 再议 |
+| b. 第三方文本库 | 本轮**不引** `grapheme` / `unicodewidth`，宽度自研（见下）。后由 #50 补上 grapheme cluster 口径：cluster 划分仍自研，只从 unicodewidth 的打包表生成一张零宽码点表（生成后不依赖对方） |
 | c. target 收窄 | tty 只支持 native。按用户建议把 TUI 代码集中在独立包 `tui/`，并标 `supported_targets = "-all+native"`，与 `docker_cli` / `cmd/main` 同一套约定，避免模块级 `preferred_target = "wasm"` 和 native-only 依赖硬冲突 |
 
 ## 分层
@@ -26,7 +26,8 @@
 ```
 tui/
 ├── screen.mbt       L0 字符画布（列×行），写入即标脏
-├── width.mbt        L0 显示宽度与按列截断/补齐
+├── width.mbt        L0 显示宽度与按列截断/补齐（按 grapheme cluster）
+├── width_tables.mbt L0 零宽码点区间表（由 scripts/gen_width_tables.py 生成）
 ├── terminal.mbt     L0 画布 → 终端字节流（首帧全量、之后只吐脏格）
 ├── layout.mbt       L1 分栏（标题 / 左右主体 / 状态行），窄屏退化单栏
 ├── tree_view.mbt    L2 树拍平成行 + 展开/折叠 + 滚动 + 光标
@@ -44,12 +45,16 @@ L2 是纯状态机，L3 是按键映射，L4 才有副作用（终端 IO）。
 ### 按列排版，宽度自研
 
 CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目录名会把整栏对齐带歪。
-`width.mbt` 用 wcwidth 的常用近似（组合字符零宽、东亚宽 / emoji 主区占两列）。
 
-不引 `kawaz/grapheme` + `moonbit-community/unicodewidth`：本轮画面只要 ASCII + 常见 CJK 就够，
-引第三方会把「文本测量」这个本可独立验收的点绑死在别人的版本上（`unicodewidth` 还钉着
-`x@0.4.x`，与本仓 `x@0.5.5` 有收敛风险）。接口只有 `display_width` / `char_width`，
-真要做 ZWJ emoji 序列再换实现即可，不牵动画面代码。
+量的是 **grapheme cluster**，不是码点：ZWJ 家族 emoji（`👨‍👩‍👧‍👦`）在终端里只画一个字形、
+占 2 列，按码点相加会算成 8 列，文件名右侧的大小 / 层号对齐会整体歪掉。
+`width.mbt` 先划 cluster，簇宽由簇内第一个有宽度的码点定；VS16 会把 keycap 从 1 列抬到 2 列。
+
+不引 `kawaz/grapheme` + `moonbit-community/unicodewidth`：cluster 划分自研，
+只从 unicodewidth 的打包表生成一张零宽码点表（`scripts/gen_width_tables.py` →
+`width_tables.mbt`，Unicode 16.0 的 Mn/Me/Cf），表落地后本仓不依赖它。
+引库会把「文本测量」这个本可独立验收的点绑死在别人的版本上（`unicodewidth` 还钉着
+`x@0.4.44`，与本仓 `x@0.5.5` 有收敛风险）。
 
 ### 不做样式
 
@@ -78,5 +83,4 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 - 全屏 TUI（alternate screen / 分栏布局引擎 / 组件库）——路径 B，另议
 - 样式与配色
 - 鼠标事件（tty 已解出，但本轮不接）
-- grapheme cluster 级别的文本测量
 - 边看边改（TUI 是只读视图，不产生镜像变更）
