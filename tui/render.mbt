@@ -302,14 +302,17 @@ fn detail_lines(source : DetailSource, path : String) -> Array[String] {
 fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   screen.clear_row(layout.status_row)
   let hint = match frame.focus {
+    // 提示要短到能塞进 80 列的窄屏：`q quit` 被截掉时，
+    // 用户最容易以为「退不出去」（鼠标提示在 `?` 的浮层里，见 `draw_help`）
     Focus::Tree =>
-      "↑↓ move  ←→ fold  [ ] layer  Tab focus  ? help  q quit"
-    Focus::Detail => "↑↓ scroll  Tab focus  ? help  q quit"
+      "↑↓ move  click  ←→ fold  [ ] layer  s sort  Tab focus  ?  q quit"
+    Focus::Detail => "↑↓ / wheel scroll  Tab focus  ?  q quit"
   }
+  let order = if frame.view.sort_by_size { "size" } else { "name" }
   let position = if frame.view.visible.length() == 0 {
-    "0/0"
+    "0/0 \{order}"
   } else {
-    "\{frame.view.cursor + 1}/\{frame.view.visible.length()}"
+    "\{frame.view.cursor + 1}/\{frame.view.visible.length()} \{order}"
   }
   let position_width = display_width(position)
   let position_start = layout.cols - position_width
@@ -388,7 +391,9 @@ fn draw_help(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   let lines = [
     "↑↓ / j k       move or scroll", "←→ / h l       fold / unfold the tree",
     "PgUp / PgDn    page", "[ ]            previous / next layer", "Tab            switch focus (tree ↔ detail)",
-    "?              toggle this panel", "q / Esc        quit",
+    "?              toggle this panel", "q / Esc        quit", "click          select the row / focus the pane",
+    "wheel          scroll the pane under the pointer", "right click    fold / unfold the row under the pointer",
+    "s              sort by size (again: by name)",
   ]
   let height = pane.inner_height()
   let (origin_col, origin_row) = (pane.inner_left(), pane.inner_top())

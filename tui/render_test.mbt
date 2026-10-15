@@ -47,6 +47,8 @@ test "draw paints the status bar" {
   // 提示右端可能被图例挤掉，开头与右侧的位置计数一定在
   assert_true(status.contains("move"))
   assert_true(status.contains("1/3"))
+  // 排序口径跟着光标位置一起显示（#51 的 `s` 键）
+  assert_true(status.contains("name"))
 }
 
 ///|
@@ -283,6 +285,7 @@ fn diff_fixture() -> (Screen, Frame) raise {
     Some(views[1].diff),
     1,
     2,
+    false,
   )
   let layout = Layout::compute(80, 24)
   let screen = Screen::new(layout.cols, layout.rows)
@@ -351,12 +354,14 @@ test "draw paints the diff legend in the status bar" {
   let style_at = fn(col) { screen.style_at(col, frame.layout.status_row) }
   // 图例贴着右侧的位置计数排：`1/3` 占最后三列
   let legend_width = display_width("+ add") + 2 + display_width("~ change")
-  let start = 80 - display_width("1/3") - 1 - legend_width
+  // 位置计数是 `1/3 name`：图例贴在它左侧，中间空一格
+  let position_width = display_width("1/3 name")
+  let start = 80 - position_width - 1 - legend_width
   assert_eq(style_at(start), style_added)
   assert_eq(style_at(start + 4), style_added)
   assert_eq(style_at(start + 5), style_default)
   assert_eq(style_at(start + 7), style_modified)
-  // 位置计数本身不上色
+  // 位置计数本身不上色（`1/3 size` 占右端，取末列即可）
   assert_eq(style_at(79), style_default)
 }
 

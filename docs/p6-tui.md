@@ -40,6 +40,7 @@ tui/
 ├── tree_view.mbt    L2 树拍平成行 + 展开/折叠 + 滚动 + 光标
 ├── render.mbt       L2 画一帧
 ├── keys.mbt         L3 按键 → 动作 → 视图状态
+├── mouse.mbt        L3 鼠标事件 → 动作（点击 / 滚轮 / 右键）
 ├── focus.mbt        L3 焦点顺序与循环
 ├── model.mbt        L4 分析结果 → 详情数据源
 └── app.mbt          L4 主循环（进全屏 → 组帧 → 等事件 → 还原）
@@ -120,8 +121,28 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 ## 非目标
 
 - 样式与配色（前景/背景/加粗）
-- 鼠标事件（tty 已解出，但本轮不接）
+- 鼠标拖拽 / 框选（点击与滚轮已接，见下）
 - 边看边改（TUI 是只读视图，不产生镜像变更）
+
+## 鼠标与坐标反查（#51）
+
+#48/#49 版本只有「行下标 → 屏幕行」这一个方向，鼠标落地需要反向那一句。本轮补上：
+
+- `TreeView::index_at_screen_row`：内容区相对行 → 可见行下标，与渲染的
+  `offset + row` 严格互逆（测试按互逆关系钉）；`select_at_screen_row` 顺手落光标
+- `mouse.mbt`：`MouseEvent` → `MouseAction`（`Select` / `ScrollUp` / `ScrollDown` /
+  `ToggleFold` / `SetFocus`），纯查表，可单测
+- `app.mbt` 的 `hit_test`：屏幕绝对坐标 → `(面板, 面板内相对行)`，按外框判定
+  （点边框也算点到面板）；`handle_mouse` 再把它施加到状态上
+- 布局记在 `AppState.last_layout`（画帧时回填），不在事件处理里重算——
+  重算要终端尺寸，而事件处理是同步的
+
+鼠标跟踪用 `Click` 模式，与进出全屏配对：`run_app` 里 `enable_mouse` /
+`disable_mouse` 一对 `defer`。漏关掉会让**退出后的 shell** 把每次点击吐成
+一段 `\x1b[<...` 垃圾，所以关它排在切回主屏之前。
+
+顺带补了一个纯键盘可达的排序键 `s`（按名字 ↔ 按体积）：右键切展开态本身
+与键盘的 `Enter` 同效，排序却没有对应键，只做鼠标会让键鼠两套操作不对称。
 
 ## 全屏形态的验收（#49）
 
@@ -131,3 +152,12 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 - 异常退出（panic / Ctrl+C）后终端还原：`teardown_commands()` 有单测钉住三件事与顺序
 - `moon test --target native` 全绿；关键交互（布局、视口、焦点、按键、组件、退出序列）
   都有测试覆盖，真终端行为靠 CLI 冒烟
+
+## 鼠标的验收（#51）
+
+- 滚轮能滚动树（光标走 3 行）与详情（视口走 3 行），滚的是鼠标停着的那块，不用先点
+- 点击树行的行号与画面上那行一致；滚动之后反查跟着 `offset` 走，不偏行
+- 点面板里的空白格什么都不做（不选行、不抢焦点）
+- 窄屏退化单栏时，右栏坐标落不到详情面板上（面板不存在就不该被命中）
+- `moon test --target native -p tui` 全绿，`mouse_test.mbt` / `mouse_wbtest.mbt`
+  覆盖映射与命中，真终端行为靠 CLI 冒烟

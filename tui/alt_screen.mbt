@@ -60,6 +60,11 @@ pub async fn AltScreen::leave(self : AltScreen, tty : @tty.Tty) -> Unit {
 /// 3. `LeaveAltScreen`——最后一步：切换缓冲区。放最后是因为切换会清屏，
 ///    前面几步若还写在 alternate 里也不会被用户看见
 ///
+/// 鼠标跟踪**不在这里**（#51）：「关掉鼠标」在 tty 里是 `Tty::disable_mouse`
+/// （一串独立的模式位），不是一条 `Command`。它在 `run_app` 里与 `enable_mouse`
+/// 配对 `defer`，且 `run_app` 里那个 defer 的注册顺序保证它会先跑——
+/// 先关鼠标，再走本函数切缓冲区。
+///
 /// 纯函数，为的是能断言「退出一定包含这三件事」——
 /// 缺任何一件都是「退出后终端不对劲」类 issue 的根因。
 pub fn teardown_commands() -> Array[@tty.Command] {
@@ -76,6 +81,9 @@ pub fn teardown_commands() -> Array[@tty.Command] {
 /// 与 `teardown_commands` 对称：`EnterAltScreen` 排第一（缓冲区已在切换，
 /// 后续的清屏作用在新缓冲区上），然后藏光标——全屏期间光标位置由 Painter
 /// 安排，露出一个闪烁的光标只会晃眼。
+///
+/// 鼠标跟踪同样不在这一串里（#51），它由 `run_app` 的 `enable_mouse` /
+/// `disable_mouse` 这一对管，理由见 `teardown_commands`。
 pub fn enter_commands() -> Array[@tty.Command] {
   [
     @tty.Command::EnterAltScreen,

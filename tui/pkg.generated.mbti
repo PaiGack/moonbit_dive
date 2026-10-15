@@ -12,19 +12,37 @@ import {
 // Values
 pub fn action_of_key(@input.KeyEvent) -> Action
 
-pub fn analysis_of_layers(Array[BytesView]) -> (@image_analysis.Analysis, @image_analysis.Report)?
+pub fn action_of_mouse(@input.MouseEvent) -> MouseAction
 
-pub fn apply_action(Action, TreeView, (Int) -> Unit) -> Bool
+pub fn analysis_of_decompressed(@layer_tree.DecompressedLayers) -> (@image_analysis.Analysis, @image_analysis.Report)?
+
+pub fn apply_action(Action, AppState) -> Bool
 
 pub fn char_width(Char) -> Int
 
 pub fn clamp(Int, Int, Int) -> Int
+
+pub fn clear_pane(Screen, Pane) -> Unit
 
 pub fn detail_source_of(@image_analysis.Analysis, @image_analysis.Report) -> DetailSource
 
 pub fn display_width(StringView) -> Int
 
 pub fn draw(Screen, Frame) -> Unit
+
+pub fn enter_commands() -> Array[@tty.Command]
+
+pub fn focus_is_visible(Focus, Layout) -> Bool
+
+pub fn focus_order() -> Array[Focus]
+
+pub fn focus_pane_id(Focus) -> PaneId
+
+pub fn graphemes(StringView) -> Iter[StringView]
+
+pub fn handle_mouse(@input.MouseEvent, AppState) -> Bool
+
+pub fn hit_test(Layout, Int, Int) -> (PaneId, Int)?
 
 pub fn human_size(Int) -> String
 
@@ -34,15 +52,25 @@ pub fn min(Int, Int) -> Int
 
 pub fn pad_to_width(StringView, Int) -> String
 
+pub fn paint_overflow_hint(Screen, Pane, Int, Int) -> Unit
+
+pub fn paint_pane(Screen, Pane, Bool) -> Unit
+
 pub async fn run_app(@tty.Tty, AppState) -> Unit
 
+pub fn scroll_step() -> Int
+
 pub fn spaces(Int) -> String
+
+pub fn teardown_commands() -> Array[@tty.Command]
 
 pub fn truncate_keep_tail(String, Int) -> String
 
 pub fn truncate_to_width(StringView, Int) -> String
 
 pub fn window_size(@tty.Tty) -> WindowSize
+
+pub let zero_width_ranges : ReadOnlyArray[(Int, Int)]
 
 // Errors
 
@@ -59,6 +87,10 @@ pub(all) enum Action {
   Toggle
   PrevLayer
   NextLayer
+  NextFocus
+  PrevFocus
+  ToggleHelp
+  ToggleSort
   Quit
   None
 } derive(Eq, @debug.Debug)
@@ -66,15 +98,29 @@ pub fn Action::equal(Self, Self) -> Bool
 pub fn Action::not_equal(Self, Self) -> Bool
 pub fn Action::to_repr(Self) -> @debug.Repr
 
+pub(all) struct AltScreen {
+  mut entered : Bool
+  mut needs_full_redraw : Bool
+} derive(@debug.Debug)
+pub async fn AltScreen::enter(Self, @tty.Tty) -> Unit
+pub async fn AltScreen::leave(Self, @tty.Tty) -> Unit
+pub fn AltScreen::new() -> Self
+pub fn AltScreen::to_repr(Self) -> @debug.Repr
+
 pub(all) struct AppState {
   views : Array[@layer_tree.LayerView]
   details : DetailSource?
   image : String
   mut view : TreeView
+  mut focus : Focus
+  detail_scroll : Viewport
+  mut help_visible : Bool
+  mut last_layout : Layout?
 } derive(@debug.Debug)
 pub fn AppState::new(Array[@layer_tree.LayerView], DetailSource?, String, initial_layer? : Int) -> Self
 pub fn AppState::switch_layer(Self, Int) -> Unit
 pub fn AppState::to_repr(Self) -> @debug.Repr
+pub fn AppState::toggle_sort(Self) -> Unit
 
 pub(all) struct DetailEntry {
   versions : Int
@@ -93,11 +139,24 @@ pub(all) struct DetailSource {
 } derive(@debug.Debug)
 pub fn DetailSource::to_repr(Self) -> @debug.Repr
 
+pub(all) enum Focus {
+  Tree
+  Detail
+} derive(Eq, @debug.Debug)
+pub fn Focus::equal(Self, Self) -> Bool
+pub fn Focus::next(Self) -> Self
+pub fn Focus::not_equal(Self, Self) -> Bool
+pub fn Focus::prev(Self) -> Self
+pub fn Focus::to_repr(Self) -> @debug.Repr
+
 pub(all) struct Frame {
   layout : Layout
   view : TreeView
   image : String
   details : DetailSource?
+  mut focus : Focus
+  detail_scroll : Viewport
+  help_visible : Bool
 } derive(@debug.Debug)
 pub fn Frame::to_repr(Self) -> @debug.Repr
 
@@ -112,14 +171,35 @@ pub(all) struct Layout {
   right_start : Int
   right_end : Int
   status_row : Int
+  panes : Array[Pane]
+  help_visible : Bool
+  tree_pane : Rect
+  detail_pane : Rect
+  help_pane : Rect
 } derive(Eq, @debug.Debug)
 pub fn Layout::body_height(Self) -> Int
-pub fn Layout::compute(Int, Int) -> Self
+pub fn Layout::compute(Int, Int, with_border? : Bool, help_visible? : Bool) -> Self
+pub fn Layout::detail_inner_origin(Self) -> (Int, Int)
 pub fn Layout::equal(Self, Self) -> Bool
+pub fn Layout::help_inner_origin(Self) -> (Int, Int)?
 pub fn Layout::left_width(Self) -> Int
 pub fn Layout::not_equal(Self, Self) -> Bool
+pub fn Layout::pane(Self, PaneId) -> Pane?
 pub fn Layout::right_width(Self) -> Int
 pub fn Layout::to_repr(Self) -> @debug.Repr
+pub fn Layout::tree_inner_origin(Self) -> (Int, Int)
+
+pub(all) enum MouseAction {
+  Select
+  ScrollUp
+  ScrollDown
+  ToggleFold
+  SetFocus
+  None
+} derive(Eq, @debug.Debug)
+pub fn MouseAction::equal(Self, Self) -> Bool
+pub fn MouseAction::not_equal(Self, Self) -> Bool
+pub fn MouseAction::to_repr(Self) -> @debug.Repr
 
 pub(all) struct Painter {
   mut previous : Screen?
@@ -128,6 +208,46 @@ pub(all) struct Painter {
 pub fn Painter::new() -> Self
 pub async fn Painter::paint(Self, @tty.Tty, Screen) -> Unit
 pub fn Painter::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Pane {
+  id : PaneId
+  rect : Rect
+  bordered : Bool
+  title : String
+  focusable : Bool
+} derive(Eq, @debug.Debug)
+pub fn Pane::equal(Self, Self) -> Bool
+pub fn Pane::inner_bottom(Self) -> Int
+pub fn Pane::inner_height(Self) -> Int
+pub fn Pane::inner_left(Self) -> Int
+pub fn Pane::inner_right(Self) -> Int
+pub fn Pane::inner_top(Self) -> Int
+pub fn Pane::inner_width(Self) -> Int
+pub fn Pane::not_equal(Self, Self) -> Bool
+pub fn Pane::to_repr(Self) -> @debug.Repr
+
+pub(all) enum PaneId {
+  Tree
+  Detail
+  Status
+  Help
+  Popup
+} derive(Eq, @debug.Debug)
+pub fn PaneId::equal(Self, Self) -> Bool
+pub fn PaneId::not_equal(Self, Self) -> Bool
+pub fn PaneId::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Rect {
+  left : Int
+  top : Int
+  right : Int
+  bottom : Int
+} derive(Eq, @debug.Debug)
+pub fn Rect::equal(Self, Self) -> Bool
+pub fn Rect::height(Self) -> Int
+pub fn Rect::not_equal(Self, Self) -> Bool
+pub fn Rect::to_repr(Self) -> @debug.Repr
+pub fn Rect::width(Self) -> Int
 
 pub(all) struct Row {
   path : String
@@ -143,16 +263,16 @@ pub fn Row::to_repr(Self) -> @debug.Repr
 pub(all) struct Screen {
   cols : Int
   rows : Int
-  cells : Array[Char]
+  cells : Array[String]
   dirty : Array[Bool]
 } derive(@debug.Debug)
 pub fn Screen::clear(Self) -> Unit
 pub fn Screen::clear_row(Self, Int) -> Unit
-pub fn Screen::get(Self, Int, Int) -> Char
+pub fn Screen::get(Self, Int, Int) -> String
 pub fn Screen::new(Int, Int) -> Self
 pub fn Screen::resize(Self, Int, Int) -> Self
 pub fn Screen::row_string(Self, Int) -> String
-pub fn Screen::set(Self, Int, Int, Char) -> Unit
+pub fn Screen::set(Self, Int, Int, StringView) -> Unit
 pub fn Screen::to_repr(Self) -> @debug.Repr
 pub fn Screen::write_text(Self, Int, Int, StringView) -> Unit
 
@@ -165,12 +285,14 @@ pub(all) struct TreeView {
   mut cursor : Int
   mut offset : Int
   mut page_height : Int
+  mut sort_by_size : Bool
 } derive(@debug.Debug)
 pub fn TreeView::clamp_offset(Self) -> Unit
 pub fn TreeView::collapse(Self) -> Unit
 pub fn TreeView::cursor_path_from_visible(Self) -> String?
 pub fn TreeView::expand(Self) -> Unit
 pub fn TreeView::from_tree(@layer_tree.FileTree, Int, Int) -> Self
+pub fn TreeView::index_at_screen_row(Self, Int) -> Int?
 pub fn TreeView::index_of_path(Self, String) -> Int?
 pub fn TreeView::move_down(Self) -> Unit
 pub fn TreeView::move_to(Self, Int) -> Unit
@@ -181,8 +303,27 @@ pub fn TreeView::page_down(Self, Int) -> Unit
 pub fn TreeView::page_size(Self) -> Int
 pub fn TreeView::page_up(Self, Int) -> Unit
 pub fn TreeView::refresh(Self) -> Unit
+pub fn TreeView::select_at_screen_row(Self, Int) -> Bool
 pub fn TreeView::to_repr(Self) -> @debug.Repr
 pub fn TreeView::toggle(Self) -> Unit
+
+pub(all) struct Viewport {
+  mut offset : Int
+  mut content : Int
+  mut window : Int
+} derive(Eq, @debug.Debug)
+pub fn Viewport::clamp(Self) -> Unit
+pub fn Viewport::equal(Self, Self) -> Bool
+pub fn Viewport::line_at(Self, Int) -> Int?
+pub fn Viewport::max_offset(Self) -> Int
+pub fn Viewport::new(Int, Int) -> Self
+pub fn Viewport::not_equal(Self, Self) -> Bool
+pub fn Viewport::scroll_by(Self, Int) -> Unit
+pub fn Viewport::scroll_page(Self, Int) -> Unit
+pub fn Viewport::set_content(Self, Int) -> Unit
+pub fn Viewport::to_bottom(Self) -> Unit
+pub fn Viewport::to_repr(Self) -> @debug.Repr
+pub fn Viewport::to_top(Self) -> Unit
 
 pub(all) struct WindowSize {
   cols : Int

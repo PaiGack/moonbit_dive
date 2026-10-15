@@ -29,6 +29,8 @@ pub(all) enum Action {
   PrevFocus
   /// 开关帮助浮层
   ToggleHelp
+  /// 按大小排序（再按一次回名字序）
+  ToggleSort
   Quit
   /// 没绑定的键
   None
@@ -40,7 +42,8 @@ pub(all) enum Action {
 /// 绑定对齐 `less` / `dive` 的直觉：
 /// `q`/`Esc`/`Ctrl+C` 退出，`↑↓`/`jk` 走行，`PgUp/PgDn`/`Space`/`b` 翻页，
 /// `←`/`h` 收起、`→`/`l` 展开，`Tab` 切展开态，
-/// `[`/`]` 换层，全屏形态另加 `Tab`/`Shift+Tab` 切焦点、`?` 开关帮助。
+/// `[`/`]` 换层，全屏形态另加 `Tab`/`Shift+Tab` 切焦点、`?` 开关帮助、
+/// `s` 切换「按名字 / 按大小」排序（鼠标那侧是右键，见 `./mouse.mbt`）。
 ///
 /// `Tab` 在路径 A 里是「切展开态」，这里改成「切焦点」——全屏下多面板
 /// 必须有切焦点的键，而切展开态有 `Enter` 与 `←→` 两条路，不差这一个。
@@ -86,6 +89,7 @@ pub fn action_of_key(event : @input.KeyEvent) -> Action {
     @input.KeyCode::Char('[') => Action::PrevLayer
     @input.KeyCode::Char(']') => Action::NextLayer
     @input.KeyCode::Char('?') => Action::ToggleHelp
+    @input.KeyCode::Char('s') => Action::ToggleSort
     _ => Action::None
   }
 }
@@ -116,6 +120,10 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     Action::Quit => return true
     Action::ToggleHelp => {
       state.help_visible = !state.help_visible
+      return false
+    }
+    Action::ToggleSort => {
+      state.toggle_sort()
       return false
     }
     Action::NextFocus => {
@@ -174,6 +182,7 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     | Action::NextFocus
     | Action::PrevFocus
     | Action::ToggleHelp
+    | Action::ToggleSort
     | Action::Quit => ()
   }
   false

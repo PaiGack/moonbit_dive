@@ -65,16 +65,18 @@ pub(all) struct TreeView {
   mut offset : Int32
   /// 可视区行数；由画帧时按布局回填，键盘翻页要用
   mut page_height : Int32
+  /// 一行是按「名字」还是按「大小」排序（`data_set_sort` 写，`all_rows` 按它重排）
+  mut sort_by_size : Bool
 } derive(Debug)
 
 ///|
-/// 从一棵树建视图。`total_layers` 只用于状态栏显示。
+/// 从一棵树建视图。`total_layers` 只用于状态栏显示，排序按名字。
 pub fn TreeView::from_tree(
   tree : @layer_tree.FileTree,
   layer : Int32,
   total_layers : Int32,
 ) -> TreeView {
-  TreeView::from_tree_with_diff(tree, None, layer, total_layers)
+  TreeView::from_tree_with_diff(tree, None, layer, total_layers, false)
 }
 
 ///|
@@ -85,8 +87,9 @@ pub fn TreeView::from_tree_with_diff(
   diff : @layer_tree.Diff?,
   layer : Int32,
   total_layers : Int32,
+  by_size : Bool,
 ) -> TreeView {
-  let rows = flatten(tree, diff)
+  let rows = sort_rows(flatten(tree, diff), by_size)
   let view = {
     layer,
     total_layers,
@@ -96,9 +99,37 @@ pub fn TreeView::from_tree_with_diff(
     cursor: 0,
     offset: 0,
     page_height: 0,
+    sort_by_size: by_size,
   }
   view.refresh()
   view
+}
+
+///|
+/// 按 `by_size` 决定行序；`false` 时保持 `flatten` 出来的路径序。
+///
+/// 排序规则：目录整体排在文件之前（目录自己不带大小，混在文件里按 0 排
+/// 会全部沉底，读起来像「目录都没了」），两级内部各自按大小降序、
+/// 同大小按路径升序。
+fn sort_rows(rows : Array[Row], by_size : Bool) -> Array[Row] {
+  if !by_size {
+    return rows
+  }
+  let result = rows.copy()
+  result.sort_by(row_size_order)
+  result
+}
+
+///|
+/// 按体积排序的比较函数：目录优先 → 体积降序 → 路径升序。
+fn row_size_order(left : Row, right : Row) -> Int32 {
+  if left.is_dir != right.is_dir {
+    return if left.is_dir { -1 } else { 1 }
+  }
+  if left.size != right.size {
+    return if left.size > right.size { -1 } else { 1 }
+  }
+  @layer_tree.path_order(left.path, right.path)
 }
 
 ///|
@@ -394,3 +425,51 @@ pub extend Row with @debug.Debug::{to_repr}
 
 ///|
 pub extend TreeView with @debug.Debug::{to_repr}
+
+///|
+/// 坐标反查：屏幕行 → 可见行下标（#51）。
+///
+/// 之前只有「行下标 → 屏幕行」这一个方向（渲染时 `offset + row`），
+/// 鼠标落地需要反过来问一句「第 `screen_row` 行画的是哪一项」。
+/// 反查和正查必须用同一份 `offset` / `page_height`：谁把这两个字段
+/// 当成两套坐标，点击就会偏一行。
+///
+/// `screen_row` 是**内容区内的相对行**（0 起），不是终端绝对行——
+/// 面板左上角在哪由 `Layout` 决定（`inner_top`），树这边不重复算布局。
+/// 落在可视区外（面板上的空白格）给 `None`，调用方据此什么都不做，
+/// 而不是把点击夹到首行/末行——「点空白跳到底」不是任何人的直觉。
+pub fn TreeView::index_at_screen_row(
+  self : TreeView,
+  screen_row : Int32,
+) -> Int32? {
+  if screen_row < 0 {
+    return None
+  }
+  let page = self.page_size()
+  if page <= 0 || screen_row >= page {
+    return None
+  }
+  let index = self.offset + screen_row
+  if index < 0 || index >= self.visible.length() {
+    return None
+  }
+  Some(index)
+}
+
+///|
+/// 坐标反查 + 落光标：点击/滚轮共用的落点。
+///
+/// 反查失败（点在空白处）时不动光标，返回 `false`，调用方据此决定
+/// 要不要跟着切焦点——点空白既不该选行，也不该把焦点抢过来。
+pub fn TreeView::select_at_screen_row(
+  self : TreeView,
+  screen_row : Int32,
+) -> Bool {
+  match self.index_at_screen_row(screen_row) {
+    Some(index) => {
+      self.move_to(index)
+      true
+    }
+    None => false
+  }
+}
