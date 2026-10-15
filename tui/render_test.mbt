@@ -23,6 +23,9 @@ fn render_fixture() -> (Screen, Frame) {
       focus: Focus::Tree,
       detail_scroll: Viewport::new(0, 1),
       help_visible: false,
+      removed_visible: false,
+      removed: [],
+      removed_scroll: Viewport::new(0, 1),
     },
   )
 }
@@ -237,6 +240,9 @@ test "draw keeps a gap between the name and the size tail" {
     focus: Focus::Tree,
     detail_scroll: Viewport::new(0, 1),
     help_visible: false,
+    removed_visible: false,
+    removed: [],
+    removed_scroll: Viewport::new(0, 1),
   })
   // `main` 与 `1 B` 之间是补齐的空格，不是直接相连
   let body = screen.row_string(3)
@@ -277,7 +283,9 @@ test "draw keeps the cursor row visible when the tree loses focus" {
 test "draw hints the keys of the focused pane" {
   let (screen, base) = render_fixture()
   draw(screen, base)
-  assert_true(screen.row_string(23).contains("fold"))
+  // 树那侧提示里现在给档位键留了位（`^A/^L diff`），折叠提示换成了它
+  assert_true(screen.row_string(23).contains("^A/^L diff"))
+  assert_true(screen.row_string(23).contains("d removed"))
   base.focus = Focus::Detail
   draw(screen, base)
   let status = screen.row_string(23)
@@ -369,6 +377,9 @@ fn diff_fixture() -> (Screen, Frame) raise {
       focus: Focus::Tree,
       detail_scroll: Viewport::new(0, 1),
       help_visible: false,
+      removed_visible: false,
+      removed: [],
+      removed_scroll: Viewport::new(0, 1),
     },
   )
 }
@@ -422,16 +433,17 @@ test "draw paints the diff legend in the status bar" {
   assert_true(status.contains("~ change"))
   // 每段只染自己的那几列，段间是默认样式，不是整行刷色
   let style_at = fn(col) { screen.style_at(col, frame.layout.status_row) }
-  // 图例贴着右侧的位置计数排：`1/3` 占最后三列
+  // 图例贴着右侧的位置计数排；这份夹具里删掉了 1 条路径，
+  // 所以位置计数左侧还多一段 `1 removed`（删除条数也贴在右端）
   let legend_width = display_width("+ add") + 2 + display_width("~ change")
-  // 位置计数是 `1/3 name`：图例贴在它左侧，中间空一格
   let position_width = display_width("1/3 name")
-  let start = 80 - position_width - 1 - legend_width
+  let removed_width = display_width("1 removed") + 2
+  let start = 80 - position_width - removed_width - 1 - legend_width
   assert_eq(style_at(start), style_added)
   assert_eq(style_at(start + 4), style_added)
   assert_eq(style_at(start + 5), style_default)
   assert_eq(style_at(start + 7), style_modified)
-  // 位置计数本身不上色（`1/3 size` 占右端，取末列即可）
+  // 位置计数与 `N removed` 本身都不上色（占右端，取末列即可）
   assert_eq(style_at(79), style_default)
 }
 
@@ -446,4 +458,113 @@ test "draw drops the whole legend when the status row is too narrow" {
   let status = narrow.row_string(layout.status_row)
   assert_false(status.contains("add"))
   assert_false(status.contains("change"))
+}
+
+///|
+/// 标题行写出当前 diff 档位：单层档是 `layer`，聚合档是 `agg L0..Ln`。
+///
+/// 档位必须可见，否则「同一条路径为什么这次是绿的、下次是黄的」没人解释得清。
+test "draw names the active compare mode in the header" {
+  let (screen, base) = diff_fixture()
+  draw(screen, base)
+  assert_true(screen.row_string(0).contains("layer"))
+  assert_false(screen.row_string(0).contains("agg"))
+  // 切到聚合档：标题换成区间写法的标签。
+  // 只改档位与 diff：行本身仍来自同一棵树（渲染测试不碰数据源）
+  let aggregated = TreeView::from_tree_with_diff(
+    fixture_tree(),
+    Some(aggregate_diff()),
+    1,
+    2,
+    false,
+    compare_mode=CompareMode::Aggregate,
+  )
+  draw(screen, { ..base, view: aggregated, })
+  assert_true(screen.row_string(0).contains("agg L0..L1"))
+}
+
+///|
+/// `diff_fixture` 那棵树的最终形状，够渲染层用（渲染测试只读行，不碰数据源）。
+fn fixture_tree() -> @layer_tree.FileTree {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::File("etc/old", "x"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.2 longer"),
+    @layer_tree.TarEntrySpec::File("etc/new", "y"),
+    @layer_tree.TarEntrySpec::Whiteout("etc", "old"),
+  ])
+  let views = @layer_tree.browse_layers([l0, l1]) catch {
+    err => abort(err.to_string())
+  }
+  views[1].tree
+}
+
+///|
+/// 聚合档的 diff：删掉了 `/etc/old`，改写 `/etc/hosts`。
+fn aggregate_diff() -> @layer_tree.Diff {
+  {
+    base: -1,
+    layer: 1,
+    added: ["/etc/new"],
+    modified: ["/etc", "/etc/hosts"],
+    removed: ["/etc/old"],
+  }
+}
+
+///|
+/// 删除列表浮层：`d` 打开时铺在浮层位置，逐条列出被删的路径并染红。
+test "draw lists the removed paths in the overlay" {
+  let (screen, base) = diff_fixture()
+  let layout = Layout::compute(
+    80,
+    24,
+    help_visible=true,
+    overlay_title="removed paths",
+  )
+  let frame : Frame = {
+    ..base,
+    layout,
+    removed_visible: true,
+    removed: ["/etc/old"],
+    removed_scroll: Viewport::new(2, 1),
+  }
+  draw(screen, frame)
+  let pane = layout.pane(PaneId::Help).unwrap()
+  let mut joined = ""
+  for row = pane.rect.top; row <= pane.rect.bottom; row = row + 1 {
+    joined = joined + screen.row_string(row)
+  }
+  assert_true(joined.contains("removed 1 path(s)"))
+  assert_true(joined.contains("/etc/old"))
+  assert_true(joined.contains("removed paths"))
+  // 路径那一行染红：删除在树上没有行，颜色只能落在这张列表里
+  let mut path_row = -1
+  for row = pane.rect.top; row <= pane.rect.bottom; row = row + 1 {
+    if screen.row_string(row).contains("/etc/old") {
+      path_row = row
+    }
+  }
+  assert_true(path_row >= 0)
+  assert_eq(screen.style_at(pane.inner_left(), path_row), style_removed)
+}
+
+///|
+/// 没有删除时列表给一句说明，不留空面板（免得看起来像坏了）。
+test "the removed overlay explains an empty list" {
+  let (screen, base) = diff_fixture()
+  let layout = Layout::compute(80, 24, help_visible=true)
+  draw(screen, {
+    ..base,
+    layout,
+    removed_visible: true,
+    removed: [],
+    removed_scroll: Viewport::new(1, 1),
+  })
+  let pane = layout.pane(PaneId::Help).unwrap()
+  assert_true(
+    screen.row_string(pane.rect.top + 1).contains("nothing was removed"),
+  )
 }

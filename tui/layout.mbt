@@ -153,11 +153,14 @@ let gap_width : Int32 = 1
 ///
 /// `help_visible` 打开时，帮助浮层占主体下半部分（至多一半，最少 3 行），
 /// 铺满宽度——比把主体挤窄更好读，也不会把详情面板压没。
+/// `overlay_title` 是这块浮层的框标题：帮助是 `keys`，删除列表是 `removed paths`
+/// ——两块浮层共用同一块位置（不会同时开），标题由调用方给。
 pub fn Layout::compute(
   cols : Int32,
   rows : Int32,
   with_border~ : Bool = true,
   help_visible~ : Bool = false,
+  overlay_title~ : String = "keys",
 ) -> Layout {
   let cols = max(cols, 1)
   let rows = max(rows, 1)
@@ -232,7 +235,7 @@ pub fn Layout::compute(
       id: PaneId::Help,
       rect: help_pane,
       bordered: with_border,
-      title: "keys",
+      title: overlay_title,
       focusable: false,
     })
   }

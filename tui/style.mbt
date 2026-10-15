@@ -51,6 +51,14 @@ pub let style_dim : Style = {
 }
 
 ///|
+/// 删除列表里的路径：亮红，与「+ 绿 / ~ 黄」凑成一组完整的 diff 语义。
+pub let style_removed : Style = {
+  fg: @tty_color.Basic(@tty_color.BrightRed),
+  bg: @tty_color.Default,
+  bold: false,
+}
+
+///|
 /// 面板标题：加粗，不换色。
 pub let style_title : Style = {
   fg: @tty_color.Default,

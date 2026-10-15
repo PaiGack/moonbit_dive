@@ -31,6 +31,10 @@ pub(all) struct AppState {
   detail_scroll : Viewport
   /// 帮助浮层是否展开
   mut help_visible : Bool
+  /// 删除列表浮层是否展开（聚合档下 `removed` 可能有几百条，单独给一张列表）
+  mut removed_visible : Bool
+  /// 删除列表的滚动位置
+  removed_scroll : Viewport
   /// 上一帧的布局；鼠标事件要用它把屏幕坐标换成面板 + 行号。
   ///
   /// 存下来而不是**重新算**：算布局要终端尺寸，而鼠标事件处理是同步的、
@@ -68,6 +72,8 @@ pub fn AppState::new(
     focus: Focus::Tree,
     detail_scroll: Viewport::new(0, 1),
     help_visible: false,
+    removed_visible: false,
+    removed_scroll: Viewport::new(0, 1),
     last_layout: None,
   }
 }
@@ -81,10 +87,11 @@ pub fn AppState::switch_layer(self : AppState, layer : Int32) -> Unit {
   let keep = self.view.cursor_path_from_visible()
   let view = TreeView::from_tree_with_diff(
     self.views[layer].tree,
-    Some(self.views[layer].diff),
+    Some(diff_for(self.views[layer], self.view.compare_mode)),
     layer,
     self.views.length(),
     self.view.sort_by_size,
+    compare_mode=self.view.compare_mode,
   )
   match keep {
     Some(path) =>
@@ -95,8 +102,74 @@ pub fn AppState::switch_layer(self : AppState, layer : Int32) -> Unit {
     None => ()
   }
   self.view = view
+  self.removed_scroll.to_top()
   // 换层后详情内容是新的，滚动位置归零，不然会停在一个没有意义的偏移上
   self.detail_scroll.to_top()
+}
+
+///|
+/// 当前档位下给行上色用的 diff：单层档用逐层 diff，聚合档用聚合 diff。
+///
+/// 树只有一棵，换档位换的就是这里——「树形状不变、只有 diff 标注变」。
+fn diff_for(
+  view : @layer_tree.LayerView,
+  mode : CompareMode,
+) -> @layer_tree.Diff {
+  match mode {
+    Single => view.diff
+    Aggregate => view.aggregate
+  }
+}
+
+///|
+/// 切换比较档位（`Ctrl+A` 聚合 / `Ctrl+L` 当前层）。
+///
+/// 重建视图但不换数据源：树、光标路径、折叠状态都留着，只有行上的颜色与
+/// 删除列表跟着换——这正是原版 dive 切档位的观感（`GetCompareIndexes` 只换下标）。
+pub fn AppState::switch_compare_mode(
+  self : AppState,
+  mode : CompareMode,
+) -> Unit {
+  if self.view.compare_mode == mode {
+    return
+  }
+  let layer = self.view.layer
+  let keep = self.view.cursor_path_from_visible()
+  let view = TreeView::from_tree_with_diff(
+    self.views[layer].tree,
+    Some(diff_for(self.views[layer], mode)),
+    layer,
+    self.views.length(),
+    self.view.sort_by_size,
+    compare_mode=mode,
+  )
+  view.collapsed = self.view.collapsed
+  view.refresh()
+  match keep {
+    Some(path) =>
+      match view.index_of_path(path) {
+        Some(index) => view.move_to(index)
+        None => ()
+      }
+    None => ()
+  }
+  self.view = view
+  self.removed_scroll.to_top()
+}
+
+///|
+/// 删除列表的内容：单层档给这一层的 `removed`，聚合档给整段区间的 `removed`。
+pub fn AppState::removed_paths(self : AppState) -> Array[String] {
+  self.view.removed.copy()
+}
+
+///|
+/// 开关删除列表浮层；关上时滚动位置归零。
+pub fn AppState::toggle_removed(self : AppState) -> Unit {
+  self.removed_visible = !self.removed_visible
+  if !self.removed_visible {
+    self.removed_scroll.to_top()
+  }
 }
 
 ///|
@@ -115,10 +188,11 @@ pub fn AppState::toggle_sort(self : AppState) -> Unit {
   let keep = self.view.cursor_path_from_visible()
   let view = TreeView::from_tree_with_diff(
     self.views[layer].tree,
-    Some(self.views[layer].diff),
+    Some(diff_for(self.views[layer], self.view.compare_mode)),
     layer,
     self.views.length(),
     by_size,
+    compare_mode=self.view.compare_mode,
   )
   match keep {
     Some(path) =>
@@ -191,10 +265,13 @@ async fn draw_frame(
   state : AppState,
 ) -> Unit {
   let size = window_size(tty)
+  // 帮助与删除列表共用同一块浮层位置（不会同时开），标题按当前那块给
+  let overlay = state.removed_visible || state.help_visible
   let layout = Layout::compute(
     size.cols,
     size.rows,
-    help_visible=state.help_visible,
+    help_visible=overlay,
+    overlay_title=if state.removed_visible { "removed paths" } else { "keys" },
   )
   // 翻页步长 = 主体可视行数 - 1，留一行重叠，翻页时不会漏行
   state.view.page_height = max(layout.body_height() - 1, 1)
@@ -203,6 +280,11 @@ async fn draw_frame(
   state.view.clamp_offset()
   state.detail_scroll.window = layout.body_height()
   state.detail_scroll.clamp()
+  state.removed_scroll.window = match layout.pane(PaneId::Help) {
+    Some(pane) => pane.inner_height()
+    None => 1
+  }
+  state.removed_scroll.clamp()
   let screen = Screen::new(layout.cols, layout.rows)
   draw(screen, {
     layout,
@@ -212,6 +294,9 @@ async fn draw_frame(
     focus: state.focus,
     detail_scroll: state.detail_scroll,
     help_visible: layout.help_visible,
+    removed_visible: layout.help_visible && state.removed_visible,
+    removed: state.removed_paths(),
+    removed_scroll: state.removed_scroll,
   })
   tty.with_synchronized_update(() => painter.paint(tty, screen))
 }

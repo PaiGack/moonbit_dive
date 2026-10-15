@@ -12,9 +12,12 @@
 /// 那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就 `docker pull` 一次。
 /// 想完全离线（不给任何网络请求）就用 `--no-pull`。
 ///
-/// `--layer` / `--path` / `--efficiency` 是 dive 交互界面的只读替身：没有 TUI，
-/// 但能逐层看文件树、按目录下钻、按「多写了几份」看哪条路径拖了效率。
-/// 给了 `--layer` 或 `--efficiency` 就不做门禁判定，只打印对应的那张表。
+/// `--layer` / `--path` / `--aggregate` / `--efficiency` 是 dive 交互界面的只读替身：
+/// 没有 TUI，但能逐层看文件树、按目录下钻、按「多写了几份」看哪条路径拖了效率。
+/// 给了 `--layer` / `--aggregate` 或 `--efficiency` 就不做门禁判定，只打印对应的那张表。
+///
+/// `--aggregate` 对齐原版 dive 的 `Ctrl+A`：diff 换成「相对第 0 层之前的整段累积」
+/// （范围内被改回的路径也算 `modified`），不给这个开关时行为完全不变。
 ///
 /// 退出码由 `image_ci` 定义：`0` 全过、`1` 有规则未通过、
 /// `2` 规则非法或镜像读不出来。wasm 下拿不到退出码，详见 `exit.mbt`。
@@ -178,6 +181,10 @@ fn cli() -> @argparse.Command {
         "tui",
         about="open the interactive layer browser (native only, needs a real terminal)",
       ),
+      @argparse.FlagArg(
+        "aggregate",
+        about="with --layer, compare that layer against the start of the image instead of its parent",
+      ),
     ],
     positionals=[
       @argparse.PositionArg(
@@ -206,6 +213,10 @@ struct Options {
   verbose : Bool
   /// 打开交互式看树（native only）
   tui : Bool
+  /// `--aggregate`：`--layer` 视图把 diff 换成「相对第 0 层之前的整段累积」
+  /// （对齐原版 dive 的 `Ctrl+A` / 聚合档）。只影响 `--layer` 分支，
+  /// 不给这个开关时输出与从前逐字节一致
+  aggregate : Bool
   top : Int32
   /// 单次 docker 调用的超时（毫秒）。刻意**不接受 0**：
   /// 无超时正是「半死 socket → 静默挂住」的老问题，不给用户留这个坑
@@ -233,6 +244,7 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     no_pull: flag_of(matches, "no-pull"),
     verbose: flag_of(matches, "verbose"),
     tui: flag_of(matches, "tui"),
+    aggregate: flag_of(matches, "aggregate"),
     top: top_of(matches),
     docker_timeout_ms: docker_timeout_of(matches),
   }
@@ -465,7 +477,7 @@ fn run(
   if options.efficiency {
     return run_efficiency_view(options, layers)
   }
-  if options.layer is Some(_) || options.path is Some(_) {
+  if options.layer is Some(_) || options.path is Some(_) || options.aggregate {
     return run_layer_view(options, layers)
   }
   let analysis = @image_analysis.analyze_layers(tree, layers) catch {
@@ -514,6 +526,10 @@ fn write_report_output(options : Options, text : String) -> Unit {
 /// `--layer` / `--path` 分支：只出「某一层的文件树 + 该层 diff」，不做门禁。
 ///
 /// 没有 TUI：每次调用渲染一层快照，交互由 shell 的历史 / 循环补。
+///
+/// `--aggregate` 换的是**比较区间**而不是数据源（issue #69）：树仍是第 n 层的，
+/// 但 diff 换成「第 0 层之前到现在这一整段的累积」，与 TUI 的 `Ctrl+A` 同义。
+/// `removed` 不在树上，所以单独列一段——它是「这段区间少了什么」的唯一出口。
 fn run_layer_view(
   options : Options,
   layers : Array[BytesView],
@@ -534,26 +550,82 @@ fn run_layer_view(
     )
   }
   let view = views[wanted]
-  let subtree = match options.path {
-    Some(path) => view.subtree(path)
-    None => view.tree
-  }
   match options.format {
-    "json" => println(layer_view_to_json(view, options).stringify(indent=2))
-    _ => {
+    "json" =>
       println(
-        "layer \{view.layer} of \{views.length()} (\{subtree.size()} path(s))",
+        layer_view_to_json(view, compare_diff(view, options), options).stringify(
+          indent=2,
+        ),
       )
-      println("diff: \{view.diff}")
-      println(@layer_tree.render_tree(subtree))
-    }
+    _ => println(render_layer_view(view, options, views.length()))
   }
   Ok(@image_ci.exit_ok)
 }
 
 ///|
+/// 逐层视图的文本：`run_layer_view` 与测试共用同一段渲染，
+/// 断言不用去截 `println` 的 stdout（那是真终端/子进程的事）。
+fn render_layer_view(
+  view : @layer_tree.LayerView,
+  options : Options,
+  total_layers : Int32,
+) -> String {
+  let subtree = match options.path {
+    Some(path) => view.subtree(path)
+    None => view.tree
+  }
+  let diff = compare_diff(view, options)
+  let builder = StringBuilder()
+  builder.write_string(
+    "layer \{view.layer} of \{total_layers} (\{subtree.size()} path(s))\n",
+  )
+  builder.write_string("compare: \{compare_name(options)}\n")
+  // `render_diff` 给三组路径的全量清单；`Diff` 自己的 `Show` 只是计数摘要
+  builder.write_string(@layer_tree.render_diff(diff))
+  if !diff.removed.is_empty() {
+    // 被删的路径不在树上，没有行可以给它标红——这里再点一句它们不在树上
+    builder.write_string("removed (not in the tree):\n")
+    for path in diff.removed {
+      builder.write_string("  \{path}\n")
+    }
+  }
+  builder.write_string(@layer_tree.render_tree(subtree))
+  builder.to_string()
+}
+
+///|
+/// 当前档位下给视图用的 diff：默认是逐层 diff，`--aggregate` 换成累积的。
+fn compare_diff(
+  view : @layer_tree.LayerView,
+  options : Options,
+) -> @layer_tree.Diff {
+  if options.aggregate {
+    view.aggregate
+  } else {
+    view.diff
+  }
+}
+
+///|
+/// 档位的机器可读名：`layer` / `aggregate`。
+fn compare_name(options : Options) -> String {
+  if options.aggregate {
+    "aggregate"
+  } else {
+    "layer"
+  }
+}
+
+///|
 /// 逐层视图的 JSON：给脚本消费，字段与文本视图一一对应。
-fn layer_view_to_json(view : @layer_tree.LayerView, options : Options) -> Json {
+///
+/// `schemaVersion` 不动：本轮只是给 `compare` 与 `aggregateBytes` 各加一个字段，
+/// 既有字段一个都没改（默认档位下数值与从前完全一致）。
+fn layer_view_to_json(
+  view : @layer_tree.LayerView,
+  diff : @layer_tree.Diff,
+  options : Options,
+) -> Json {
   Json::object({
     "schemaVersion": Json(1),
     "layer": Json(view.layer),
@@ -564,10 +636,13 @@ fn layer_view_to_json(view : @layer_tree.LayerView, options : Options) -> Json {
         None => Json(null)
       },
     ),
+    "compare": Json(compare_name(options)),
+    "aggregateBytes": Json(view.aggregate_size_delta(view.aggregate.base)),
     "diff": Json::object({
-      "added": Json(view.diff.added.map(fn(path) { Json(path) })),
-      "modified": Json(view.diff.modified.map(fn(path) { Json(path) })),
-      "removed": Json(view.diff.removed.map(fn(path) { Json(path) })),
+      "base": Json(diff.base),
+      "added": Json(diff.added.map(fn(path) { Json(path) })),
+      "modified": Json(diff.modified.map(fn(path) { Json(path) })),
+      "removed": Json(diff.removed.map(fn(path) { Json(path) })),
     }),
   })
 }

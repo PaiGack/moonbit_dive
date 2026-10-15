@@ -31,6 +31,12 @@ pub(all) enum Action {
   ToggleHelp
   /// 按大小排序（再按一次回名字序）
   ToggleSort
+  /// diff 档位切到「聚合」（当前层相对第 0 层之前的整段累积）
+  CompareAggregate
+  /// diff 档位切回「当前层」（相对上一层）
+  CompareSingle
+  /// 开关删除路径列表浮层
+  ToggleRemoved
   Quit
   /// 没绑定的键
   None
@@ -43,7 +49,8 @@ pub(all) enum Action {
 /// `q`/`Esc`/`Ctrl+C` 退出，`↑↓`/`jk` 走行，`PgUp/PgDn`/`Space`/`b` 翻页，
 /// `←`/`h` 收起、`→`/`l` 展开，`Tab` 切展开态，
 /// `[`/`]` 换层，全屏形态另加 `Tab`/`Shift+Tab` 切焦点、`?` 开关帮助、
-/// `s` 切换「按名字 / 按大小」排序（鼠标那侧是右键，见 `./mouse.mbt`）。
+/// `s` 切换「按名字 / 按大小」排序（鼠标那侧是右键，见 `./mouse.mbt`），
+/// `d` 开关删除路径列表，`Ctrl+A` / `Ctrl+L` 切「聚合 / 当前层」的 diff 档位。
 ///
 /// `Tab` 在路径 A 里是「切展开态」，这里改成「切焦点」——全屏下多面板
 /// 必须有切焦点的键，而切展开态有 `Enter` 与 `←→` 两条路，不差这一个。
@@ -54,8 +61,13 @@ pub fn action_of_key(event : @input.KeyEvent) -> Action {
     @input.KeyEventKind::Release => return Action::None
   }
   if event.modifiers.ctrl() {
+    // `Ctrl+A` / `Ctrl+L` 与原版 dive 的 layer 面板同义：切「聚合 / 当前层」档位。
+    // 它们在本仓未被占用；filetree 面板那组 `Ctrl+A/R/M/U`（按状态过滤）是 #64 的盘子，
+    // 两边别各绑一个。
     return match event.code {
       @input.KeyCode::Char('c') => Action::Quit
+      @input.KeyCode::Char('a') => Action::CompareAggregate
+      @input.KeyCode::Char('l') => Action::CompareSingle
       _ => Action::None
     }
   }
@@ -90,6 +102,7 @@ pub fn action_of_key(event : @input.KeyEvent) -> Action {
     @input.KeyCode::Char(']') => Action::NextLayer
     @input.KeyCode::Char('?') => Action::ToggleHelp
     @input.KeyCode::Char('s') => Action::ToggleSort
+    @input.KeyCode::Char('d') => Action::ToggleRemoved
     _ => Action::None
   }
 }
@@ -116,6 +129,26 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
       _ => return false
     }
   }
+  // 删除列表浮层：只有滚动 / 关闭有效，别的键不穿透到树上去
+  // （与帮助浮层一个口径：看不见的光标不该动）
+  if state.removed_visible {
+    match action {
+      Action::Quit => return true
+      Action::ToggleRemoved => {
+        state.toggle_removed()
+        return false
+      }
+      Action::MoveUp => state.removed_scroll.scroll_by(-1)
+      Action::MoveDown => state.removed_scroll.scroll_by(1)
+      Action::PageUp => state.removed_scroll.scroll_page(-1)
+      Action::PageDown => state.removed_scroll.scroll_page(1)
+      Action::Home => state.removed_scroll.to_top()
+      Action::End => state.removed_scroll.to_bottom()
+      Action::None => ()
+      _ => ()
+    }
+    return false
+  }
   match action {
     Action::Quit => return true
     Action::ToggleHelp => {
@@ -124,6 +157,18 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     }
     Action::ToggleSort => {
       state.toggle_sort()
+      return false
+    }
+    Action::CompareAggregate => {
+      state.switch_compare_mode(CompareMode::Aggregate)
+      return false
+    }
+    Action::CompareSingle => {
+      state.switch_compare_mode(CompareMode::Single)
+      return false
+    }
+    Action::ToggleRemoved => {
+      state.toggle_removed()
       return false
     }
     Action::NextFocus => {
@@ -183,6 +228,9 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     | Action::PrevFocus
     | Action::ToggleHelp
     | Action::ToggleSort
+    | Action::CompareAggregate
+    | Action::CompareSingle
+    | Action::ToggleRemoved
     | Action::Quit => ()
   }
   false

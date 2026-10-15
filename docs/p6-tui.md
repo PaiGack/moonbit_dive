@@ -138,6 +138,26 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 不给则默认看最后一层（与原 `--layer` 缺省一致）。
 全屏的进出由 `@tui.run_app` 自己管，`cmd/main` 只提供 raw mode 那一层保护。
 
+## 两个比较档位（#69）
+
+原版 dive 的 layer 面板有两个档位（`viewmodel.LayerCompareMode`）：`Ctrl+L` 看
+「当前层相对上一层」，`Ctrl+A` 看「聚合」（累积）。本轮对齐它：
+
+- `layer_tree`：`LayerView` 多一个 `aggregate` 字段与 `aggregate_changed_paths()`；
+  `diff_aggregate` 按区间**累积**而不是两端点做一次快照比较——否则
+  「第 0 层写过、第 2 层改回原样」的路径会被判成没动过
+- `tui`：`CompareMode`（`Single` / `Aggregate`），`Ctrl+A` / `Ctrl+L` 切档；
+  标题行写当前档位，状态行给删除条数，`d` 打开可滚动的删除列表
+- `cmd/main`：`--aggregate` 换 `--layer` 视图的比较区间；文本单列一段
+  `removed (not in the tree)`，JSON 多 `compare` / `aggregateBytes` 与 `diff.base`
+
+`removed` 不进树：被删的路径已经不在树上，插「幽灵行」要动行模型、折叠判断与
+光标落点，代价远大于收益。出口是「状态行计数 + `d` 的列表 + CLI 的一段文本」。
+
+键位与 [#64](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/64) 的边界：
+`Ctrl+A` 在这里是「layer 面板切聚合」（原版语义），filetree 面板那组
+`Ctrl+A/R/M/U`（按状态过滤）属于 #64 的盘子，两边别各绑一个。
+
 ## 非目标
 
 - 样式与配色（前景/背景/加粗）

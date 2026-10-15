@@ -167,3 +167,121 @@ pub fn FileTree::snapshot(self : FileTree) -> FileTree {
   copy.layers = self.layers
   copy
 }
+
+///|
+/// 聚合比较：把 `base` 到 `layer` 这一段区间的改动**累积**成一份 diff。
+///
+/// 为什么不是「拿两棵树做一次 `diff_snapshots`」：`diff_snapshots` 只比大小与类型，
+/// 「第 0 层写过、第 2 层又改回原样」的路径在两个端点上字节一模一样，
+/// 会被判成没动过——而看树的人问的是「这段区间里动过谁」。原版 dive 的聚合档
+/// 就是这个口径（逐层叠加时把 diff 往父目录合并），所以这里按区间**累积**：
+///
+/// 1. 取 `per_layer` 里 `base + 1 .. layer` 这些层「碰过」的全部路径
+/// 2. 按 `before`（`base` 层的树）/ `after`（`layer` 层的树）给它们归类：
+///    只在 `after` -> `added`，两头都在 -> `modified`，只在 `before` -> `removed`
+/// 3. 区间内碰过、最后又两头都不在的路径直接丢掉——视图画的是 `after` 的树，
+///    一条既不在起点也不在终点的路径没有行可以落
+/// 4. 没被直接碰过、但**子树里有改动**的目录并入 `modified`：
+///    dive 的 `deriveDiffType` 就是「子节点的 diff 往父目录合并」，
+///    否则「子目录里的文件改了」在父目录那一行看不出来
+///
+/// `before` 传空树时（`base < 0`）等价于「第 0 层相对空树」，与 `diff_against_empty`
+/// 同口径。`per_layer[i]` 是第 `i` 层的逐层 diff（即 `browse_decompressed`
+/// 已经算过的那批），因此聚合档不必回到 tar 重新叠层。
+pub fn diff_aggregate(
+  before : FileTree,
+  after : FileTree,
+  per_layer : Array[Diff],
+  base : Int32,
+  layer : Int32,
+) -> Diff {
+  // 1. 区间内被碰过的路径
+  let touched : Map[String, Unit] = Map([])
+  let mut index = if base + 1 < 0 { 0 } else { base + 1 }
+  while index <= layer && index < per_layer.length() {
+    let diff = per_layer[index]
+    for path in diff.added {
+      touched.set(path, ())
+    }
+    for path in diff.modified {
+      touched.set(path, ())
+    }
+    for path in diff.removed {
+      touched.set(path, ())
+    }
+    index = index + 1
+  }
+  // 2. 按两端的存在性归类
+  let added = []
+  let modified = []
+  let removed = []
+  let status : Map[String, Int32] = Map([])
+  for path, _ in touched {
+    let in_before = before.nodes.contains(path)
+    let in_after = after.nodes.contains(path)
+    if in_after && !in_before {
+      added.push(path)
+      status.set(path, aggregate_added)
+    } else if in_after && in_before {
+      modified.push(path)
+      status.set(path, aggregate_modified)
+    } else if !in_after && in_before {
+      removed.push(path)
+      status.set(path, aggregate_removed)
+    }
+  }
+  // 3. 父目录合并：没被直接碰过、但子树里有改动的目录算 modified
+  merge_parent_diffs(after, status, modified)
+  added.sort_by(path_order)
+  modified.sort_by(path_order)
+  removed.sort_by(path_order)
+  { base, layer, added, modified, removed, }
+}
+
+///|
+/// 聚合归类用的三个哨兵值（`Map` 的值存 `Int32`，比存枚举少一层装箱）。
+let aggregate_added : Int32 = 0
+
+///|
+let aggregate_modified : Int32 = 1
+
+///|
+let aggregate_removed : Int32 = 2
+
+///|
+/// 把子树的改动往父目录合并：目录自己没被碰过、但子节点有状态时，目录算 `modified`。
+///
+/// 自深到浅推进：深层的目录先定型，它的父目录才看得到合并后的结果。
+/// 已经被直接碰过的目录不覆盖——它的类别由「两端存不存在」决定，比合并更准。
+fn merge_parent_diffs(
+  after : FileTree,
+  status : Map[String, Int32],
+  modified : Array[String],
+) -> Unit {
+  let dirs = []
+  for path, node in after.nodes {
+    if path != "/" && node.is_dir() {
+      dirs.push(path)
+    }
+  }
+  dirs.sort_by(fn(left, right) { path_depth(right) - path_depth(left) })
+  for dir in dirs {
+    if status.contains(dir) {
+      continue
+    }
+    let parent = match after.nodes.get(dir) {
+      Some(node) => node
+      None => continue
+    }
+    let mut hit = false
+    for child in parent.children {
+      if status.contains(child.path) {
+        hit = true
+      }
+    }
+    if hit {
+      status.set(dir, aggregate_modified)
+      modified.push(dir)
+    }
+  }
+}
