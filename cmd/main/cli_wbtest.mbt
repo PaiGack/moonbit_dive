@@ -36,3 +36,28 @@ test "top rejects non-numeric input" {
   assert_eq(parse_non_negative_int("1e3"), None)
   assert_eq(parse_non_negative_int(""), None)
 }
+
+///|
+/// `--from-image` / `--verbose` 默认关；给了要能认出来。
+test "from-image and verbose flags are parsed" {
+  let options = parse_options(["nginx:latest"])
+  assert_false(options.from_image)
+  assert_false(options.verbose)
+
+  let options = parse_options(["nginx:latest", "--from-image", "--verbose"])
+  assert_true(options.from_image)
+  assert_true(options.verbose)
+  // 这两个开关不该动到别的选项
+  assert_eq(options.image, "nginx:latest")
+  assert_eq(options.format, "text")
+  assert_eq(options.layer, None)
+}
+
+///|
+/// 不给 `--from-image` 时，位置参数原样保留（当文件路径用）。
+test "image positional is kept as-is without from-image" {
+  let options = parse_options(["./demo.tar", "--format", "json"])
+  assert_eq(options.image, "./demo.tar")
+  assert_false(options.from_image)
+  assert_eq(options.format, "json")
+}

@@ -7,6 +7,9 @@ pub fn build_docker_archive(
   layers : Array[(String, Bytes)],
   repoTags~ : Array[String] = ["example:latest"],
   config~ : String = "abc123.json",
+  /// config.json 的内容。默认是能过 `parse_docker_archive` 的最小结构；
+  /// 要走 P4 的 `ImageSource::from_tar_bytes`（会校 `rootfs.diff_ids`）时传个完整的。
+  config_json~ : String = "{\"architecture\":\"amd64\",\"os\":\"linux\"}",
 ) -> Bytes {
   let builder = @layer_tree.TarBuilder::new()
   let layer_paths = []
@@ -18,7 +21,7 @@ pub fn build_docker_archive(
     builder.add_raw_file(path, content)
   }
   let config_path = config
-  builder.add_file(config_path, "{\"architecture\":\"amd64\",\"os\":\"linux\"}")
+  builder.add_file(config_path, config_json)
   builder.add_file(
     "manifest.json",
     manifest_text(config_path, repoTags, layer_paths),

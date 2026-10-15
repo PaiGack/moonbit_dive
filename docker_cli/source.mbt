@@ -127,12 +127,21 @@ pub async fn fetch_archive(
 
 ///|
 /// 一步到位：镜像名 → 归档字节 + 探测记录，便于 CLI 打印「用了哪个后端、为什么」。
+///
+/// `candidates` 不传时走 `default_candidates(env)`。要钉住探测范围的调用方
+/// （测试、以及想自定义降级顺序的场景）可以显式传一个候选列表——
+/// `default_candidates` 总会把 `/var/run/docker.sock` 塞进去，
+/// 装了真 daemon 的机器上就轮不到 CLI 后端，测试会变成「取决于机器装没装 docker」。
 pub async fn fetch_archive_verbose(
   reference : String,
   env~ : Map[String, String] = process_env(),
   timeout_ms~ : Int32 = 0,
+  candidates? : Array[BackendCandidate],
 ) -> (Bytes, ResolvedBackend) raise DockerCliError {
-  let candidates = default_candidates(env)
+  let candidates = match candidates {
+    Some(candidates) => candidates
+    None => default_candidates(env)
+  }
   let resolved = resolve_backend(candidates, env, timeout_ms~)
   let archive = ImageSource::save(resolved.backend, reference)
   (archive, resolved)

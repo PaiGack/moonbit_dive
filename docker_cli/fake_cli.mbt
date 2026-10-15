@@ -120,3 +120,28 @@ pub fn fake_cat_cli(archive_path : String) -> String {
     #|
   script.replace(old="ARCHIVE_PATH", new=archive_path)
 }
+
+///|
+/// 写一个名字可指定的假可执行文件到临时目录，返回 (目录, 文件路径)。
+///
+/// `write_fake_cli` 固定写 `fake-docker`，适合直接构造 `DockerCliSource`；
+/// 但探测链路按 PATH 找的是**工具名本身**（`docker` / `podman` / `nerdctl`），
+/// 所以端到端验证 `fetch_archive` 需要一个真叫 `docker` 的文件。
+/// 配套的清理用 `@fs.remove_dir(dir, recursive=true)` 更省事，这里就返回目录。
+pub async fn write_fake_cli_named(
+  name : String,
+  script : String,
+) -> (String, String) {
+  let dir = @fs.tmpdir(prefix="dive-fake-cli-")
+  let path = "\{dir}/\{name}"
+  @fs.write_file(path, script, permission=0o755)
+  (dir, path)
+}
+
+///|
+/// 删掉 `write_fake_cli_named` 建出来的临时目录。
+pub async fn remove_fake_cli_dir(dir : String) -> Unit {
+  @fs.rmdir(dir, recursive=true) catch {
+    _ => ()
+  }
+}

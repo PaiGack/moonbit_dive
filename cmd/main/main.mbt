@@ -14,7 +14,7 @@
 ///
 /// 退出码由 `image_ci` 定义：`0` 全过、`1` 有规则未通过、
 /// `2` 规则非法或镜像读不出来。wasm 下拿不到退出码，详见 `exit.mbt`。
-fn main {
+async fn main {
   let matches = cli().parse() catch {
     // argparse 的报错里已附用法，直接打出来，按「入参不对」退出
     err => {
@@ -24,7 +24,16 @@ fn main {
     }
   }
   let options = Options::from_matches(matches)
-  match run(options) {
+  // `--from-image` 要先连 daemon / 起子进程取归档，这一步是 async；
+  // 其余（读文件、分析）都是同步的，取到字节后走进既有链路。
+  let source = load_source(options) catch {
+    err => {
+      report_error(err)
+      exit_process(@image_ci.exit_config_error)
+      return
+    }
+  }
+  match run(options, source) {
     Ok(code) => exit_process(code)
     Err(error) => {
       report_error(error)
@@ -78,11 +87,19 @@ fn cli() -> @argparse.Command {
         "efficiency",
         about="show per-path efficiency (cumulative - min), sorted desc, instead of the gate",
       ),
+      @argparse.FlagArg(
+        "from-image",
+        about="treat the positional as an image reference (docker/podman/nerdctl or docker socket)",
+      ),
+      @argparse.FlagArg(
+        "verbose",
+        about="print the docker backend probing log to stderr (with --from-image)",
+      ),
     ],
     positionals=[
       @argparse.PositionArg(
         "image",
-        about="docker save tar, OCI layout directory, or - for stdin",
+        about="docker save tar, OCI layout directory, - for stdin, or an image reference with --from-image",
       ),
     ],
   )
@@ -98,6 +115,10 @@ struct Options {
   layer : Int32?
   path : String?
   efficiency : Bool
+  /// 把位置参数当镜像名，走 `docker_cli` 取归档
+  from_image : Bool
+  /// 打 `docker_cli` 的后端探测记录
+  verbose : Bool
   top : Int32
 } derive(Debug)
 
@@ -118,6 +139,8 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     layer: layer_of(matches),
     path: optional_value(matches, "path"),
     efficiency: flag_of(matches, "efficiency"),
+    from_image: flag_of(matches, "from-image"),
+    verbose: flag_of(matches, "verbose"),
     top: top_of(matches),
   }
 }
@@ -200,10 +223,12 @@ fn parse_non_negative_int(text : String) -> Int32? {
 }
 
 ///|
-/// 一次运行里可能出的错；两类都按 `exit 2` 处理，但信息要能区分。
-enum CommandError {
+/// 一次运行里可能出的错；都按 `exit 2` 处理，但信息要能区分。
+suberror CommandError {
   Image(String)
   Analysis(String)
+  /// `--from-image` 取归档失败：探测不到后端、子进程失败、镜像名不合法等
+  Docker(String)
 } derive(Eq, Debug)
 
 ///|
@@ -212,15 +237,65 @@ fn report_error(error : CommandError) -> Unit {
   match error {
     Image(message) => eprintln("image error: \{message}")
     Analysis(message) => eprintln("analysis error: \{message}")
+    // `DockerCliError` 的 `Show` 已经带了安装提示，这里只补一句「怎么绕过」
+    Docker(message) => eprintln("docker error: \{message}")
+  }
+}
+
+///|
+/// 拿到待分析的镜像来源。
+///
+/// 两条路：
+/// - 默认：把位置参数当文件 / 目录 / `-`，走 `ImageSource::load`，完全不碰 docker
+/// - `--from-image`：把位置参数当镜像引用，走 `docker_cli` 取 docker-archive 字节，
+///   再喂给既有的 `ImageSource::from_tar_bytes`——**不新开分析链路**
+///
+/// 显式开关优先：不给 `--from-image` 就绝不连 daemon，
+/// 避免「给个文件却去连 docker」这种意外行为。
+async fn load_source(
+  options : Options,
+  env~ : Map[String, String] = @docker_cli.process_env(),
+  candidates? : Array[@docker_cli.BackendCandidate],
+) -> @image_ci.ImageSource raise CommandError {
+  if !options.from_image {
+    return @image_ci.ImageSource::load(options.image) catch {
+      err => raise CommandError::Image(err.to_string())
+    }
+  }
+  let (archive, resolved) = @docker_cli.fetch_archive_verbose(
+    options.image,
+    env~,
+    candidates?,
+  ) catch {
+    // NoBackend / ExecutableNotFound / InvalidReference / Backend 都归到 Docker：
+    // `Show` 已经把这些转成人话（含安装提示与子进程 stderr）
+    err => raise CommandError::Docker(err.to_string())
+  }
+  // 探测记录走 stderr，别混进报告：报告还可能被 `-o` / 管道消费
+  if options.verbose {
+    eprintln(
+      "[docker] using \{@docker_cli.ImageBackend::to_string(resolved.backend)}",
+    )
+    let described = @docker_cli.describe_backends(resolved.probed)
+    if !described.is_empty() {
+      eprintln(described)
+    }
+  }
+  // name 用来标注报告 / 注解：告诉读的人「这不是本地 tar，是取回来的镜像」
+  @image_ci.ImageSource::from_tar_bytes(
+    archive,
+    name="\{options.image} (from-image)",
+  ) catch {
+    err => raise CommandError::Image(err.to_string())
   }
 }
 
 ///|
 /// 跑一遍完整链路，返回退出码。
-fn run(options : Options) -> Result[Int32, CommandError] noraise {
-  let source = @image_ci.ImageSource::load(options.image) catch {
-    err => return Err(CommandError::Image(err.to_string()))
-  }
+fn run(
+  options : Options,
+  source : @image_ci.ImageSource,
+) -> Result[Int32, CommandError] noraise {
   if source.layers.is_empty() {
     return Err(CommandError::Image("image has no layers"))
   }
