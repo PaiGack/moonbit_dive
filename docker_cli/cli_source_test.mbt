@@ -40,7 +40,12 @@ async test "cli backend inspects and saves through a fake executable" {
 ///|
 /// 退出码非 0 时，stderr 必须出现在错误信息里，否则排查全靠猜。
 async test "cli backend surfaces stderr on failure" {
-  let program = write_fake_cli(fake_failing_cli("no such image: nope", 125))
+  // 文案刻意不含 "no such" / "not found"：这条要验的是「后端故障时的
+  // stderr 透传」，不是「镜像不在」。认成镜像不在会走另一条分支（ImageNotFound），
+  // 那是 `inspect_failure` 的用例该管的事。
+  let program = write_fake_cli(
+    fake_failing_cli("permission denied while trying to connect", 125),
+  )
   let source = @docker_cli.DockerCliSource::new(
     program,
     tool=@docker_cli.CliTool::Podman,
@@ -53,7 +58,7 @@ async test "cli backend surfaces stderr on failure" {
   }
   let text = error.to_string()
   assert_true(text.contains("125"))
-  assert_true(text.contains("no such image: nope"))
+  assert_true(text.contains("permission denied while trying to connect"))
   remove_fake_cli(program)
 }
 
@@ -293,4 +298,39 @@ async test "cli pull rejects an empty reference" {
   }
   assert_true(error.to_string().contains("invalid image reference"))
   remove_fake_cli(program)
+}
+
+///|
+/// `inspect` 说「没有这个镜像」与「工具本身不行」必须分开。
+///
+/// 前者（`No such image`）要走「缺了就拉」，后者要换一条后端。
+/// 混成一个错误，前端只能靠猜：猜错就把一次注定失败的拉取
+/// 当成「镜像不在」的证明，真正的故障（权限、daemon 挂了）反而被盖住。
+async test "cli inspect separates missing from broken" {
+  let missing = write_fake_cli(
+    fake_failing_cli("Error response from daemon: No such image: nope", 1),
+  )
+  let source = @docker_cli.DockerCliSource::new(missing)
+  let error = try {
+    source.inspect("nope") |> ignore
+    fail("inspect should fail")
+  } catch {
+    err => err
+  }
+  assert_true(error is @docker_cli.ImageNotFound(_))
+  remove_fake_cli(missing)
+
+  // 同一个退出码，但 stderr 说的是别的事：那是故障，不是「没有」
+  let broken = write_fake_cli(
+    fake_failing_cli("permission denied while trying to connect", 1),
+  )
+  let source2 = @docker_cli.DockerCliSource::new(broken)
+  let error2 = try {
+    source2.inspect("nope") |> ignore
+    fail("inspect should fail")
+  } catch {
+    err => err
+  }
+  assert_true(error2 is @docker_cli.Backend(_, 1, _))
+  remove_fake_cli(broken)
 }

@@ -85,6 +85,11 @@ impl ImageSource for EngineSource with fn inspect(self, reference) {
     },
     self.timeout_ms,
   )
+  // 404 是「这只后端告诉你本地没有」，不是「这只后端坏了」：
+  // 前者要走「缺了就拉」，后者要换一条路。混一起就只能猜。
+  if response.status == 404 {
+    raise ImageNotFound(reference)
+  }
   if response.status != 200 {
     raise Backend(
       self.uri.path,
@@ -114,6 +119,13 @@ impl ImageSource for EngineSource with fn save(self, reference) {
     },
     self.timeout_ms,
   )
+  // 同 `inspect`：404 是「这只后端说本地没有」，不是「这只后端坏了」。
+  // `save` 也走这条路，是因为调用方的第一次动作就是 `inspect`——
+  // 404 落到这里只能说明「两次之间镜像被删了」，报 `ImageNotFound`
+  // 仍比报「后端故障」准确（调用方可以据此再拉一次）。
+  if response.status == 404 {
+    raise ImageNotFound(reference)
+  }
   if response.status != 200 {
     raise Backend(
       self.uri.path,

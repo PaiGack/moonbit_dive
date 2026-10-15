@@ -2,6 +2,12 @@
 /// 一条「镜像名 → 本地归档」的通路。issue #17 只要两种实现：
 /// CLI 包装（`DockerCliSource`）与 Engine HTTP（`EngineSource`，见 engine.mbt）。
 pub(open) trait ImageSource {
+  /// 看本地有没有这个镜像。
+  ///
+  /// 「后端答了没有」必须与「后端本身用不了」分开：前者（Engine 404）
+  /// 抛 `ImageNotFound`，调用方据此走「缺了就拉」；后者（连不上、超时、
+  /// 名字非法）抛别的错。混成一个错误，就只能靠猜——猜错的代价是
+  /// 把一次注定失败的网络拉取当成「镜像不在」的证明。
   async fn inspect(Self, String) -> ImageInfo raise DockerCliError
   async fn save(Self, String) -> Bytes raise DockerCliError
   /// 把镜像拉到本地。本地已有（或拉取过程判定为「已存在」）时是空操作。

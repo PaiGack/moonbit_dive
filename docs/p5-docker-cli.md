@@ -128,6 +128,7 @@ pub(open) trait ImageSource {
 | Engine `pull` 的 raw-stream 错误判定（`errorDetail` / `error`） | ✅ | `engine_test.mbt` + `transport_test.mbt` |
 | `--from-image`（默认）本地缺失时先拉再取，已有则不动 | ✅ | `pipeline_test.mbt` + `cmd/main/from_image_wbtest.mbt` |
 | `--no-pull` 绝不在本地缺镜像时拉取（纯离线） | ✅ | `cmd/main/from_image_wbtest.mbt` |
+| socket 通 `_ping` 但取不到归档时换下一条候选；「没有镜像」与「后端坏了」分开 | ✅ | `transport_test.mbt` + `cli_source_test.mbt` |
 | `moon check` / `moon test` 全绿 | ✅ | 317 个用例（native），见 `scripts/ci.sh` |
 
 ## 遗留
@@ -152,6 +153,12 @@ pub(open) trait ImageSource {
    HTTP 200 之后 daemon 吐的 `errorDetail` 不再被当成成功；
    `cmd/main --from-image` 本地缺镜像时默认先 `inspect` 判缺失、再 `pull`、最后 `save`
    （对齐原版 dive；`--no-pull` 关掉拉取）。进度事件本身仍不打日志（输出归调用方管）。
+5. **「探测通过」不等于「这条路推得动」** → 见 issue #42 的第二层：
+   转发进来的 socket 可以 `_ping` 答得好好的，真去取归档才发现对端没有镜像。
+   现在选中的后端取不到归档时会顺着候选列表往下换一条
+   （`save_or_pull_across_backends` / `backend_chain`），
+   并新增 `DockerCliError::ImageNotFound` 把「后端说没有这个镜像」
+   与「后端本身坏了」分开——前者该拉，后者该换路。
 4. **`run_cli` 的 stdout / stderr 死锁** → 见 issue #44：
    原先「先读干 stdout、再读 stderr」，子进程一旦把 stderr 管道写满就会阻塞，
    永远不关 stdout，主进程卡在等 stdout 的 EOF。`docker pull` 的输出正好能到这个量级。

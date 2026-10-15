@@ -14,6 +14,12 @@ pub(all) suberror DockerCliError {
   Archive(String)
   /// 输入本身不合法（空镜像名等）
   InvalidReference(String)
+  /// 后端答了，但答的是「没有这个镜像」（Engine 的 404）。
+  ///
+  /// 与 `Backend` 分开是因为这条错误**不是故障**：它是一只可用的后端
+  /// 给出的确定答案，调用方可以据此走「本地没有 → 拉一次」的策略，
+  /// 而不是把整条后端判成不可用。见 `ImageSource::inspect`。
+  ImageNotFound(String)
 } derive(Eq, Debug)
 
 ///|
@@ -49,6 +55,7 @@ pub impl Show for DockerCliError with fn to_string(self) {
     Cancelled(name) => "\{name} was cancelled"
     Archive(detail) => "not a readable image archive: \{detail}"
     InvalidReference(detail) => "invalid image reference: \{detail}"
+    ImageNotFound(reference) => "no such image locally: \{reference}"
   }
 }
 
