@@ -49,17 +49,12 @@ async fn run_once(
   program : String,
   args : Array[String],
 ) -> (Int32, Bytes, Bytes) raise DockerCliError {
-  let (out_read, out_write) = make_pipe()
-  let (err_read, err_write) = make_pipe()
   let grouped : (Int32, Bytes, Bytes) = @async.with_task_group(group => {
-    errdefer {
-      out_write.close()
-      err_write.close()
-    }
-    let spawned = spawn_with_retry(group, program, args, out_write, err_write)
-    // 父进程侧必须关掉写端，否则 read_all 永远等不到 EOF
-    out_write.close()
-    err_write.close()
+    // 管道必须「每次尝试都新开一对」：`read_from_process` 造出来的是
+    // 独占写端，传给子进程后会由运行时自动关闭（`after_spawn`）。
+    // 一次 spawn 失败就先把写端关掉了，若重试还拿同一对写端，
+    // 子进程拿到的就是已经关掉的 fd —— 退出码 0，输出却是空的。
+    let (spawned, out_read, err_read) = spawn_with_retry(group, program, args)
     let stdout = read_to_bytes(out_read)
     let stderr = read_to_bytes(err_read)
     let code = wait_quiet(spawned)
@@ -71,26 +66,32 @@ async fn run_once(
 }
 
 ///|
-/// spawn 一个子进程。`ETXTBSY`（Text file busy）重试几次：
-/// 刚写完就 exec 的脚本在某些文件系统上会撞上写句柄尚未释放。
-/// 这在真实场景里也会遇到——`docker_cli` 的测试就是这么造 fake docker 的。
+/// spawn 一个子进程，返回 `(进程, stdout 读端, stderr 读端)`。
+///
+/// `ETXTBSY`（Text file busy）重试几次：刚写完就 exec 的脚本在某些文件系统上
+/// 会撞上写句柄尚未释放。这在真实场景里也会遇到——`docker_cli` 的测试
+/// 就是这么造 fake docker 的。
+///
+/// **每次尝试都重新开一对管道**：写端在传给子进程后由运行时自动关闭，
+/// 一次失败的尝试会把它关掉；若沿用同一对写端重试，子进程拿到的是死 fd，
+/// 表现成「退出码 0、输出为空」。调用方拿到的读端只属于成功那次尝试。
 async fn[X] spawn_with_retry(
   group : @async.TaskGroup[X],
   program : String,
   args : Array[String],
-  stdout : &@process.ProcessOutput,
-  stderr : &@process.ProcessOutput,
-) -> @process.Process raise DockerCliError {
+) -> (@process.Process, @process.ReadFromProcess, @process.ReadFromProcess) raise DockerCliError {
   let mut attempt = 0
   while true {
+    let (out_read, out_write) = make_pipe()
+    let (err_read, err_write) = make_pipe()
     let spawned : Result[@process.Process, Error] = try
       @process.spawn(
         group,
         program,
         args,
         stdin=@process.redirect_from_file("/dev/null"),
-        stdout~,
-        stderr~,
+        stdout=out_write,
+        stderr=err_write,
         cancel_handler=@process.hard_cancel(),
       )
     catch {
@@ -99,12 +100,24 @@ async fn[X] spawn_with_retry(
       proc => Ok(proc)
     }
     match spawned {
-      Ok(proc) => return proc
-      Err(error) =>
+      Ok(proc) => {
+        // 父进程侧必须关掉写端，否则 read_all 永远等不到 EOF
+        out_write.close()
+        err_write.close()
+        return (proc, out_read, err_read)
+      }
+      Err(error) => {
+        // 这次尝试作废，把它开的读端收掉，别攒 fd：
+        // 写端已经由 `after_spawn` 在失败路径上关掉了。
+        out_write.close()
+        err_write.close()
+        out_read.close()
+        err_read.close()
         // 只有 ETXTBSY 值得重试；其余错误（文件不存在等）立刻上抛
         if !is_retryable_spawn_error(error) || attempt >= 20 {
           raise ExecutableNotFound("\{program}: \{error}")
         }
+      }
     }
     attempt = attempt + 1
     @async.sleep(5)
@@ -172,22 +185,19 @@ pub async fn run_cli_to_file(
 
 ///|
 /// 单次落盘调用。stdout 走 `redirect_to_file`，数据不经过进程内存。
+///
+/// 与收内存那条路一样，**每次 spawn 尝试都新开 stderr 管道与 stdout 文件重定向**：
+/// 两者传进子进程后都会由运行时自动关闭（`after_spawn`），
+/// 一次失败尝试之后不能再复用，否则子进程拿到死 fd、归档写不出来。
 async fn run_to_file_once(
   program : String,
   args : Array[String],
   output_path : String,
 ) -> (Int32, Int32) raise DockerCliError {
-  let (err_read, err_write) = make_pipe()
   let grouped : (Int32, Int32) = @async.with_task_group(group => {
-    errdefer err_write.close()
-    let stdout = @process.redirect_to_file(
-      output_path,
-      create_mode=@fs.CreateMode::CreateOrTruncate,
-    ) catch {
-      err => raise Backend(program, -1, "cannot open output file: \{err}")
-    }
-    let spawned = spawn_with_retry(group, program, args, stdout, err_write)
-    err_write.close()
+    let (spawned, err_read) = spawn_to_file_with_retry(
+      group, program, args, output_path,
+    )
     let stderr = read_to_bytes(err_read)
     let code = wait_quiet(spawned)
     if code != 0 {
@@ -201,4 +211,63 @@ async fn run_to_file_once(
     err => raise Backend(program, -1, err.to_string())
   }
   grouped
+}
+
+///|
+/// `spawn_with_retry` 的落盘版：stdout 直接重定向到文件，
+/// 返回 `(进程, stderr 读端)`。每次尝试都重开 stderr 管道与 stdout 重定向。
+async fn[X] spawn_to_file_with_retry(
+  group : @async.TaskGroup[X],
+  program : String,
+  args : Array[String],
+  output_path : String,
+) -> (@process.Process, @process.ReadFromProcess) raise DockerCliError {
+  let mut attempt = 0
+  while true {
+    let (err_read, err_write) = make_pipe()
+    let stdout = @process.redirect_to_file(
+      output_path,
+      create_mode=@fs.CreateMode::CreateOrTruncate,
+    ) catch {
+      err => {
+        err_write.close()
+        err_read.close()
+        raise Backend(program, -1, "cannot open output file: \{err}")
+      }
+    }
+    let spawned : Result[@process.Process, Error] = try
+      @process.spawn(
+        group,
+        program,
+        args,
+        stdin=@process.redirect_from_file("/dev/null"),
+        stdout~,
+        stderr=err_write,
+        cancel_handler=@process.hard_cancel(),
+      )
+    catch {
+      err => Err(err)
+    } noraise {
+      proc => Ok(proc)
+    }
+    match spawned {
+      Ok(proc) => {
+        // 父进程侧必须关掉写端，否则 read_all 永远等不到 EOF
+        err_write.close()
+        return (proc, err_read)
+      }
+      Err(error) => {
+        // 这次尝试作废：写端/重定向已由 `after_spawn` 关掉，收掉读端别攒 fd
+        err_write.close()
+        err_read.close()
+        if !is_retryable_spawn_error(error) || attempt >= 20 {
+          raise ExecutableNotFound("\{program}: \{error}")
+        }
+      }
+    }
+    attempt = attempt + 1
+    @async.sleep(5)
+  } nobreak {
+    raise ExecutableNotFound(program)
+  }
 }
