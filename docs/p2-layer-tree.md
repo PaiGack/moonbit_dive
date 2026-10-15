@@ -43,6 +43,10 @@
 - 给定层 `n-1` 与 `n`，输出 added / modified / removed 三组路径
 - removed 集合由 whiteout 推导，不是简单做集合差
 - 支持全量层叠：`apply(layers) -> Tree` 与 `diff(layer_n) -> Diff`
+- `modified` 的判等对齐原版 `FileInfo::Compare`：`(kind, mode, uid, gid)`
+  全等才算没动过，`mtime` 不看；在此之上按需加 sha256 内容指纹，
+  补掉「同大小、同 mtime、内容不同」那一格。取舍与影响面见
+  [issue-71-compare-rule.md](issue-71-compare-rule.md)
 
 ### 树渲染
 

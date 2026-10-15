@@ -61,10 +61,17 @@ pub(all) struct Node {
   mut size : Int32
   /// 低 12 位权限（八进制字面量书写，如 `0o755`）
   mut mode : Int32
+  /// 属主 / 属组（tar 头里的 uid / gid）；目录补齐与链接按 0 记
+  mut uid : Int32
+  mut gid : Int32
   /// 归属的层下标：当前内容由哪一层写入
   mut layer : Int32
   /// entry 里记录的修改时间（Unix 秒），缺省为 0
   mut mtime : Int32
+  /// 当前内容的指纹；`None` 表示这个节点还没做过内容比对
+  mut digest : Digest?
+  /// 写入流水，按层序排列（`scan_content` 填充）
+  mut files : Array[NodeFile]
   /// 子节点，按路径字典序保持稳定，便于渲染与快照
   mut children : Array[Node]
 } derive(Debug)
@@ -86,16 +93,90 @@ pub impl Show for Node with fn to_string(self) {
 pub extend Node with Show::{to_string, output}
 
 ///|
+/// 一个节点的内容指纹。
+///
+/// 逐层叠树时不比对内容（那要把每层的每个文件都读一遍），
+/// 只在真要比两次快照时才按需算，因此这里允许为空。
+pub(all) struct Digest {
+  /// 这个节点的内容被改写过的次数（含第一次写入）
+  changes : Int32
+  /// 当前内容的 sha256 摘要，全小写 hex；没有内容（目录 / 链接）为 `None`
+  hash : String?
+} derive(Eq, Debug)
+
+///|
+pub extend Digest with Eq::{equal, not_equal}
+
+///|
+pub extend Digest with @debug.Debug::{to_repr}
+
+///|
+pub impl Show for Digest with fn to_string(self) {
+  let hash = match self.hash {
+    Some(hash) => hash
+    None => "-"
+  }
+  "changes=\{self.changes} \{hash}"
+}
+
+///|
+pub extend Digest with Show::{to_string, output}
+
+///|
+/// 一个节点的一次写入：在哪一层写的、多大、内容摘要是什么。
+///
+/// 同一层里同一路径被写了两次只留最后一份（与 `apply_layer` 的语义一致）；
+/// 链接与目录也会有记录，摘要为 `None`。
+pub(all) struct NodeFile {
+  /// 写这份内容的层下标
+  layer : Int32
+  size : Int32
+  /// 内容摘要；`None` 表示这条 entry 不带内容
+  hash : String?
+} derive(Eq, Debug)
+
+///|
+pub extend NodeFile with Eq::{equal, not_equal}
+
+///|
+pub extend NodeFile with @debug.Debug::{to_repr}
+
+///|
+pub impl Show for NodeFile with fn to_string(self) {
+  match self.hash {
+    Some(hash) => "L\{self.layer} \{self.size} bytes \{hash}"
+    None => "L\{self.layer} \{self.size} bytes"
+  }
+}
+
+///|
+pub extend NodeFile with Show::{to_string, output}
+
+///|
 /// 新建一个节点，`children` 为空。
 pub fn Node::new(
   path : String,
   kind : NodeKind,
   size~ : Int32 = 0,
   mode~ : Int32 = 0o644,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
   layer~ : Int32 = 0,
   mtime~ : Int32 = 0,
 ) -> Node {
-  { path, kind, size, mode, layer, mtime, children: [], }
+  {
+    path,
+    kind,
+    size,
+    mode,
+    uid,
+    gid,
+    layer,
+    mtime,
+    files: [],
+    digest: None,
+    children: [],
+  }
 }
 
 ///|

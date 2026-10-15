@@ -28,6 +28,8 @@ pub fn TarBuilder::add_header(
   mode~ : Int32 = 0o644,
   link_target~ : String = "",
   mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
   let header = FixedArray::make(tar_block_size, b'\x00')
   let name = path
@@ -42,8 +44,8 @@ pub fn TarBuilder::add_header(
   }
   // 八进制字段都以上一个 NUL 收尾：这里补足到字段边界
   write_into(header, 100, utf8_bytes(octal(mode, 7) + "\u{0}"))
-  write_into(header, 108, utf8_bytes(octal(0, 7) + "\u{0}"))
-  write_into(header, 116, utf8_bytes(octal(0, 7) + "\u{0}"))
+  write_into(header, 108, utf8_bytes(octal(uid, 7) + "\u{0}"))
+  write_into(header, 116, utf8_bytes(octal(gid, 7) + "\u{0}"))
   write_into(header, 124, utf8_bytes(octal(size, 11) + "\u{0}"))
   write_into(header, 136, utf8_bytes(octal(mtime, 11) + "\u{0}"))
   // 校验和字段先填空格，算完再回填
@@ -81,9 +83,20 @@ pub fn TarBuilder::add_file(
   path : String,
   content : String,
   mode~ : Int32 = 0o644,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
   let bytes = utf8_bytes(content)
-  self.add_header(path, bytes.length(), entry_type=b'0', mode~)
+  self.add_header(
+    path,
+    bytes.length(),
+    entry_type=b'0',
+    mode~,
+    mtime~,
+    uid~,
+    gid~,
+  )
   self.push_data(bytes)
 }
 

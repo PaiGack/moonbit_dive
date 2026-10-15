@@ -106,10 +106,16 @@ pub fn diff_against_empty(tree : FileTree, layer : Int32) -> Diff {
 ///|
 /// 比较两棵树，得到 `layer` 层相对上一层的差异。
 ///
-/// 规则：
-/// - 新树有、旧树没有 -> added
-/// - 两棵树都有但大小或类型变了 -> modified
-/// - 旧树有、新树没有 -> removed（这正是 whiteout 的结果）
+/// 判等口径对齐原版 dive 的 `FileInfo::Compare`：`(kind, mode, uid, gid)` 全等
+/// 才算 `Unmodified`，另加 `size` 与内容指纹两条。任一项不同即 modified：
+///
+/// - kind / mode / 属主 / size 变了 -> modified
+/// - 两侧都带内容指纹（`Node::digest`，来自 `scan_content` 或 `browse_*`）
+///   且指纹不同 -> modified，这样「同大小、同 mode、同 mtime，内容不同」也认得出
+/// - 两侧都不带指纹时只看元数据与 size，不会外加一次全量哈希（issue #71 的取舍）
+///
+/// **mtime 不参与**：原版不看它，`COPY` 刷新时间戳不该算改动。
+/// `size` 参与是因为同 kind 下它变了必然意味着内容变了，与对齐后的口径不冲突。
 pub fn diff_snapshots(
   before : FileTree,
   after : FileTree,
@@ -125,10 +131,7 @@ pub fn diff_snapshots(
     }
     match before.nodes.get(path) {
       None => added.push(path)
-      Some(previous) =>
-        if previous.size != node.size || previous.kind != node.kind {
-          modified.push(path)
-        }
+      Some(previous) => if node_differs(previous, node) { modified.push(path) }
     }
   }
   for path, _ in before.nodes {
@@ -143,10 +146,35 @@ pub fn diff_snapshots(
 }
 
 ///|
+/// 一个节点相对上一版本算不算改过：元数据 + size + 内容指纹。
+///
+/// 是 `diff_snapshots` 判 `modified` 的唯一出口，改动只需改这一处。
+fn node_differs(previous : Node, current : Node) -> Bool {
+  // 元数据逐项比。注意这里先各自算成具名变量再合：
+  // 多行 `||` 链直接写在 `if` 条件里时，实测后半段不参与短路
+  // （`a ||\n b ||\n c` 只按第一项判），所以不省这两步
+  let kind_differs = previous.kind != current.kind
+  let mode_differs = previous.mode != current.mode
+  let uid_differs = previous.uid != current.uid
+  let gid_differs = previous.gid != current.gid
+  let size_differs = previous.size != current.size
+  if kind_differs || mode_differs || uid_differs || gid_differs || size_differs {
+    return true
+  }
+  // 内容指纹：两边都扫过内容时才比得了。只有一边有（比如只给一侧跑过
+  // `scan_content`）就当内容没变，交给元数据与 size 去判——否则每一次
+  // 「先快照、再叠层、再快照」的调用都会因为 `before` 没摘要而全判 modified
+  match (previous.digest, current.digest) {
+    (Some(left), Some(right)) => left.hash != right.hash
+    _ => false
+  }
+}
+
+///|
 /// 把当前树复制一份，用于逐层比对。
 ///
-/// 每个节点都重建（类型、大小、层号一并拷贝），因此快照与后续层的写入互相隔离；
-/// 只拷节点不拷历史，`snapshot` 的用途是拿「某一时刻的形状」去比大小与类型。
+/// 每个节点都重建（类型、大小、权限、属主、内容指纹一并拷贝），因此快照与后续层的
+/// 写入互相隔离；只拷节点不拷历史，`snapshot` 的用途是拿「某一时刻的形状」去比。
 pub fn FileTree::snapshot(self : FileTree) -> FileTree {
   let copy = FileTree::new()
   for path, node in self.nodes {
@@ -158,9 +186,13 @@ pub fn FileTree::snapshot(self : FileTree) -> FileTree {
       node.kind,
       size=node.size,
       mode=node.mode,
+      uid=node.uid,
+      gid=node.gid,
       layer=node.layer,
       mtime=node.mtime,
     )
+    cloned.digest = node.digest
+    cloned.files = node.files.copy()
     copy.nodes.set(path, cloned)
     copy.attach(cloned)
   }
@@ -171,8 +203,8 @@ pub fn FileTree::snapshot(self : FileTree) -> FileTree {
 ///|
 /// 聚合比较：把 `base` 到 `layer` 这一段区间的改动**累积**成一份 diff。
 ///
-/// 为什么不是「拿两棵树做一次 `diff_snapshots`」：`diff_snapshots` 只比大小与类型，
-/// 「第 0 层写过、第 2 层又改回原样」的路径在两个端点上字节一模一样，
+/// 为什么不是「拿两棵树做一次 `diff_snapshots`」：`diff_snapshots` 比的是两个端点，
+/// 「第 0 层写过、第 2 层又改成别的、第 3 层再改回来」的路径在两个端点上一样，
 /// 会被判成没动过——而看树的人问的是「这段区间里动过谁」。原版 dive 的聚合档
 /// 就是这个口径（逐层叠加时把 diff 往父目录合并），所以这里按区间**累积**：
 ///
@@ -217,17 +249,22 @@ pub fn diff_aggregate(
   let removed = []
   let status : Map[String, Int32] = Map([])
   for path, _ in touched {
-    let in_before = before.nodes.contains(path)
-    let in_after = after.nodes.contains(path)
-    if in_after && !in_before {
-      added.push(path)
-      status.set(path, aggregate_added)
-    } else if in_after && in_before {
-      modified.push(path)
-      status.set(path, aggregate_modified)
-    } else if !in_after && in_before {
-      removed.push(path)
-      status.set(path, aggregate_removed)
+    match (before.nodes.get(path), after.nodes.get(path)) {
+      (None, Some(_)) => {
+        added.push(path)
+        status.set(path, aggregate_added)
+      }
+      (Some(_), Some(_)) => {
+        // 区间内碰过就算动过，不再比一次两端：聚合档回答的是「这段区间里
+        // 这条路径动没动」，回看内容反而会把「先改后改回来」的路径漏掉
+        modified.push(path)
+        status.set(path, aggregate_modified)
+      }
+      (Some(_), None) => {
+        removed.push(path)
+        status.set(path, aggregate_removed)
+      }
+      (None, None) => ()
     }
   }
   // 3. 父目录合并：没被直接碰过、但子树里有改动的目录算 modified

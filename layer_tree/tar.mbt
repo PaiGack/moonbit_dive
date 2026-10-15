@@ -53,6 +53,9 @@ pub(all) struct TarEntry {
   entry_type : TarEntryType
   size : Int32
   mode : Int32
+  /// 文件属主 / 属组（tar 头的 uid / gid 字段）
+  uid : Int32
+  gid : Int32
   mtime : Int32
   /// 软/硬链接目标；非链接为空串
   link_target : String
@@ -210,6 +213,8 @@ fn parse_header(
   let mode = parse_octal(stream, header_offset + 100, 8, "mode")
   let declared_size = parse_octal(stream, header_offset + 124, 12, "size")
   let mtime = parse_octal(stream, header_offset + 136, 12, "mtime")
+  let uid = parse_octal(stream, header_offset + 108, 8, "uid")
+  let gid = parse_octal(stream, header_offset + 116, 8, "gid")
   let type_byte = stream[header_offset + 156]
   let entry_type = entry_type_of(type_byte)
   let link_target = if entry_type is Symlink || entry_type is Hardlink {
@@ -231,6 +236,8 @@ fn parse_header(
     entry_type,
     size,
     mode,
+    uid,
+    gid,
     mtime,
     link_target,
     data_offset: absolute_offset + data_offset,

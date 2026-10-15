@@ -57,11 +57,81 @@ test "README example" {
 | 层应用 | `apply_layer`、`apply_layer_with_media_type`、`apply_layers_with_diffs` |
 | whiteout | `whiteout_kind`、`WhiteoutKind`、`remove_subtree`、`make_opaque` |
 | 层间 diff | `diff_snapshots`、`diff_against_empty`、`diff_aggregate`、`Diff` |
+| 内容摘要 | `content_scan`、`ContentScan`、`content_changes`、`FileTree::scan_content`、`Node::digest`、`Node::files` |
 | 逐层浏览 | `browse_layers`、`browse_decompressed`、`LayerView`、`LayerView::subtree`、`LayerView::changed_paths`、`LayerView::aggregate_changed_paths` |
 | 解压一次多路复用 | `decompress_layers`、`DecompressedLayers` |
 | 树渲染 | `render_tree`、`render_tree_between`、`render_diff` |
 
-## whiteout 语义
+## 判等口径
+
+**这一条与原版的取舍在 issue #71 里拍过：对齐。**
+
+`modified` 怎么算，直接对齐原版 dive 的 `FileInfo::Compare`：
+
+```go
+// dive/filetree/file_info.go
+if data.TypeFlag == other.TypeFlag {
+    if data.hash == other.hash && data.Mode == other.Mode &&
+       data.Uid == other.Uid && data.Gid == other.Gid {
+        return Unmodified
+    }
+}
+return Modified
+```
+
+也就是 **`(kind, mode, uid, gid)` 全等才算没动过**。本仓在这之上多一条内容指纹，
+补掉原版靠内容哈希兜住、而元数据看不到的那一格：
+
+| 变化 | 原版 | 本仓 |
+|---|---|---|
+| 内容不同、`size` 也不同 | `Modified` | `Modified`（`size` 变了） |
+| 内容不同、`size` 相同、`mtime` 相同 | `Modified`（比哈希） | `Modified`（比 sha256 指纹） |
+| 内容相同、`mtime` 不同（`COPY` 刷新时间戳） | `Unmodified` | `Unmodified`（不看 `mtime`） |
+| `chmod` / `chown` | `Modified` | `Modified` |
+
+`size` 进判等是因为它由 kind 与内容决定，原版虽然不显式看它，但同 kind 下 `size` 变了
+必然意味着内容变了，因此这一条不会与对齐后的口径分叉。
+
+### 与原版的两点已知差别
+
+- **哈希算法**：原版是 xxhash 64 位，本仓是 sha256（复用 `moonbitlang/x/crypto`）。
+  两者都只用来判断「内容一样吗」，不会影响任何结论，只是本仓算得慢一点、强一点。
+- **算不算哈希**：原版在解析 tar 头时无条件把每个文件读一遍；本仓默认只在
+  逐层浏览（`browse_*`）时算，`FileTree::scan_content` 是显式入口。
+  只做 `apply_layer` + `diff_snapshots` 的话不读内容，代价是「同大小不同内容」认不出来。
+
+### 内容指纹是「按需」的
+
+`Node::digest` 与 `Node::files` 默认是空的：逐层叠树时不读文件内容
+（大镜像上这就是实打实的一遍全量读取）。需要内容级精度时显式跑一次：
+
+```mbt check
+///|
+test "README content hashes" {
+  let layer0 = build_tar([TarEntrySpec::File("app/main.js", "0123456789")])
+  let layer1 = build_tar([TarEntrySpec::File("app/main.js", "abcdefghij")])
+  // 显式入口：`scan_content` 之后节点上才有内容摘要
+  let tree = FileTree::new()
+  apply_layer(tree, layer0, 0) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(tree.require("/app/main.js").digest is None)
+  tree.scan_content([layer0])
+  assert_eq(
+    tree.require("/app/main.js").digest.unwrap().hash,
+    Some("84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882"),
+  )
+  // 逐层浏览默认也会按 tar 算一遍：这一档因此认得
+  // 「同大小、同 mtime、内容不同」，不必自己调 scan_content
+  let views = browse_layers([layer0, layer1]) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(views[1].diff.modified, ["/app/main.js"])
+}
+```
+
+`browse_decompressed` 的 `content_hashes = false` 可以关掉这一步，
+代价是逐层档退回「只比元数据 + `size`」，「同大小不同内容」认不出来。
 
 OCI / AUFS 用特殊文件名表达「删除」，它们本身不会出现在最终文件树里：
 
@@ -156,13 +226,18 @@ test "README decompress once" {
 **换的是比较区间，不是数据源**：树只有一棵（`LayerView.tree`），切档位只换给行上色的那份 diff。
 
 聚合档不是「拿两棵树做一次 `diff_snapshots`」——那样「第 0 层写过、第 2 层又改回原样」
-的路径在两个端点上字节一模一样，会被判成没动过。它按区间**累积**：
+的路径在两个端点上完全一样，会被判成没动过。它按区间**累积**：
 
 - 取区间内各层 diff 里被碰过的全部路径
 - 按两端的树归类：只在终点 -> `added`，两头都在 -> `modified`，只在起点 -> `removed`
 - 区间内碰过、最后两头都不在的路径丢掉（视图画的是终点的树，没有行可以落）
 - 没被直接碰过、但子树里有改动的目录并入 `modified`
   （对齐 dive 的 `deriveDiffType`：父目录合并子节点的 diff）
+
+**「碰过即算」是刻意的，不改。** 聚合档回答的是「这层树上有哪些行是这段区间里
+动过的」，不是「两端字节差了几处」——后者直接比两个端点就行，不需要聚合。
+所以「第 0 层写过、第 1 层改成别的、第 2 层又改回原样」的路径在聚合档里仍是
+`modified`，与原版 dive 的 `CompareAllLayers` 一致。
 
 被删的路径不在终点的树上，所以 `aggregate.removed` 是「删除」唯一的出口：
 CLI 的 `--aggregate` 单列一段，TUI 用 `d` 打开一张可滚动的列表。
@@ -178,6 +253,7 @@ test "README aggregate compare" {
   // 逐层档：第 2 层相对第 1 层动了这条路径
   assert_eq(views[2].diff.modified, ["/app/main"])
   // 聚合档：与第 0 层比字节一样，但这段区间里碰过，仍算 modified
+  // （dive 的 CompareAllLayers 同理：它也不回看内容）
   assert_eq(views[2].aggregate.modified, ["/app", "/app/main"])
   assert_eq(views[2].aggregate.removed, [])
   // 区间起点是第 0 层的树，体积差就是「从第 0 层到现在涨了多少」
@@ -185,9 +261,9 @@ test "README aggregate compare" {
 }
 ```
 
-`aggregate_size_delta(base)` 是**端点差**（终点的树减去起点的树），
-与聚合 diff 的「碰过即算」不是同一把尺子：被改回原样的路径在 diff 里是 `modified`，
-在体积差里贡献 0。两个数各有各的用处，别互相印证。
+`aggregate_size_delta(base)` 是**端点差**（终点的树减去起点的树）。注意它与聚合 diff
+不是同一把尺子：被改回原样的路径在上面那个例子里 diff 里没有、体积差也贡献 0；
+但改成**别的大小**再改回来时，diff 里始终有它，体积差仍是 0。两个数各有各的用处。
 
 ## 设计要点
 
