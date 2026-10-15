@@ -24,7 +24,7 @@
 
 - 稳定可快照的文本报告（层列表 + 体积 + 浪费）
 - JSON 报告：结构化字段，供 P4 的门禁判定消费
-- 可选 HTML 报告（若时间不够可后置）
+- 单文件 HTML 报告：概览卡 + 逐层表 + efficiency 进度条 + 浪费 / 热点两张表
 
 ## 非目标
 
@@ -38,6 +38,7 @@
 - [x] efficiency score 在「无浪费」「层层覆盖」「删掉大文件」三种极端用例下符合预期
 - [x] JSON 报告字段有 schema 文档（[p3-report-schema.md](p3-report-schema.md)）
 - [x] 文本报告快照稳定
+- [x] HTML 报告与 JSON 报告同源同字段，路径等外部输入全部转义
 - [x] `moon check` / `moon test` 全绿
 
 ## 落地情况
@@ -50,7 +51,7 @@
 | 路径体积账 | `Analysis::path_size`、`PathSize`、`Analysis::waste_ranking` |
 | efficiency score | `Analysis::efficiency`、`EfficiencyReport`、`efficiency_of_versions` |
 | 目录热点 | `hotspots`、`Hotspot` |
-| 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string` |
+| 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string`、`report_to_html`、`html_escape` |
 
 **efficiency score 的口径**：与 dive `dive/filetree/efficiency.go` 一致，按**路径**
 跨所有层聚合，`score = Σ min_discovered / Σ cumulative`。因此「同一路径写两次、
@@ -61,9 +62,19 @@
 被 whiteout 删掉的内容已经不在树上，但它们在镜像里真实占着空间，必须逐层记账。
 扫描先列清单、再让 P2 的 `apply_layer` 改树，否则旧值在落树后查不到。
 
-## 可选项未做
+## HTML 报告
 
-- HTML 报告按计划后置（时间不足），不在本次范围内
+`report_to_html(report) -> String` 是与文本 / JSON 并列的第三个渲染后端，数据全部来自同一个
+`Report`，不重算任何口径：
+
+- 单文件、无外部依赖：内联一段 `<style>`，没有 JS，双击即看
+- 顶部概览卡：层数 / current bytes / efficiency / wasted 占比
+- 逐层表：`+a ~o -d` 路径数与 wrote / wasted / erased 字节
+- efficiency 区块：进度条 + `min/cumulative` 分子分母明示，不只给一个百分数
+- wasteful paths、largest directories 两张表
+- 所有外部输入（路径名）都过 `html_escape`，`& < > " '` 五个字符全转义
+
+CLI 已接线：`dive <image> --format html`，`-o report.html` 写文件、不给则打到 stdout。
 
 ## 参考
 

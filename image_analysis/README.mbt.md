@@ -48,7 +48,7 @@ test "README example" {
 | efficiency score | `Analysis::efficiency`、`EfficiencyReport`、`efficiency_of_versions` |
 | 逐路径效率表 | `efficiency_view_rows`、`EfficiencyViewOptions`、`render_efficiency_view`、`efficiency_view_to_json` |
 | 目录热点 | `hotspots`、`Hotspot` |
-| 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string` |
+| 报告 | `build_report`、`render_text_report`、`report_to_json`、`report_to_json_string`、`report_to_html` |
 
 ## efficiency score 口径
 
@@ -146,6 +146,14 @@ paths by extra writes (cumulative - min), scope: /, showing 3:
 ```
 
 两张表（`wasteful paths` 与这张）在 CLI 里是互斥的开关，不会同时出现。
+
+HTML 报告（`report_to_html`）是同一份 `Report` 的第三个渲染后端：单文件、无外部依赖、
+内联样式，顶部概览卡 + 逐层表 + efficiency 进度条 + 浪费 / 热点两张表。所有路径名都过
+`html_escape`，`<` `&` 引号不会撑破结构。CLI 用法：
+
+```bash
+dive image.tar --format html -o report.html
+```
 
 ## 设计要点
 

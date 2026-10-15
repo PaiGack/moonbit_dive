@@ -98,3 +98,25 @@ pub async fn remove_temp_bytes(path : String) -> Unit {
     _ => ()
   }
 }
+
+///|
+/// 造一个只会 `cat <archive_path>` 的假 docker。
+///
+/// 与 `fake_inspect_and_save` 分开：大归档的用例只关心 `save`，
+/// 让脚本尽量简单，别在 shell 层引入额外开销。
+/// 归档由 `write_large_archive` 流式生成，脚本只负责把它转出去。
+pub fn fake_cat_cli(archive_path : String) -> String {
+  let script =
+    #|#!/bin/sh
+    #|case "$1" in
+    #|  save)
+    #|    cat 'ARCHIVE_PATH'
+    #|    ;;
+    #|  *)
+    #|    echo "unexpected command: $1" >&2
+    #|    exit 2
+    #|    ;;
+    #|esac
+    #|
+  script.replace(old="ARCHIVE_PATH", new=archive_path)
+}

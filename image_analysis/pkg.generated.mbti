@@ -25,6 +25,8 @@ pub fn file_sizes(@layer_tree.FileTree) -> Map[String, Int]
 
 pub fn hotspots(@layer_tree.FileTree, depth? : Int, limit? : Int) -> Array[Hotspot]
 
+pub fn html_escape(String) -> String
+
 pub let json_report_schema_version : Int
 
 pub fn percent(Double) -> String
@@ -32,6 +34,8 @@ pub fn percent(Double) -> String
 pub fn render_efficiency_view(EfficiencyReport, EfficiencyViewOptions) -> String
 
 pub fn render_text_report(Report) -> String
+
+pub fn report_to_html(Report) -> String
 
 pub fn report_to_json(Report) -> Json
 

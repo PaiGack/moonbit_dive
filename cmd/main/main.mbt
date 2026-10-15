@@ -49,8 +49,13 @@ fn cli() -> @argparse.Command {
       @argparse.OptionArg(
         "format",
         short='f',
-        about="output format: text, json or annotations",
+        about="output format: text, json, html or annotations",
         default_values=["text"],
+      ),
+      @argparse.OptionArg(
+        "output",
+        short='o',
+        about="write the report to a file instead of stdout (html only, for now)",
       ),
       @argparse.OptionArg(
         "layer",
@@ -89,6 +94,7 @@ struct Options {
   image : String
   rules : String?
   format : String
+  output : String?
   layer : Int32?
   path : String?
   efficiency : Bool
@@ -108,6 +114,7 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
         format
       }
     },
+    output: optional_value(matches, "output"),
     layer: layer_of(matches),
     path: optional_value(matches, "path"),
     efficiency: flag_of(matches, "efficiency"),
@@ -239,6 +246,8 @@ fn run(options : Options) -> Result[Int32, CommandError] noraise {
   let result = ruleset.check(report, tree, image=options.image)
   match options.format {
     "json" => println(result.to_json_string())
+    "html" =>
+      write_report_output(options, @image_analysis.report_to_html(report))
     "annotations" => println(result.to_annotations())
     _ => {
       println(@image_analysis.render_text_report(report))
@@ -246,6 +255,29 @@ fn run(options : Options) -> Result[Int32, CommandError] noraise {
     }
   }
   Ok(@image_ci.exit_code_of(result))
+}
+
+///|
+/// 报告输出：给了 `-o` 就写文件，否则打到 stdout。
+///
+/// HTML 是给人双击看的，写文件才是主用法；不给 `-o` 时退化成 stdout，
+/// 便于 `dive img --format html > report.html` 这类管道。
+/// 写文件失败按「镜像读不出来」以外的运行错误处理，退 exit 2。
+fn write_report_output(options : Options, text : String) -> Unit {
+  let path = match options.output {
+    Some(path) => path
+    None => {
+      println(text)
+      return
+    }
+  }
+  @fs.write_string_to_file(path, text) catch {
+    @fs.IOError(message) => {
+      eprintln("cannot write \{path}: \{message}")
+      exit_process(@image_ci.exit_config_error)
+    }
+  }
+  println("report written to \{path}")
 }
 
 ///|
