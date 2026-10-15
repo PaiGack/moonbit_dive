@@ -53,3 +53,16 @@ test "README layer browse" {
     ),
   )
 }
+
+///|
+/// README 里的聚合档示例。
+test "README aggregate compare" {
+  let l0 = build_tar([Dir("app"), File("app/main", "v1")])
+  let l1 = build_tar([File("app/main", "v2-longer")])
+  let l2 = build_tar([File("app/main", "v1")])
+  let views = browse_layers([l0, l1, l2]) catch { err => fail(err.to_string()) }
+  assert_eq(views[2].diff.modified, ["/app/main"])
+  assert_eq(views[2].aggregate.modified, ["/app", "/app/main"])
+  assert_eq(views[2].aggregate.removed, [])
+  assert_eq(views[2].aggregate_size_delta(0), 0)
+}

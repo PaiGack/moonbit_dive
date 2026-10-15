@@ -49,13 +49,30 @@ pub(all) enum RowStatus {
 
 ///|
 /// 一行降在哪一档。与 `RowStatus` 合成一张 3x2 的表，
-/// `Ctrl+A/R/M/U` 四个过滤键就是从它派生出来的（`Row::in_group`）。
+/// `Ctrl+U` 这颗过滤键就是从它派生出来的（`Row::in_group`）。
 ///
 /// 没有 `Removed`：被删的路径不在这一层的树上，没有行可以给它归档。
 pub(all) enum RowGroup {
   AddedOnly
   ModifiedOnly
   UnchangedOnly
+} derive(Eq, Debug)
+
+///|
+/// diff 的**比较档位**（对齐原版 dive 的 `viewmodel.LayerCompareMode`）：
+/// 树本身只有一棵，换档位换的是「拿哪一段区间的 diff 给行上色」。
+///
+/// - `Single`：当前层相对上一层（现状，`Ctrl+L`）
+/// - `Aggregate`：当前层相对第 0 层之前的整段累积（`Ctrl+A`）
+///
+/// 分开一个枚举而不是一个 `Bool`：状态行、标题、帮助浮层都要把当前档位说出来，
+/// 「同一条路径为什么这次是绿的、下次是黄的」得有个名字可指。
+///
+/// 与 `RowGroup` 是**正交**的两件事：档位换的是「拿哪段 diff 上色」，
+/// 过滤换的是「哪些行留在画面上」。
+pub(all) enum CompareMode {
+  Single
+  Aggregate
 } derive(Eq, Debug)
 
 ///|
@@ -82,8 +99,12 @@ pub(all) struct TreeView {
   mut page_height : Int32
   /// 一行是按「名字」还是按「大小」排序（`data_set_sort` 写，`all_rows` 按它重排）
   mut sort_by_size : Bool
-  /// 只看某一档 diff（`Ctrl+A/R/M/U`）；`None` 表示四档都要（`Ctrl+U` 同效）
+  /// 只看某一档 diff（`Ctrl+U`）；`None` 表示全都要
   mut filter : RowGroup?
+  /// 当前比较档位（渲染上色与标题都看它）
+  mut compare_mode : CompareMode
+  /// 聚合档下被删除的路径（不在树上，给删除列表用）；单层档只放该层的 `removed`
+  mut removed : Array[String]
 } derive(Debug)
 
 ///|
@@ -105,8 +126,13 @@ pub fn TreeView::from_tree_with_diff(
   layer : Int32,
   total_layers : Int32,
   by_size : Bool,
+  compare_mode~ : CompareMode = CompareMode::Single,
 ) -> TreeView {
   let rows = sort_rows(flatten(tree, diff), by_size)
+  let removed = match diff {
+    Some(diff) => diff.removed.copy()
+    None => []
+  }
   let view = {
     layer,
     total_layers,
@@ -118,6 +144,8 @@ pub fn TreeView::from_tree_with_diff(
     page_height: 0,
     sort_by_size: by_size,
     filter: None,
+    compare_mode,
+    removed,
   }
   view.refresh()
   view
@@ -482,6 +510,23 @@ pub fn TreeView::clamp_offset(self : TreeView) -> Unit {
 pub fn TreeView::page_size(self : TreeView) -> Int32 {
   self.page_height
 }
+
+///|
+pub extend CompareMode with Eq::{equal, not_equal}
+
+///|
+pub extend CompareMode with @debug.Debug::{to_repr}
+
+///|
+pub impl Show for CompareMode with fn to_string(self : CompareMode) {
+  match self {
+    Single => "layer"
+    Aggregate => "aggregate"
+  }
+}
+
+///|
+pub extend CompareMode with Show::{to_string, output}
 
 ///|
 pub extend RowStatus with @debug.Debug::{to_repr}

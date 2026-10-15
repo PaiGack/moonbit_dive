@@ -21,12 +21,8 @@ pub(all) enum Action {
   Toggle
   /// 全折叠 / 全展开（`Ctrl+Space`）
   ToggleCollapseAll
-  /// 比较所有层（`Ctrl+A`）
-  CompareAll
-  /// 只看「被改写」的行（`Ctrl+L`；`Ctrl+U` 是撤销过滤）
+  /// 只看「被改写」的行 ↔ 全都要（`Ctrl+U`，原版 `IgnoreUnmodified`）
   FilterModified
-  /// 撤销 diff 过滤（`Ctrl+U`）
-  FilterClear
   /// 上一张层级视图（看上一层）
   PrevLayer
   /// 下一张层级视图（看下一层）
@@ -39,6 +35,12 @@ pub(all) enum Action {
   ToggleHelp
   /// 按大小排序（再按一次回名字序）
   ToggleSort
+  /// diff 档位切到「聚合」（当前层相对第 0 层之前的整段累积）
+  CompareAggregate
+  /// diff 档位切回「当前层」（相对上一层）
+  CompareSingle
+  /// 开关删除路径列表浮层
+  ToggleRemoved
   Quit
   /// 没绑定的键
   None
@@ -46,7 +48,7 @@ pub(all) enum Action {
 
 ///|
 /// 把一次按键翻成动作。**这一张表逐条对齐原版 dive 的 `DefaultBindings()`**
-/// （`cmd/dive/cli/internal/ui/v1/key/config.go`），不留差异：
+/// （`cmd/dive/cli/internal/ui/v1/key/config.go`），差异逐条列出、不留暗坑：
 ///
 /// | 作用域 | 动作 | 默认键 |
 /// |---|---|---|
@@ -60,10 +62,20 @@ pub(all) enum Action {
 /// | Filetree | ToggleShowAttributes | `ctrl+b` |
 /// | Filetree | 排序（ToggleSortOrder） | `ctrl+o` |
 ///
+/// 本仓的**差异**（都写在 `docs/p6-tui.md` 的「与 dive 键位表的差异说明」里）：
+/// `ctrl+a` / `ctrl+l` 在本仓切的是**比较档位**（聚合 / 当前层）而不是面板；
+/// `ctrl+u` 落成「只看被改写的行 ↔ 全都要」的一颗键来回切（原版
+/// `IgnoreUnmodified`）；`ctrl+b` 空着（文件属性常显）；排序在 `s` 而不是 `ctrl+o`。
+///
 /// 本仓原来的绑定（`q`/`Esc` 退出、`[`/`]` 换层、`s` 排序、`g`/`G` 到顶到底、
 /// `?` 帮助）原版没有对应键，按「只增不改」保留，所以这张表是**原版键位的超集**。
 /// 原版里本仓**明确不做**的两条（`Ctrl+F` 过滤、`Ctrl+E` 抽文件）
 /// 不是「忘了对齐」，原因写在 `docs/p6-tui.md` 的差异说明里。
+///
+/// 还有一处必须记一笔：原版 filetree 那组按状态过滤（`ctrl+a/r/m/u`）与
+/// **Layer 作用域的 `ctrl+a` 同一个码位**，一颗键不可能同时干两件事——
+/// 本仓只留了 `ctrl+u` 这一颗（`IgnoreUnmodified`，见上），其余三档不绑，
+/// 枚举仍留着，将来要补只接键盘那一格。
 ///
 /// 三条容易踩的地方：
 ///
@@ -91,9 +103,14 @@ pub fn action_of_key(event : @input.KeyEvent) -> Action {
       @input.KeyCode::Char('c') => Action::Quit
       // `ctrl+space`：NUL 在 tty 里解成 `Char(' ') + ctrl`（实测），不是 `Char('\u{0}')`
       @input.KeyCode::Char(' ') => Action::ToggleCollapseAll
-      @input.KeyCode::Char('a') => Action::CompareAll
-      @input.KeyCode::Char('l') => Action::FilterModified
-      @input.KeyCode::Char('u') => Action::FilterClear
+      // Layer 作用域：`ctrl+a` 聚合档 / `ctrl+l` 当前层档（原版 dive 的 CompareAll
+      // / CompareLayer）。filetree 那组按状态过滤（`ctrl+a/r/m/u`）让位——
+      // `ctrl+a` 是同一个码位，两者不可能同时绑一颗键上（理由见 docs/p6-tui.md）
+      @input.KeyCode::Char('a') => Action::CompareAggregate
+      @input.KeyCode::Char('l') => Action::CompareSingle
+      // Filetree 作用域：原版 `ctrl+u` 是 `IgnoreUnmodified`，本仓落成
+      // 「只看被改写的行 ↔ 全都要」的一颗键来回切（`set_filter` 自带反转）
+      @input.KeyCode::Char('u') => Action::FilterModified
       _ => Action::None
     }
   }
@@ -117,14 +134,17 @@ pub fn action_of_key(event : @input.KeyEvent) -> Action {
     // 那是最初「翻页键不够用」时的临时口径（`b` 也是当时补的），
     // 现在按原版归位：翻页有 `pgup/pgdn` 两颗键，折叠有 `space`
     @input.KeyCode::Char(' ') => Action::Toggle
+    // 原版导航里的 `u` 是 pgup 的别名；`d` 那颗被下面的删除列表占了
+    // （`d` 在原版是 `pgdn` 的别名，本仓 #77 先把它给了「被删除的路径」列表，
+    // 两个语义不可能同时挂在一颗键上，翻页因此只剩 `pgup`/`pgdn` 两颗）。
     @input.KeyCode::Char('u') => Action::PageUp
-    @input.KeyCode::Char('d') => Action::PageDown
     @input.KeyCode::Char('g') => Action::Home
     @input.KeyCode::Char('G') => Action::End
     @input.KeyCode::Char('[') => Action::PrevLayer
     @input.KeyCode::Char(']') => Action::NextLayer
     @input.KeyCode::Char('?') => Action::ToggleHelp
     @input.KeyCode::Char('s') => Action::ToggleSort
+    @input.KeyCode::Char('d') => Action::ToggleRemoved
     _ => Action::None
   }
 }
@@ -151,6 +171,26 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
       _ => return false
     }
   }
+  // 删除列表浮层：只有滚动 / 关闭有效，别的键不穿透到树上去
+  // （与帮助浮层一个口径：看不见的光标不该动）
+  if state.removed_visible {
+    match action {
+      Action::Quit => return true
+      Action::ToggleRemoved => {
+        state.toggle_removed()
+        return false
+      }
+      Action::MoveUp => state.removed_scroll.scroll_by(-1)
+      Action::MoveDown => state.removed_scroll.scroll_by(1)
+      Action::PageUp => state.removed_scroll.scroll_page(-1)
+      Action::PageDown => state.removed_scroll.scroll_page(1)
+      Action::Home => state.removed_scroll.to_top()
+      Action::End => state.removed_scroll.to_bottom()
+      Action::None => ()
+      _ => ()
+    }
+    return false
+  }
   match action {
     Action::Quit => return true
     Action::ToggleHelp => {
@@ -159,6 +199,18 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     }
     Action::ToggleSort => {
       state.toggle_sort()
+      return false
+    }
+    Action::CompareAggregate => {
+      state.switch_compare_mode(CompareMode::Aggregate)
+      return false
+    }
+    Action::CompareSingle => {
+      state.switch_compare_mode(CompareMode::Single)
+      return false
+    }
+    Action::ToggleRemoved => {
+      state.toggle_removed()
       return false
     }
     Action::NextFocus => {
@@ -181,26 +233,11 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
         layer => state.switch_layer(layer),
         state.view.layer + 1,
       )
-    // `Ctrl+A`（原版 CompareAll）：本仓没有「层信息面板」，这个动作的承载面
-    // 落到**详情面板**——它本来就把「这一层动了什么」摊在屏幕上（#64 的口径）。
-    // 面板不存在（窄屏退化）时不硬造一个，静默忽略。
-    Action::CompareAll => {
-      if state.has_detail_pane() {
-        state.focus = Focus::Detail
-        state.detail_scroll.to_top()
-      }
-      return false
-    }
-    // `Ctrl+L` / `Ctrl+U`：只看「被改写」的行 / 撤销过滤。
-    // 原版的 `ctrl+l` 是 CompareLayer（比某一层），本仓「比某一层」= 换层，
-    // 因此这里接它的**子集语义**：只留下「相比上一层改写过」的行。
-    // 过滤放在 `TreeView` 上，动画序列里加了新键也不会把状态忘在别处。
+    // `Ctrl+U`（原版 `IgnoreUnmodified`）：只看「相比上一层被改写过」的行，
+    // 再按一次回全都要——`set_filter` 自带「设成当前档 = 撤销」，与 dive 的
+    // `InvertFilter` 同效。过滤放在 `TreeView` 上，加了新键也不会把状态忘在别处。
     Action::FilterModified => {
       state.view.set_filter(Some(RowGroup::ModifiedOnly))
-      return false
-    }
-    Action::FilterClear => {
-      state.view.set_filter(None)
       return false
     }
     _ => ()
@@ -241,25 +278,13 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     | Action::PrevFocus
     | Action::ToggleHelp
     | Action::ToggleSort
-    | Action::CompareAll
     | Action::FilterModified
-    | Action::FilterClear
+    | Action::CompareAggregate
+    | Action::CompareSingle
+    | Action::ToggleRemoved
     | Action::Quit => ()
   }
   false
-}
-
-///|
-/// 画面上现在有没有详情面板。窄屏退化时它不存在（`Layout::compute` 会摘掉），
-/// `Ctrl+A` 这类「以详情面板为承载面」的动作据此决定要不要理它。
-///
-/// 判据取**上一帧的布局**：与鼠标命中测试用的是同一份，
-/// 因此 resize 之后还没重画时，两边看到的是同一版画面。
-fn AppState::has_detail_pane(self : AppState) -> Bool {
-  match self.last_layout {
-    Some(layout) => layout.pane(PaneId::Detail) is Some(_)
-    None => true
-  }
 }
 
 ///|

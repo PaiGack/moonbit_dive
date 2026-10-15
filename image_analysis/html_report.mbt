@@ -22,6 +22,7 @@ pub fn report_to_html(report : Report) -> String {
   builder.write_string("<h1>image analysis</h1>\n")
   builder.write_string(render_overview_cards(report))
   builder.write_string(render_efficiency_card(report))
+  builder.write_string(render_inefficient_table(report))
   builder.write_string(render_layer_table(report))
   builder.write_string(render_wasteful_table(report))
   builder.write_string(render_hotspot_table(report))
@@ -33,8 +34,12 @@ pub fn report_to_html(report : Report) -> String {
 
 ///|
 /// 顶部概览卡：层数 / current bytes / efficiency 分数 / wasted 占比。
+///
+/// `wasted` 卡出的是 `wasted_bytes`（`cumulative - min`，dive 口径），
+/// `written` 卡出 `userWastedPercent` 的分母——两个数都写明口径，
+/// 「真实丢掉的字节」拆在下面的 `wasted` 卡里。
 fn render_overview_cards(report : Report) -> String {
-  let wasted = report.overwritten_wasted + report.deleted_wasted
+  let wasted = wasted_bytes(report)
   let builder = StringBuilder()
   builder.write_string("<section class=\"cards\">\n")
   builder.write_string(card("layers", report.layers.to_string(), ""))
@@ -51,8 +56,15 @@ fn render_overview_cards(report : Report) -> String {
   builder.write_string(
     card(
       "wasted",
-      percent(wasted_ratio(report)),
-      "\{wasted} B of \{report.total_bytes} B written",
+      "\{wasted} B",
+      "cumulative - min (dive: inefficientBytes), \{percent(wasted_ratio(report))} of \{report.total_bytes} B written",
+    ),
+  )
+  builder.write_string(
+    card(
+      "user wasted",
+      percent(user_wasted_percent(report)),
+      "\{wasted} B of \{report.user_bytes} B user-written (base layer excluded)",
     ),
   )
   builder.write_string("</section>\n")
@@ -96,6 +108,42 @@ fn render_efficiency_card(report : Report) -> String {
   builder.write_string(
     "<p class=\"hint\">score = sum(min_discovered) / sum(cumulative), aggregated per path across layers; wasted bytes are counted separately (see below).</p>\n",
   )
+  builder.write_string("</section>\n")
+  builder.to_string()
+}
+
+///|
+/// inefficient files 表：多写了几份最多的路径。
+///
+/// 口径与 efficiency 分数同源（`cumulative - min`），就是 dive 详情面板下方
+/// 那张表的同一批数字；挑行规则复用 `efficiency_view_rows`（先过滤再截断），
+/// 与 `--efficiency` 视图同源，只换个表格壳。
+///
+/// **不是** `wasteful paths` 那张表：那是「空间实际丢在哪」，
+/// 这张是「是谁把分数拉下来的」，两套数字不混排。
+fn render_inefficient_table(report : Report) -> String {
+  let rows = report.inefficient_paths
+  let builder = StringBuilder()
+  builder.write_string("<section class=\"panel\">\n")
+  builder.write_string("<h2>inefficient files</h2>\n")
+  builder.write_string("<table>\n")
+  builder.write_string(
+    "<thead><tr><th>count</th><th>total space</th><th>min</th><th>path</th></tr></thead>\n",
+  )
+  builder.write_string("<tbody>\n")
+  if rows.is_empty() {
+    builder.write_string(
+      "<tr><td colspan=\"4\" class=\"empty\">(none)</td></tr>\n",
+    )
+  } else {
+    for row in rows {
+      builder.write_string(
+        "<tr><td>x\{row.versions}</td><td>\{row.size} B</td><td>\{row.min_bytes} B</td><td class=\"path\">\{html_escape(row.path)}</td></tr>\n",
+      )
+    }
+  }
+  builder.write_string("</tbody>\n")
+  builder.write_string("</table>\n")
   builder.write_string("</section>\n")
   builder.to_string()
 }

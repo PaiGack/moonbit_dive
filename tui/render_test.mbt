@@ -23,6 +23,9 @@ fn render_fixture() -> (Screen, Frame) {
       focus: Focus::Tree,
       detail_scroll: Viewport::new(0, 1),
       help_visible: false,
+      removed_visible: false,
+      removed: [],
+      removed_scroll: Viewport::new(0, 1),
     },
   )
 }
@@ -88,12 +91,18 @@ test "draw explains a missing detail source instead of leaving it blank" {
 test "draw paints the detail pane with a source" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
-  entries.set("/etc/hosts", { versions: 2, cumulative: 200, min_bytes: 100, })
+  entries.set("/etc/hosts", {
+    versions: 2,
+    cumulative: 200,
+    min_bytes: 100,
+    size: 100,
+  })
   let source : DetailSource = {
     entries,
     wasted: 4096,
     total: 8192,
     efficiency: 0.5,
+    top_wasteful: [],
   }
   draw(screen, { ..base, details: Some(source), })
   // 右栏区域应出现 efficiency 字样
@@ -113,12 +122,18 @@ test "draw paints the detail pane with a source" {
 test "draw shows the size record for the selected path" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
-  entries.set("/etc/hosts", { versions: 3, cumulative: 300, min_bytes: 100, })
+  entries.set("/etc/hosts", {
+    versions: 3,
+    cumulative: 300,
+    min_bytes: 100,
+    size: 200,
+  })
   let source : DetailSource = {
     entries,
     wasted: 200,
     total: 8192,
     efficiency: 0.9,
+    top_wasteful: [],
   }
   base.view.move_to(base.view.index_of_path("/etc/hosts").unwrap())
   draw(screen, { ..base, details: Some(source), })
@@ -128,6 +143,58 @@ test "draw shows the size record for the selected path" {
   }
   assert_true(joined.contains("versions"))
   assert_true(joined.contains("overhead"))
+  // overhead 用的是 entry.size（精确值），不是再算一遍 cumulative - min_bytes
+  assert_true(joined.contains("overhead    200 B"))
+}
+
+///|
+/// 详情面板下方那张 inefficient files 表：dive 面板的列名与口径。
+///
+/// 表里只出 `cumulative - min` 这一个口径，抬头写明它是什么，
+/// 免得被当成 `wasteful paths` 的 `wasted_bytes`。
+test "draw paints the inefficient files table under the detail" {
+  let (screen, base) = render_fixture()
+  let source : DetailSource = {
+    entries: Map([]),
+    wasted: 1200,
+    total: 8192,
+    efficiency: 0.25,
+    top_wasteful: [
+      ("/node_modules/pkg/index.js", 2, 1200),
+      ("/app/util.js", 2, 8),
+    ],
+  }
+  draw(screen, { ..base, details: Some(source), })
+  let mut joined = ""
+  for row = 1; row < 23; row = row + 1 {
+    joined = joined + screen.row_string(row)[41:].to_owned() + "|"
+  }
+  assert_true(joined.contains("count  total space  path"))
+  assert_true(joined.contains("x2"))
+  assert_true(joined.contains("1.2 KB"))
+  // 长路径按面板宽度截断（保留尾部），但一定出现在表里
+  assert_true(joined.contains("/app/util.js"))
+  assert_true(joined.contains("node_modules"))
+}
+
+///|
+/// 没有 inefficient 行时（干净镜像）表里给一句 `(none)`，不留半截表格。
+test "draw marks an empty inefficient table" {
+  let (screen, base) = render_fixture()
+  let source : DetailSource = {
+    entries: Map([]),
+    wasted: 0,
+    total: 8192,
+    efficiency: 1.0,
+    top_wasteful: [],
+  }
+  draw(screen, { ..base, details: Some(source), })
+  let mut joined = ""
+  for row = 1; row < 23; row = row + 1 {
+    joined = joined + screen.row_string(row)[41:].to_owned() + "|"
+  }
+  assert_true(joined.contains("count  total space  path"))
+  assert_true(joined.contains("(none)"))
 }
 
 ///|
@@ -173,6 +240,9 @@ test "draw keeps a gap between the name and the size tail" {
     focus: Focus::Tree,
     detail_scroll: Viewport::new(0, 1),
     help_visible: false,
+    removed_visible: false,
+    removed: [],
+    removed_scroll: Viewport::new(0, 1),
   })
   // `main` 与 `1 B` 之间是补齐的空格，不是直接相连
   let body = screen.row_string(3)
@@ -213,7 +283,9 @@ test "draw keeps the cursor row visible when the tree loses focus" {
 test "draw hints the keys of the focused pane" {
   let (screen, base) = render_fixture()
   draw(screen, base)
-  assert_true(screen.row_string(23).contains("fold"))
+  // 树那侧提示里现在给档位键留了位（`^A/^L diff`），折叠提示换成了它
+  assert_true(screen.row_string(23).contains("^A/^L diff"))
+  assert_true(screen.row_string(23).contains("d removed"))
   base.focus = Focus::Detail
   draw(screen, base)
   let status = screen.row_string(23)
@@ -244,12 +316,18 @@ test "draw paints the help overlay above the panes" {
 test "draw scrolls the detail pane" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
-  entries.set("/etc/hosts", { versions: 2, cumulative: 200, min_bytes: 100, })
+  entries.set("/etc/hosts", {
+    versions: 2,
+    cumulative: 200,
+    min_bytes: 100,
+    size: 100,
+  })
   let source : DetailSource = {
     entries,
     wasted: 4096,
     total: 8192,
     efficiency: 0.5,
+    top_wasteful: [],
   }
   base.view.move_to(base.view.index_of_path("/etc/hosts").unwrap())
   let frame : Frame = { ..base, details: Some(source), }
@@ -300,6 +378,9 @@ fn diff_fixture() -> (Screen, Frame) raise {
       focus: Focus::Tree,
       detail_scroll: Viewport::new(0, 1),
       help_visible: false,
+      removed_visible: false,
+      removed: [],
+      removed_scroll: Viewport::new(0, 1),
     },
   )
 }
@@ -353,16 +434,17 @@ test "draw paints the diff legend in the status bar" {
   assert_true(status.contains("~ change"))
   // 每段只染自己的那几列，段间是默认样式，不是整行刷色
   let style_at = fn(col) { screen.style_at(col, frame.layout.status_row) }
-  // 图例贴着右侧的位置计数排：`1/3` 占最后三列
+  // 图例贴着右侧的位置计数排；这份夹具里删掉了 1 条路径，
+  // 所以位置计数左侧还多一段 `1 removed`（删除条数也贴在右端）
   let legend_width = display_width("+ add") + 2 + display_width("~ change")
-  // 位置计数是 `1/3 name`：图例贴在它左侧，中间空一格
   let position_width = display_width("1/3 name")
-  let start = 80 - position_width - 1 - legend_width
+  let removed_width = display_width("1 removed") + 2
+  let start = 80 - position_width - removed_width - 1 - legend_width
   assert_eq(style_at(start), style_added)
   assert_eq(style_at(start + 4), style_added)
   assert_eq(style_at(start + 5), style_default)
   assert_eq(style_at(start + 7), style_modified)
-  // 位置计数本身不上色（`1/3 size` 占右端，取末列即可）
+  // 位置计数与 `N removed` 本身都不上色（占右端，取末列即可）
   assert_eq(style_at(79), style_default)
 }
 
@@ -377,4 +459,113 @@ test "draw drops the whole legend when the status row is too narrow" {
   let status = narrow.row_string(layout.status_row)
   assert_false(status.contains("add"))
   assert_false(status.contains("change"))
+}
+
+///|
+/// 标题行写出当前 diff 档位：单层档是 `layer`，聚合档是 `agg L0..Ln`。
+///
+/// 档位必须可见，否则「同一条路径为什么这次是绿的、下次是黄的」没人解释得清。
+test "draw names the active compare mode in the header" {
+  let (screen, base) = diff_fixture()
+  draw(screen, base)
+  assert_true(screen.row_string(0).contains("layer"))
+  assert_false(screen.row_string(0).contains("agg"))
+  // 切到聚合档：标题换成区间写法的标签。
+  // 只改档位与 diff：行本身仍来自同一棵树（渲染测试不碰数据源）
+  let aggregated = TreeView::from_tree_with_diff(
+    fixture_tree(),
+    Some(aggregate_diff()),
+    1,
+    2,
+    false,
+    compare_mode=CompareMode::Aggregate,
+  )
+  draw(screen, { ..base, view: aggregated, })
+  assert_true(screen.row_string(0).contains("agg L0..L1"))
+}
+
+///|
+/// `diff_fixture` 那棵树的最终形状，够渲染层用（渲染测试只读行，不碰数据源）。
+fn fixture_tree() -> @layer_tree.FileTree {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::File("etc/old", "x"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.2 longer"),
+    @layer_tree.TarEntrySpec::File("etc/new", "y"),
+    @layer_tree.TarEntrySpec::Whiteout("etc", "old"),
+  ])
+  let views = @layer_tree.browse_layers([l0, l1]) catch {
+    err => abort(err.to_string())
+  }
+  views[1].tree
+}
+
+///|
+/// 聚合档的 diff：删掉了 `/etc/old`，改写 `/etc/hosts`。
+fn aggregate_diff() -> @layer_tree.Diff {
+  {
+    base: -1,
+    layer: 1,
+    added: ["/etc/new"],
+    modified: ["/etc", "/etc/hosts"],
+    removed: ["/etc/old"],
+  }
+}
+
+///|
+/// 删除列表浮层：`d` 打开时铺在浮层位置，逐条列出被删的路径并染红。
+test "draw lists the removed paths in the overlay" {
+  let (screen, base) = diff_fixture()
+  let layout = Layout::compute(
+    80,
+    24,
+    help_visible=true,
+    overlay_title="removed paths",
+  )
+  let frame : Frame = {
+    ..base,
+    layout,
+    removed_visible: true,
+    removed: ["/etc/old"],
+    removed_scroll: Viewport::new(2, 1),
+  }
+  draw(screen, frame)
+  let pane = layout.pane(PaneId::Help).unwrap()
+  let mut joined = ""
+  for row = pane.rect.top; row <= pane.rect.bottom; row = row + 1 {
+    joined = joined + screen.row_string(row)
+  }
+  assert_true(joined.contains("removed 1 path(s)"))
+  assert_true(joined.contains("/etc/old"))
+  assert_true(joined.contains("removed paths"))
+  // 路径那一行染红：删除在树上没有行，颜色只能落在这张列表里
+  let mut path_row = -1
+  for row = pane.rect.top; row <= pane.rect.bottom; row = row + 1 {
+    if screen.row_string(row).contains("/etc/old") {
+      path_row = row
+    }
+  }
+  assert_true(path_row >= 0)
+  assert_eq(screen.style_at(pane.inner_left(), path_row), style_removed)
+}
+
+///|
+/// 没有删除时列表给一句说明，不留空面板（免得看起来像坏了）。
+test "the removed overlay explains an empty list" {
+  let (screen, base) = diff_fixture()
+  let layout = Layout::compute(80, 24, help_visible=true)
+  draw(screen, {
+    ..base,
+    layout,
+    removed_visible: true,
+    removed: [],
+    removed_scroll: Viewport::new(1, 1),
+  })
+  let pane = layout.pane(PaneId::Help).unwrap()
+  assert_true(
+    screen.row_string(pane.rect.top + 1).contains("nothing was removed"),
+  )
 }

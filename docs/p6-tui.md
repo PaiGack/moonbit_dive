@@ -59,6 +59,26 @@ tui/
 每层可独立验收：L0/L1 是纯计算与纯布局，L2 是纯状态机，L3 是按键与焦点映射，
 L4 才有副作用（终端 IO）。
 
+### L4 模型层：详情面板的数从哪来（#72）
+
+详情面板照 dive 的 `view/image_details.go` 排两段：上面是选中路径的账
+（efficiency / wasted / total + 该路径的 versions / cumulative / min / overhead），
+下面是整镜像的 inefficient files 表（`count / total space / path`）。
+
+数字**不在这里算**：
+
+| 面板上的东西 | 出处 |
+|---|---|
+| `efficiency` | `Report.efficiency.score()` |
+| `wasted` | `image_analysis::wasted_bytes(report)`，即 `Σ (cumulative - min)`，dive 的口径 |
+| 逐路径的 `versions` / `cumulative` / `min` | `EfficiencyReport.paths`（`Analysis::efficiency()`） |
+| 下方那张表的行 | `Report::inefficient_paths`（= `efficiency_view_rows`，与 `--efficiency` 视图同源） |
+
+早先那一版是 `cumulative = node_size * layers.length()` —— tar 层里没留历史大小，
+注释自己认账「不假装精确」。现在逐路径版本表是分析阶段就填好的
+（`VersionTable`），近似段整段删掉，面板与 CLI 的数字对得上。
+`model_wbtest.mbt` 里有一条用例按「`Σ 表里的 size` == 面板的 `wasted`」钉住自洽。
+
 ## 关键取舍
 
 ### 按列排版，宽度自研
@@ -118,6 +138,26 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 不给则默认看最后一层（与原 `--layer` 缺省一致）。
 全屏的进出由 `@tui.run_app` 自己管，`cmd/main` 只提供 raw mode 那一层保护。
 
+## 两个比较档位（#69）
+
+原版 dive 的 layer 面板有两个档位（`viewmodel.LayerCompareMode`）：`Ctrl+L` 看
+「当前层相对上一层」，`Ctrl+A` 看「聚合」（累积）。本轮对齐它：
+
+- `layer_tree`：`LayerView` 多一个 `aggregate` 字段与 `aggregate_changed_paths()`；
+  `diff_aggregate` 按区间**累积**而不是两端点做一次快照比较——否则
+  「第 0 层写过、第 2 层改回原样」的路径会被判成没动过
+- `tui`：`CompareMode`（`Single` / `Aggregate`），`Ctrl+A` / `Ctrl+L` 切档；
+  标题行写当前档位，状态行给删除条数，`d` 打开可滚动的删除列表
+- `cmd/main`：`--aggregate` 换 `--layer` 视图的比较区间；文本单列一段
+  `removed (not in the tree)`，JSON 多 `compare` / `aggregateBytes` 与 `diff.base`
+
+`removed` 不进树：被删的路径已经不在树上，插「幽灵行」要动行模型、折叠判断与
+光标落点，代价远大于收益。出口是「状态行计数 + `d` 的列表 + CLI 的一段文本」。
+
+键位与 [#64](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/64) 的边界：
+`Ctrl+A` 在这里是「layer 面板切聚合」（原版语义），filetree 面板那组
+`Ctrl+A/R/M/U`（按状态过滤）属于 #64 的盘子，两边别各绑一个。
+
 ## 与 dive 键位表的差异说明（#70）
 
 原版 dive 的键位集中在 `cmd/dive/cli/internal/ui/v1/key/config.go` 的
@@ -130,14 +170,15 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 | Global | ToggleView | `tab` | 同（本仓只有树与详情两块，即切焦点） |
 | Global | FilterFiles / CloseFilterFiles | `ctrl+f` / `esc` | **不做**，见下 |
 | Navigation | Up/Down/Left/Right | `up,k` / `down,j` / `left,h` / `right,l` | 同 |
-| Navigation | PageUp/PageDown | `pgup,u` / `pgdn,d` | 同 |
-| Layer | CompareAll | `ctrl+a` | 同（承载面是详情面板，见下） |
-| Layer | CompareLayer | `ctrl+l` | 取**子集语义**：只看被改写的行 |
+| Navigation | PageUp/PageDown | `pgup,u` / `pgdn,d` | 只做 `pgup`/`pgdn`/`u`；`d` 让给删除列表（#77），见下 |
+| Layer | CompareAll | `ctrl+a` | 同（切聚合 diff 档位，与 #69 合流） |
+| Layer | CompareLayer | `ctrl+l` | 同（切回当前层档） |
 | Filetree | ToggleCollapseDir | `space` | 同（从原来的 `pgdn` 归位） |
 | Filetree | ToggleAllCollapseDir | `ctrl+space` | 同 |
-| Filetree | 过滤 added/removed/modified/unmodified | `ctrl+a/r/m/u` | 只做 `ctrl+u`（撤销）+ `ctrl+l`（只看改写），见下 |
+| Filetree | 过滤 added/removed/modified/unmodified | `ctrl+a/r/m/u` | 只做 `ctrl+u`（只看改写 ↔ 全都要），见下 |
 | Filetree | ToggleShowAttributes | `ctrl+b` | **常显**，无开关 |
 | Filetree | ToggleSortOrder | `ctrl+o` | 本仓用 `s`，`ctrl+o` 留空 |
+| Filetree | 删除路径列表 | 原版无 | 本仓 `d`（#77） |
 
 本仓原有的补充键（原版没有，按「只增不改」保留）：`q` / `Esc` 退出、
 `[` `]` 换层、`g` `G` 到顶到底、`?` 帮助、`Enter` 折叠、`s` 排序。
@@ -146,7 +187,7 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 
 **一、`Ctrl` 组合只认列出来的那几颗。** `Ctrl+M` 与 `Enter` 同码位（`0x0d`）、
 `Ctrl+J` 与换行同码位——原版的 `ctrl+a/r/m/u` 里，`ctrl+m` 绑上就等于偷偷改了
-`Enter`。本仓因此不绑 `ctrl+m` / `ctrl+r` / `ctrl+j`，动作表里 `ctrl` 分支是一张
+`Enter`。本仓因此不认 `ctrl+m` / `ctrl+r` / `ctrl+j`，动作表里 `ctrl` 分支是一张
 短白名单（`c` / `space` / `a` / `l` / `u`），其余一律 `None`。
 
 **二、`Ctrl+Space` 在终端里是 NUL，tty 把它解成 `Char(' ')` + `ctrl`。**
@@ -161,24 +202,26 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 后面那颗真键丢了。三个字节同一次写入时正常解成 `Down`；普通终端的方向键
 就是逐个原子写、帧间隔远大于 50ms，实测连按 `j j` / `↓↓` 都正常累积。
 
-**三、`Ctrl+A` 与 `Ctrl+L` 在本仓的承载面不同。** 原版 `Ctrl+A` 切的是
-「层信息面板」、`Ctrl+L` 切的是「额外显示某一层」；本仓只有树 + 详情两块
-（#49 的形态差异，与 `Tab` 语义不同是同一件事），因此：
+**三、`Ctrl+A` / `Ctrl+L` 与 #69 的比较档位合流。** 原版 `Ctrl+A` 是 Layer 作用域的
+`CompareAll`（切「聚合」）、`Ctrl+L` 是 `CompareLayer`（切「当前层」）；本仓
+[#69](#两个比较档位69) 已经把这两颗键绑成同一个语义（切 diff 档位），
+因此本轮不再另立「以详情面板为承载面」的解释——**一颗键只有一个动作**。
 
-- `Ctrl+A` 把焦点交给**详情面板**并回到顶部——详情面板本来就把「这一层动了什么」
-  摊在屏幕上，是这两件事在本仓的落点。窄屏退化掉详情栏时静默忽略，不硬造面板。
-- `Ctrl+L` 取「比某一层」的子集语义：只留下**相比上一层被改写过**的行。
+**四、`d` 归删除列表，`u` 才是 `pgup` 的别名。** 原版导航里 `pgup,u` / `pgdn,d`
+是两颗键各带一个字母别名。#77 先把 `d` 给了「被删除的路径」列表（它有独立浮层、
+状态行计数与渲染），两个语义不可能同时挂在一颗键上——保留 #77 的 `d`，
+翻页别名只留 `u`，`pgdn` 仍可用。
 
-### 过滤只做两档，剩下两档不做
+### 过滤只做一档，其余不绑
 
 原版 `ctrl+a/r/m/u` 是把 added / removed / modified / unmodified 四棵拼起来的表
 做过滤。本仓的树只有一棵（删除的路径**不在树上**，没有行可以给它上色，
 `RowStatus` 也没有 `Removed`），所以：
 
-- `Ctrl+U`（撤销）落地：清掉过滤，与按错键后「全部要」等价；
-- `Ctrl+L`（只看改写）落地：**过滤态做成 `TreeView` 上的一个布尔**，
-  而不是「另生成一棵只含某档的树」——错按了就 `Ctrl+U` 复原，
-  不会在状态里留下半棵拼出来的树；
+- `Ctrl+U`（只看改写 ↔ 全都要）落地：**过滤态做成 `TreeView` 上的一个布尔**，
+  而不是「另生成一棵只含某档的树」——错按了再按一次就复原，
+  不会在状态里留下半棵拼出来的树。`set_filter` 自带「设成当前档 = 撤销」，
+  与 dive 的 `InvertFilter` 同效，所以一颗键就能兼顾「只看改写」与「撤销」；
 - `Ctrl+A`（只看新增）与 `Ctrl+R`（只看删除）**不绑**：前者与 Layer 作用域的
   `ctrl+a`（CompareAll）**同一个码位**，两者不可能同时绑在一颗键上；
   后者连数据都没有（没有行是「被删除」的）。少了两档之后，`TreeView::RowGroup`
@@ -218,7 +261,7 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 - 样式与配色（前景/背景/加粗）
 - 鼠标拖拽 / 框选（点击与滚轮已接，见下）
 - 边看边改（TUI 是只读视图，不产生镜像变更）
-- diff 四档过滤里的「只看新增」「只看删除」（理由见上一节）
+- 四档过滤里的「只看新增」「只看删除」（理由见上一节）
 - `Ctrl+B` 的属性开关（属性常显，理由见上一节）
 
 ## 鼠标与坐标反查（#51）

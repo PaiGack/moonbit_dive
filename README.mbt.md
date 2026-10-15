@@ -56,6 +56,11 @@ moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 这个表的 `size` 是 `cumulative - min`，**与报告里 `wasteful paths` 的 `wasted_bytes`
 不是同一个数**，口径差异见 [`image_analysis/README.mbt.md`](image_analysis/README.mbt.md)。
 
+报告与 TUI 面板上叫 `wasted` 的那个数取的是前者（`cumulative - min`，dive 的
+`inefficientBytes`），所以它与 `wasted.overwritten + deleted` 对不上；JSON 里
+两个都给（`image.wastedBytes` 与 `image.wasted.{overwritten,deleted}`），
+外加 dive 的 `image.userWastedPercent`（分母剔掉 base image）。
+
 `--from-image` 把位置参数当镜像名：本地缺这个镜像时**默认先拉一次**再取，
 对齐原版 dive（Go）——那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就
 `docker pull` 一次。要完全离线（绝不发起网络请求、`inspect` 说没有就直接 `save`）
@@ -76,13 +81,17 @@ docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image
 `--tui` 打开全屏交互式看树，**键位逐条对齐原版 dive**
 （`cmd/dive/cli/internal/ui/v1/key/config.go` 的 `DefaultBindings()`）：
 `↑↓`/`jk` 走行，`←→`/`hl` 收起展开，`Space` 折叠展开（`Ctrl+Space` 全折全展），
-`PgUp`/`PgDn` 或 `u`/`d` 翻页，`Tab` 换视图（树 ↔ 详情），
-`Ctrl+A` 看这一层动了什么（详情面板），`Ctrl+L` 只看被改写的行、`Ctrl+U` 撤销过滤，
-`Ctrl+C` 退出；本仓另有 `[`/`]` 换层、`s` 切排序（名字 ↔ 体积）、
-`?` 开关帮助浮层、`q`/`Esc` 退出。
+`PgUp`/`PgDn` 翻页（`u` 是 `pgup` 别名，`d` 给了删除列表），
+`Tab` 换视图（树 ↔ 详情），`Ctrl+A`/`Ctrl+L` 切「聚合 / 当前层」diff 档位，
+`Ctrl+U` 只看被改写的行，`Ctrl+C` 退出；本仓另有 `[`/`]` 换层、`s` 切排序
+（名字 ↔ 体积）、`?` 开关帮助浮层、`q`/`Esc` 退出。
 文件属性（权限 / mtime / 层号）常显在详情面板里。
 鼠标同样可用：点击选行（点目录顺带开合）、滚轮滚鼠标停着的那块面板、
 右键切目录展开态；`Ctrl` + 左右键切焦点。
+详情面板跟着光标走：选中路径的账（permissions / mtime / layer +
+efficiency / wasted / total + versions / cumulative / min / overhead），
+下面是整镜像的 inefficient files 表（`count / total space / path`，
+与 `--efficiency` 同一批数字）。
 原版里**不做**的是 `Ctrl+F` 过滤与 `Ctrl+E` 抽文件，理由见
 [`docs/p6-tui.md`](docs/p6-tui.md) 的「与 dive 键位表的差异说明」。
 它进 alternate screen（退出还原终端，异常退出也还原），只支持 native，

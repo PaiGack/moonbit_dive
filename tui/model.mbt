@@ -3,36 +3,39 @@
 ///
 /// 抽出来的动机：`Analysis` 里的 `PathSize` 带 `wasted_bytes`（口径是「多写的部分」），
 /// 而详情面板想给的是「各版本加起来 vs 只留一份」——两者不等。
-/// 这里用 `versions` + `sizes` 重算一遍，口径写在注释里，免得后人拿错字段。
+///
+/// 数字全部来自 `image_analysis` 的既有出口，**这里不重算**：
+///
+/// - 逐路径的 `versions` / `cumulative` / `min` / `size` 来自 `EfficiencyReport.paths`
+///   （即 `cumulative - min` 那套精确值，与 efficiency 总分同源）
+/// - `wasted` 取 `Report` 的 `wasted_bytes`（`Σ paths[].size`，dive 面板的口径），
+///   不是「真实丢掉的字节」（`overwritten + deleted`）——面板与总分该说同一件事
+/// - 下方那张表的行直接复用 `efficiency_view_rows`，与 `--efficiency` 视图同源
 pub fn detail_source_of(
   analysis : @image_analysis.Analysis,
   report : @image_analysis.Report,
 ) -> DetailSource {
   let entries : Map[String, DetailEntry] = Map([])
-  // 每个路径的「版本数」与「各版本大小」来自 VersionTable；没有它时退化成
-  // PathSize 的单份记录（旧数据源可能不填 versions）
-  match analysis.versions {
-    Some(table) =>
-      for path, layers in table.versions {
-        let node_size = match analysis.path_size(path) {
-          Some(size) => size.size
-          None => 0
-        }
-        entries.set(path, {
-          versions: layers.length(),
-          // 每一版大小按最终大小近似：tar 层里没有保留历史大小，
-          // 这里只保证「多写了几次」这件事可见，不假装精确
-          cumulative: node_size * layers.length(),
-          min_bytes: node_size,
-        })
-      }
-    None => ()
+  for row in analysis.efficiency().paths {
+    entries.set(row.path, {
+      versions: row.versions,
+      cumulative: row.cumulative_bytes,
+      min_bytes: row.min_bytes,
+      size: row.cumulative_bytes - row.min_bytes,
+    })
+  }
+  let top_wasteful = []
+  for row in report.inefficient_paths {
+    top_wasteful.push(
+      (row.path, row.versions, row.cumulative_bytes - row.min_bytes),
+    )
   }
   {
     entries,
-    wasted: report.overwritten_wasted + report.deleted_wasted,
+    wasted: @image_analysis.wasted_bytes(report),
     total: report.final_file_bytes,
     efficiency: report.efficiency.score(),
+    top_wasteful,
   }
 }
 

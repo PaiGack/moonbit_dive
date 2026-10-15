@@ -33,9 +33,9 @@ test "action_of_key maps navigation keys" {
   assert_eq(action_of_key(key(@input.KeyCode::Char('j'))), Action::MoveDown)
   assert_eq(action_of_key(key(@input.KeyCode::Char('k'))), Action::MoveUp)
   assert_eq(action_of_key(key(@input.KeyCode::PageDown)), Action::PageDown)
-  // `u`/`d` 是原版 dive 的 pgup/pgdn 别名，`Space` 归位成折叠
+  // `u` 是原版 dive 的 pgup 别名；`d` 那颗给了删除列表（#77），
+  // `Space` 归位成折叠
   assert_eq(action_of_key(key(@input.KeyCode::Char('u'))), Action::PageUp)
-  assert_eq(action_of_key(key(@input.KeyCode::Char('d'))), Action::PageDown)
   assert_eq(action_of_key(key(@input.KeyCode::PageUp)), Action::PageUp)
   assert_eq(action_of_key(key(@input.KeyCode::Char(' '))), Action::Toggle)
   assert_eq(action_of_key(key(@input.KeyCode::Home)), Action::Home)
@@ -66,7 +66,7 @@ test "action_of_key maps fold and layer keys" {
 
 ///|
 /// `Ctrl` 那一组（原版 dive 的 key config）：`ctrl+c` 退出、`ctrl+space` 全折叠、
-/// `ctrl+a` 看详情、`ctrl+l` 只看改写、`ctrl+u` 撤销过滤。
+/// `ctrl+a` / `ctrl+l` 切 diff 档位、`ctrl+u` 只看改写。
 ///
 /// `ctrl+space` 在终端里是 NUL，tty 把它解成 `Char(' ') + ctrl`（真终端实测，
 /// 不是「按 `Char('\u{0}')` 推导」）——这里就按那个形态钉住。
@@ -81,15 +81,15 @@ test "action_of_key maps the ctrl chords" {
   )
   assert_eq(
     action_of_key(key(@input.KeyCode::Char('a'), ctrl=true)),
-    Action::CompareAll,
+    Action::CompareAggregate,
   )
   assert_eq(
     action_of_key(key(@input.KeyCode::Char('l'), ctrl=true)),
-    Action::FilterModified,
+    Action::CompareSingle,
   )
   assert_eq(
     action_of_key(key(@input.KeyCode::Char('u'), ctrl=true)),
-    Action::FilterClear,
+    Action::FilterModified,
   )
   // `ctrl+space` 与不带修饰的空格是两个不同事件：一个全折叠、一个折叠一行
   assert_eq(action_of_key(key(@input.KeyCode::Char(' '))), Action::Toggle)
@@ -117,8 +117,8 @@ test "apply_action toggles collapse all" {
 }
 
 ///|
-/// `Ctrl+L` 只看改写过的行，`Ctrl+U` 撤销；`Ctrl+A` 把焦点交给详情面板。
-test "apply_action filters rows and focuses the detail pane" {
+/// `Ctrl+U` 只看改写过的行，再按一次撤销（`set_filter` 自带反转）。
+test "apply_action toggles the modified-only filter" {
   let state = AppState::new(two_layers(), None, "demo", initial_layer=1)
   let total = state.view.visible.length()
   assert_false(apply_action(Action::FilterModified, state))
@@ -128,13 +128,10 @@ test "apply_action filters rows and focuses the detail pane" {
   for row in state.view.visible {
     assert_eq(row.status, RowStatus::Modified)
   }
-  assert_false(apply_action(Action::FilterClear, state))
+  // 再按一次同一颗键 = 撤销（`set_filter` 自带反转，与 dive 的 `InvertFilter` 同效）
+  assert_false(apply_action(Action::FilterModified, state))
   assert_eq(state.view.only_group(), None)
   assert_eq(state.view.visible.length(), total)
-  // `Ctrl+A`：焦点去详情面板（本仓没有层信息面板，详情就是「这一层动了什么」的承载面）
-  state.focus = Focus::Tree
-  assert_false(apply_action(Action::CompareAll, state))
-  assert_eq(state.focus, Focus::Detail)
 }
 
 ///|
@@ -269,4 +266,122 @@ test "layer switching keeps the sort order" {
   ignore(apply_action(Action::ToggleSort, state))
   assert_false(apply_action(Action::NextLayer, state))
   assert_true(state.view.sort_by_size)
+}
+
+///|
+/// `Ctrl+A` / `Ctrl+L` 的键位映射：与原版 dive 的 layer 面板同义。
+test "action_of_key maps the compare mode keys" {
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('a'), ctrl=true)),
+    Action::CompareAggregate,
+  )
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('l'), ctrl=true)),
+    Action::CompareSingle,
+  )
+  // 不带 Ctrl 的 `a` / `l` 不受影响：`l` 仍是展开
+  assert_eq(action_of_key(key(@input.KeyCode::Char('a'))), Action::None)
+  assert_eq(action_of_key(key(@input.KeyCode::Char('l'))), Action::Expand)
+}
+
+///|
+/// `d` 开关删除列表；`d` 不带 Ctrl 才算，`Ctrl+D` 不绑。
+test "action_of_key maps the removed list key" {
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('d'))),
+    Action::ToggleRemoved,
+  )
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('d'), ctrl=true)),
+    Action::None,
+  )
+}
+
+///|
+/// 造一个「聚合档与单层档不一样」的三层视图：`/etc/hosts` 在 L1 被改写、
+/// L2 又改回 L0 的样子，`/etc/old` 在 L2 被删。
+fn aggregate_layers() -> Array[@layer_tree.LayerView] {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::File("etc/old", "x"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.2 longer"),
+  ])
+  let l2 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::Whiteout("etc", "old"),
+  ])
+  @layer_tree.browse_layers([l0, l1, l2]) catch {
+    err => abort(err.to_string())
+  }
+}
+
+///|
+/// 切档位：树形状不变（行数列数都一样），只有标注变。
+///
+/// 这是 issue #69 的第一条验收：换的是「比较区间」，不是数据源。
+test "switching the compare mode keeps the tree and only re-colours" {
+  let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=2)
+  let paths = state.view.all_rows.map(fn(row) { row.path })
+  let statuses = state.view.all_rows.map(fn(row) { row.status })
+  assert_false(apply_action(Action::CompareAggregate, state))
+  assert_eq(state.view.compare_mode, CompareMode::Aggregate)
+  // 树一模一样
+  assert_eq(state.view.all_rows.map(fn(row) { row.path }), paths)
+  // 标注变了：`/etc/hosts` 在单层档里因为 L2 改写了它是 Modified，
+  // 聚合档里同样是 Modified（区间内碰过），但它的祖先 `/etc` 也被合并进来
+  assert_true(
+    state.view.all_rows.any(fn(row) { row.path == "/etc" }) &&
+    status_of_row(state, "/etc") == RowStatus::Modified,
+  )
+  // 切回来恢复原状
+  assert_false(apply_action(Action::CompareSingle, state))
+  assert_eq(state.view.compare_mode, CompareMode::Single)
+  assert_eq(state.view.all_rows.map(fn(row) { row.status }), statuses)
+}
+
+///|
+/// 取某条路径在视图里的状态；找不到时按 `Unchanged`。
+fn status_of_row(state : AppState, path : String) -> RowStatus {
+  for row in state.view.all_rows {
+    if row.path == path {
+      return row.status
+    }
+  }
+  RowStatus::Unchanged
+}
+
+///|
+/// 聚合档下 `removed` 有出口：`d` 打开列表，列表内容就是聚合 diff 的 `removed`。
+test "the removed list is filled from the active compare mode" {
+  let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=2)
+  // 单层档：只有 L2 自己删的那条
+  assert_eq(state.removed_paths(), ["/etc/old"])
+  ignore(apply_action(Action::CompareAggregate, state))
+  // 聚合档：整段区间删掉的路径——`/etc/old` 在 L2 被删，`/etc/hosts`
+  // 在两档里都不算删除（两头都在），所以列表仍是这一条
+  assert_eq(state.removed_paths(), ["/etc/old"])
+  // `d` 开关浮层；开着时 ↑↓ 滚列表，不动树的光标
+  let cursor = state.view.cursor
+  assert_false(apply_action(Action::ToggleRemoved, state))
+  assert_true(state.removed_visible)
+  assert_false(apply_action(Action::MoveDown, state))
+  assert_eq(state.view.cursor, cursor)
+  assert_false(apply_action(Action::ToggleRemoved, state))
+  assert_false(state.removed_visible)
+}
+
+///|
+/// 换层保留档位：在聚合档里换层，不该悄悄回到单层档。
+test "layer switching keeps the compare mode" {
+  let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=0)
+  ignore(apply_action(Action::CompareAggregate, state))
+  assert_false(apply_action(Action::NextLayer, state))
+  assert_eq(state.view.compare_mode, CompareMode::Aggregate)
+  // 排序口径同样跟着走
+  ignore(apply_action(Action::ToggleSort, state))
+  assert_true(state.view.sort_by_size)
+  assert_eq(state.view.compare_mode, CompareMode::Aggregate)
 }
