@@ -14,6 +14,8 @@ pub fn apply_layers_with_diffs(Array[BytesView], media_types? : Array[String]) -
 
 pub fn base_name(String) -> String
 
+pub fn browse_decompressed(DecompressedLayers) -> Array[LayerView]
+
 pub fn browse_layers(Array[BytesView], media_types? : Array[String]) -> Array[LayerView] raise LayerError
 
 pub fn build_tar(Array[TarEntrySpec]) -> Bytes
@@ -25,6 +27,8 @@ pub fn compression_of(String) -> String
 pub fn crc32(BytesView) -> UInt
 
 pub fn decompress_layer(BytesView, String) -> Bytes raise DecompressError
+
+pub fn decompress_layers(Array[BytesView], media_types? : Array[String]) -> DecompressedLayers raise LayerError
 
 pub let default_render_options : RenderOptions
 
@@ -132,6 +136,17 @@ pub struct BitReader {
   mut bits : Int
 } derive(@debug.Debug)
 pub fn BitReader::to_repr(Self) -> @debug.Repr
+
+pub(all) struct DecompressedLayers {
+  raws : Array[Bytes]
+  decompressed : Int
+} derive(Eq, @debug.Debug)
+pub fn DecompressedLayers::equal(Self, Self) -> Bool
+pub fn DecompressedLayers::not_equal(Self, Self) -> Bool
+pub fn DecompressedLayers::output(Self, &Logger) -> Unit
+pub fn DecompressedLayers::to_repr(Self) -> @debug.Repr
+pub fn DecompressedLayers::to_string(Self) -> String
+pub impl Show for DecompressedLayers
 
 pub(all) struct Diff {
   base : Int

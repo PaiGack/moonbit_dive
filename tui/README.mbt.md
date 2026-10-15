@@ -20,12 +20,14 @@ layout.mbt      L1 一帧的分栏（标题 / 左右主体 / 状态行），窄�
 tree_view.mbt   L2 树拍平成可上下走的行 + 展开/折叠 + 滚动 + 光标
 render.mbt      L2 画一帧：标题、树、详情面板、状态行
 keys.mbt        L3 按键 → 动作；动作 → 视图状态（换层用回调注入）
-model.mbt       L4 把 image_analysis 的结果压成详情数据源
+model.mbt       L4 把 image_analysis 的结果压成详情数据源（吃已解压的层）
 app.mbt         L4 主循环：取尺寸 → 组帧 → 等事件
 ```
 
-数据全部来自既有链路（`layer_tree::browse_layers` + `image_analysis`），
-TUI 只负责再包一层视图，不新开分析逻辑。
+数据全部来自既有链路（`layer_tree` + `image_analysis`），TUI 只负责再包一层视图，
+不新开分析逻辑。层**只解压一遍**：`decompress_layers` 的产物同时喂给
+`browse_decompressed`（逐层快照）与 `analysis_of_decompressed`（跨层统计），
+两条链路共用同一批 tar 字节（issue #52）。
 
 ## 快速开始
 
@@ -40,9 +42,12 @@ test "README example" {
   let l1 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("app/main", "yyyy"),
   ])
-  let views = @layer_tree.browse_layers([l0, l1]) catch {
+  let layers : Array[BytesView] = [l0, l1]
+  // 解压一遍，视图与详情都从它出
+  let decompressed = @layer_tree.decompress_layers(layers) catch {
     err => fail(err.to_string())
   }
+  let views = @layer_tree.browse_decompressed(decompressed)
 
   // 建视图状态：默认看第 0 层
   let state = @tui.AppState::new(views, None, "demo:latest")

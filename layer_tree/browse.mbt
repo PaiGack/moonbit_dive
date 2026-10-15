@@ -1,4 +1,31 @@
 ///|
+/// 解压好的层：与 `layers` 下标对齐，`raw` 是这一层的 tar 字节（已解压）。
+///
+/// 拆出这一类型是为了让「解压」与「用」分开：叠树与分析都要吃同一批层，
+/// 先解压一次存下来，两条链路再各取所需，不必各自再解一遍。
+pub(all) struct DecompressedLayers {
+  /// 逐层的 tar 字节（下标即层号）
+  raws : Array[Bytes]
+  /// 解压次数。测试用它钉住「一批层只解压一遍」——
+  /// 这层保证不该靠人读代码维持（issue #52）。
+  decompressed : Int32
+} derive(Eq, Debug)
+
+///|
+pub extend DecompressedLayers with Eq::{equal, not_equal}
+
+///|
+pub extend DecompressedLayers with @debug.Debug::{to_repr}
+
+///|
+pub impl Show for DecompressedLayers with fn to_string(self) {
+  "DecompressedLayers(\{self.raws.length()} layers, \{self.decompressed} decompress call(s))"
+}
+
+///|
+pub extend DecompressedLayers with Show::{to_string, output}
+
+///|
 /// 某一层之后的树视图。
 ///
 /// dive 的交互界面核心是「在层之间切换，看这层的文件树长什么样」。本模块把
@@ -25,16 +52,15 @@ pub impl Show for LayerView with fn to_string(self) {
 pub extend LayerView with Show::{to_string, output}
 
 ///|
-/// 逐层浏览一个镜像：每层的树形状 + 该层的 diff。
+/// 按 media type 逐层解压，得到可以反复取用的层数据。
 ///
-/// `layers` 与 `media_types` 的口径同 `apply_layers_with_diffs`。
-/// 返回数组与层一一对应，第 `i` 个元素的 `tree` 是「应用完第 i 层」的样子。
-pub fn browse_layers(
+/// `layers` 与 `media_types` 的口径同 `apply_layers_with_diffs`；
+/// 返回的 `raws` 与 `layers` 一一对应。**每层只解压一次**。
+pub fn decompress_layers(
   layers : Array[BytesView],
   media_types~ : Array[String] = [],
-) -> Array[LayerView] raise LayerError {
-  let tree = FileTree::new()
-  let views = []
+) -> DecompressedLayers raise LayerError {
+  let raws = []
   for index, stream in layers {
     let media_type = if index < media_types.length() {
       media_types[index]
@@ -45,9 +71,39 @@ pub fn browse_layers(
     let raw = decompress_layer(stream, algorithm) catch {
       err => raise Decompress(err)
     }
+    raws.push(raw)
+  }
+  { raws, decompressed: layers.length(), }
+}
+
+///|
+/// 逐层浏览一个镜像：每层的树形状 + 该层的 diff。
+///
+/// `layers` 与 `media_types` 的口径同 `apply_layers_with_diffs`。
+/// 返回数组与层一一对应，第 `i` 个元素的 `tree` 是「应用完第 i 层」的样子。
+pub fn browse_layers(
+  layers : Array[BytesView],
+  media_types~ : Array[String] = [],
+) -> Array[LayerView] raise LayerError {
+  browse_decompressed(decompress_layers(layers, media_types~))
+}
+
+///|
+/// 从已解压的层建逐层视图：语义与 `browse_layers` 完全一致，
+/// 只是不再吃掉原始（可能带压缩的）字节，因此调用方可以把同一批解压结果
+/// 也交给分析层，避免解压两遍（issue #52）。
+pub fn browse_decompressed(
+  decompressed : DecompressedLayers,
+) -> Array[LayerView] {
+  let tree = FileTree::new()
+  let views = []
+  for index, raw in decompressed.raws {
     let before = tree.snapshot()
-    apply_layer(tree, raw, index) catch {
-      err => raise Tar(err)
+    // 已经解压过的层不该再出 tar 错：真出了就是「解压产物」这一契约被破坏，
+    // 属于程序缺陷，就地炸出来，别把错误吞成一次静默的空视图
+    match apply_layer_boxed(tree, raw, index) {
+      Ok(_) => ()
+      Err(err) => abort("applying decompressed layer \{index} failed: \{err}")
     }
     let diff = diff_snapshots(before, tree.snapshot(), index - 1, index)
     views.push({ layer: index, tree: tree.snapshot(), diff, })
@@ -70,6 +126,21 @@ pub fn LayerView::changed_paths(self : LayerView) -> Array[String] {
   }
   result.sort_by(path_order)
   result
+}
+
+///|
+/// 把「已保证不会出错」的 `apply_layer` 焊成 Result，供 `browse_decompressed`
+/// 把契约破坏当程序缺陷报出来（`abort` 只在 `noraise` 上下文里可用）。
+fn apply_layer_boxed(
+  tree : FileTree,
+  raw : Bytes,
+  layer : Int32,
+) -> Result[Unit, TarError] noraise {
+  try apply_layer(tree, raw, layer) catch {
+    err => Err(err)
+  } noraise {
+    _ => Ok(())
+  }
 }
 
 ///|

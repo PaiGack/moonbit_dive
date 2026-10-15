@@ -43,7 +43,7 @@ test "README example" {
 
 | 能力 | 入口 |
 |---|---|
-| 逐层体积核算 | `analyze_layers`、`Analysis`、`LayerUsage` |
+| 逐层体积核算 | `analyze_layers`、`analyze_decompressed`、`Analysis`、`LayerUsage` |
 | 路径体积账 | `Analysis::path_size`、`PathSize`、`Analysis::waste_ranking` |
 | efficiency score | `Analysis::efficiency`、`EfficiencyReport`、`efficiency_of_versions` |
 | 逐路径效率表 | `efficiency_view_rows`、`EfficiencyViewOptions`、`render_efficiency_view`、`efficiency_view_to_json` |
@@ -159,6 +159,10 @@ dive image.tar --format html -o report.html
 
 - **逐层扫 tar 而不是读最终树**：被 whiteout 删掉的内容已经不在树上，但它们在镜像里
   真实占着空间。分析因此把每层 tar 再扫一遍，边扫边记账。
+- **吃已解压的层**：`analyze_decompressed` 收 `layer_tree::DecompressedLayers`，
+  与逐层视图共用同一批 tar 字节。要同时出「每层快照」和「跨层统计」的调用方
+  （例如 TUI）只需解压一遍（issue #52）；`analyze_layers` 仍然收原始字节，
+  内部先解压，单独用的场景不受影响。
 - **先列清单再落树**：`scan_layer` 先把「这一层会写什么、删什么」列清楚，
   再让 P2 的 `apply_layer` 改树。否则旧值会在落树后消失，浪费算不出来。
 - **一份中间结构**：文本与 JSON 都从 `Report` 出，避免两套口径各算一套数字。

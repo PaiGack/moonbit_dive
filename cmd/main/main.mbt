@@ -60,8 +60,8 @@ async fn main {
 ///|
 /// `--tui` 分支：打开交互式看树。
 ///
-/// 数据全部来自既有链路（`browse_layers` + `image_analysis`），
-/// 这里只做「解出字节 → 建视图状态 → 进主循环」。
+/// 数据全部来自既有链路（`decompress_layers` + `browse_decompressed`
+/// + `analyze_decompressed`），这里只做「解压一遍 → 建视图状态 → 进主循环」。
 /// 终端不可用时按「运行错误」退 2——而不是静默回落到文本输出，
 /// 否则脚本里 `--tui` 会莫名其妙地变成一条一次性的报告。
 async fn run_tui(
@@ -84,11 +84,15 @@ async fn run_tui(
     }
     layers.push(raw)
   }
-  let views = @layer_tree.browse_layers(layers) catch {
+  // 先解压一遍，再让两条链路共用它：逐层快照（`browse_decompressed`）
+  // 与跨层统计（`analyze_decompressed`）。解压是 TUI 启动里最贵的一步，
+  // 没有理由为同一批层做两遍（issue #52）。
+  let decompressed = @layer_tree.decompress_layers(layers) catch {
     err => raise CommandError::Analysis(err.to_string())
   }
+  let views = @layer_tree.browse_decompressed(decompressed)
   // 详情面板的数字来自一次完整分析；拿不到就退化成「没有详情」，画面照常可用
-  let details = match @tui.analysis_of_layers(layers) {
+  let details = match @tui.analysis_of_decompressed(decompressed) {
     Some((analysis, report)) => Some(@tui.detail_source_of(analysis, report))
     None => None
   }
