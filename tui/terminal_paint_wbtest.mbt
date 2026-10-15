@@ -72,3 +72,57 @@ async test "painter skips cells written back to their old value" {
   let written = with_pipe_tty(tty => painter.paint(tty, screen))
   assert_false(written.contains("abcd"))
 }
+
+///|
+/// 字符没变、只换了样式，也必须重画——这是「改色不触发重画」的验收点。
+///
+/// 「同一格写回原值不重画」的优化只看字符，样式不进判定就会出现
+/// 「画面停在旧配色上」的 bug（issue #53）。
+async test "painter repaints cells whose style changed" {
+  let screen = Screen::new(4, 1)
+  screen.set_styled(0, 0, "a", style_default)
+  let painter = Painter::new()
+  ignore(with_pipe_tty(tty => painter.paint(tty, screen)))
+  // 同一个字，换成绿色
+  screen.set_styled(0, 0, "a", style_added)
+  let written = with_pipe_tty(tty => painter.paint(tty, screen))
+  assert_true(written.contains("a"))
+  assert_true(written.contains("\u{1b}[92m"))
+}
+
+///|
+/// 样式没变、字符也没变时不重画：样式参与判定不等于「每帧都发 SGR」。
+async test "painter skips cells whose style and text are unchanged" {
+  let screen = Screen::new(4, 1)
+  screen.set_styled(0, 0, "ab", style_added)
+  let painter = Painter::new()
+  ignore(with_pipe_tty(tty => painter.paint(tty, screen)))
+  screen.set_styled(0, 0, "ab", style_added)
+  let written = with_pipe_tty(tty => painter.paint(tty, screen))
+  assert_eq(written, "")
+}
+
+///|
+/// 增量脏段自带样式与收尾复位：颜色不能渗到同一行后面没重画的格子上。
+async test "painter brackets a styled diff segment with sgr" {
+  let screen = Screen::new(6, 1)
+  screen.write_text(0, 0, "abcdef")
+  let painter = Painter::new()
+  ignore(with_pipe_tty(tty => painter.paint(tty, screen)))
+  screen.set_styled(0, 0, "a", style_modified)
+  let written = with_pipe_tty(tty => painter.paint(tty, screen))
+  // 上色 → 字符 → 复位
+  assert_true(written.contains("\u{1b}[93ma"))
+  assert_true(written.has_suffix("\u{1b}[0m"))
+}
+
+///|
+/// 首帧全量重画也带样式，且行尾补复位。
+async test "painter writes styles on the first full frame" {
+  let screen = Screen::new(4, 1)
+  screen.set_styled(0, 0, "x", style_dim)
+  let painter = Painter::new()
+  let written = with_pipe_tty(tty => painter.paint(tty, screen))
+  assert_true(written.contains("\u{1b}[90m"))
+  assert_true(written.contains("\u{1b}[0m"))
+}

@@ -8,6 +8,10 @@
 ///
 /// 不持有 `FileTree` 本体：视图只认 `(path, depth, kind, size, layer)` 这些
 /// 渲染需要的字段，换数据源（逐层视图 / 效率视图）不用改键盘逻辑。
+///
+/// 每行还带一份 `RowStatus`：这一层的 diff 说它是新增/改写/删除，还是没有动过。
+/// 它取自 `layer_tree` 的 `Diff`，但落在**视图状态**里而不是渲染时现查——
+/// 换层、折叠、滚动都不改变「某个路径在这一层属于哪一类」，算一次就够。
 pub(all) struct Row {
   /// 树内绝对路径
   path : String
@@ -19,6 +23,24 @@ pub(all) struct Row {
   size : Int32
   /// 归属层
   layer : Int32
+  /// 这一层里该路径的变化类别（渲染按它上色）
+  status : RowStatus
+} derive(Eq, Debug)
+
+///|
+/// 某条路径相对上一层的状态。
+///
+/// 没有 `Removed`：被删掉的路径根本不在这一层的树上，没有行可以给它上色，
+/// 删除这件事由详情面板与报告回答。硬留一个画不出来的枚举值只会让渲染层
+/// 多写一个永远走不到的分支。
+///
+/// 「先删后加同名文件」在 `Diff` 里同时出现在 `added` 与 `removed`，树上有行，
+/// 按 `Added` 处理——对看树的人来说「这层写了它」比「这层删过它」更常用。
+pub(all) enum RowStatus {
+  Added
+  Modified
+  /// 这一层没动过它
+  Unchanged
 } derive(Eq, Debug)
 
 ///|
@@ -52,7 +74,19 @@ pub fn TreeView::from_tree(
   layer : Int32,
   total_layers : Int32,
 ) -> TreeView {
-  let rows = flatten(tree)
+  TreeView::from_tree_with_diff(tree, None, layer, total_layers)
+}
+
+///|
+/// 带本层 diff 建视图：`diff` 是这一层相对上一层的差异（`LayerView.diff`），
+/// 缺省表示「不知道变了什么」，所有行按 `Unchanged` 处理（颜色就都不上）。
+pub fn TreeView::from_tree_with_diff(
+  tree : @layer_tree.FileTree,
+  diff : @layer_tree.Diff?,
+  layer : Int32,
+  total_layers : Int32,
+) -> TreeView {
+  let rows = flatten(tree, diff)
   let view = {
     layer,
     total_layers,
@@ -70,7 +104,7 @@ pub fn TreeView::from_tree(
 ///|
 /// 把树按路径字典序拍平成行。`FileTree::paths()` 已排好序，
 /// 这里补上「每个路径的深度」——渲染缩进与折叠过滤都靠它。
-fn flatten(tree : @layer_tree.FileTree) -> Array[Row] {
+fn flatten(tree : @layer_tree.FileTree, diff : @layer_tree.Diff?) -> Array[Row] {
   let rows = []
   for path in tree.paths() {
     // 根节点 `/` 不渲染成行，它是所有行的公共前缀
@@ -81,6 +115,10 @@ fn flatten(tree : @layer_tree.FileTree) -> Array[Row] {
       Some(node) => node
       None => continue
     }
+    let status = match diff {
+      Some(diff) => status_of(diff, path)
+      None => RowStatus::Unchanged
+    }
     rows.push({
       path,
       // `/usr/bin/sh` 深度是 3；`/` 自身已排除，用去掉前导 `/` 后的段数
@@ -88,9 +126,39 @@ fn flatten(tree : @layer_tree.FileTree) -> Array[Row] {
       is_dir: node.is_dir(),
       size: node.size,
       layer: node.layer,
+      status,
     })
   }
   rows
+}
+
+///|
+/// 查一条路径在 diff 里属于哪一类。
+///
+/// `removed` 不用查：被删的路径已经不在树上。`added` 先查——先删后加的同名路径
+/// `added` 与 `removed` 两个表里都有，按 `RowStatus` 的口径取 `added`。
+///
+/// 逐组线性扫而不是建 `Map`：一次建视图只查一遍这一层的路径，量级就是路径数
+/// 乘常数，`Map` 的哈希与分配反而更贵。
+fn status_of(diff : @layer_tree.Diff, path : String) -> RowStatus {
+  if contains(diff.added, path) {
+    RowStatus::Added
+  } else if contains(diff.modified, path) {
+    RowStatus::Modified
+  } else {
+    RowStatus::Unchanged
+  }
+}
+
+///|
+/// 路径表里的线性查找。
+fn contains(paths : Array[String], path : String) -> Bool {
+  for candidate in paths {
+    if candidate == path {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -311,6 +379,12 @@ pub fn TreeView::clamp_offset(self : TreeView) -> Unit {
 pub fn TreeView::page_size(self : TreeView) -> Int32 {
   self.page_height
 }
+
+///|
+pub extend RowStatus with @debug.Debug::{to_repr}
+
+///|
+pub extend RowStatus with Eq::{equal, not_equal}
 
 ///|
 pub extend Row with Eq::{equal, not_equal}

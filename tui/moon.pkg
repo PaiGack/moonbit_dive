@@ -3,6 +3,7 @@ import {
   "PaiGack/dive/image_analysis",
   "moonbit-community/tty",
   "moonbit-community/tty/input",
+  "moonbit-community/tty/color" @tty_color,
   "moonbitlang/async",
   "moonbitlang/async/io" @async/io,
   "moonbitlang/core/debug",

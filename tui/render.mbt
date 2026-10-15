@@ -129,13 +129,34 @@ fn draw_tree_pane(screen : Screen, layout : Layout, frame : Frame) -> Unit {
     }
     let item = view.visible[index]
     let selected = index == view.cursor
-    screen.write_text(
+    screen.write_styled(
       origin_col,
       origin_row + row,
       format_row(item, view, width, selected, focused),
+      row_style(item, selected),
     )
   }
   paint_overflow_hint(screen, pane, view.offset + height, view.visible.length())
+}
+
+///|
+/// 行按 diff 类别上色：本层新增绿、改写黄、没动过的暗一档。
+///
+/// **光标行不换色**：光标位置已经由 `>` / `:` 标出来，再叠一层颜色只会让
+/// 「光标在哪」和「这行是什么状态」互相盖住。看树时最常问的是「这一层动了哪些」，
+/// 让颜色只回答这个问题。
+///
+/// 深色终端下 `BrightBlack` 是暗灰，浅色终端下它同样是「比正文轻」的那一档，
+/// 因此不用去问终端默认背景色也能两端都成立。
+fn row_style(item : Row, selected : Bool) -> Style {
+  if selected {
+    return style_default
+  }
+  match item.status {
+    RowStatus::Added => style_added
+    RowStatus::Modified => style_modified
+    RowStatus::Unchanged => style_dim
+  }
 }
 
 ///|
@@ -269,10 +290,15 @@ fn detail_lines(source : DetailSource, path : String) -> Array[String] {
 }
 
 ///|
-/// 状态行：按键提示 + 焦点 + 光标位置。
+/// 状态行：按键提示 + 焦点 + 光标位置 + diff 图例。
 ///
 /// 提示随焦点变：焦点在详情面板时，↑↓ 滚的是详情，不是树。状态行**不画框**
 /// （只有一行，画了就没内容了），所以这里直接 `clear_row`。
+///
+/// 右端自右向左依次占位：光标位置 → 图例 → 提示。图例（`+ add ~ change`）
+/// 比提示优先级高——颜色本身不自解释，深浅终端上红/黄的观感还不一样，
+/// 给一次字面说明比让人猜省事；提示被挤短了还能靠方向键试，图例没了就只能猜。
+/// 两样都放不下时图例也舍掉，别让状态行看起来像被谁啃了一口。
 fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   screen.clear_row(layout.status_row)
   let hint = match frame.focus {
@@ -286,13 +312,65 @@ fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
     "\{frame.view.cursor + 1}/\{frame.view.visible.length()}"
   }
   let position_width = display_width(position)
+  let position_start = layout.cols - position_width
+  if position_width < layout.cols {
+    screen.write_text(position_start, layout.status_row, position)
+  }
+  // 图例贴着光标位置左侧排；放不下就整块不画
+  let legend_width = legend_width()
+  let legend_start = position_start - 1 - legend_width
+  let hint_limit = if legend_start <= 0 {
+    position_start
+  } else {
+    draw_legend(screen, layout, legend_start)
+    legend_start
+  }
   screen.write_text(
     0,
     layout.status_row,
-    truncate_to_width(hint, max(layout.cols - position_width - 1, 1)),
+    truncate_to_width(hint, max(hint_limit - 1, 1)),
   )
-  if position_width < layout.cols {
-    screen.write_text(layout.cols - position_width, layout.status_row, position)
+}
+
+///|
+/// 图例的字面量与颜色：两组「符号 + 词」，颜色与树里的行一一对应。
+///
+/// 只列树里真会上色的两类：删除的路径已经不在树上，没有行可以标红，
+/// 图例里放个永远不出现的 `- remove` 只会让人找它。
+///
+/// 单字母 + 一个词，是为了在 80 列里也放得下——写全 `added` / `modified`
+/// 状态行就剩不下按键提示了。
+fn legend_entries() -> Array[(String, Style)] {
+  [("+ add", style_added), ("~ change", style_modified)]
+}
+
+///|
+/// 图例整块占的列数（含段间空格）。
+fn legend_width() -> Int32 {
+  let mut width = 0
+  for index, entry in legend_entries() {
+    if index > 0 {
+      width = width + legend_gap
+    }
+    width = width + display_width(entry.0)
+  }
+  width
+}
+
+///|
+/// 段间空两格：颜色块之间要有视觉停顿，否则三段会连成一句看不懂的话。
+let legend_gap : Int32 = 2
+
+///|
+/// 从 `start` 起画图例。
+fn draw_legend(screen : Screen, layout : Layout, start : Int32) -> Unit {
+  let mut col = start
+  for index, entry in legend_entries() {
+    if index > 0 {
+      col = col + legend_gap
+    }
+    screen.write_styled(col, layout.status_row, entry.0, entry.1)
+    col = col + display_width(entry.0)
   }
 }
 
