@@ -204,3 +204,70 @@ let gzip_reference_sizes : Array[Int32] = [903, 5, 5000]
 let gzip_reference_prefix : Array[String] = [
   "The quick brown ", "hello", "aaaaaaaaaaaaaaaa",
 ]
+
+///|
+/// 手搓一个固定 Huffman（RFC 1951 3.2.6）的 DEFLATE 流：
+/// 一个 `'a'` 字面量，后跟 `repeats` 次「长度 258、距离 1」的匹配。
+///
+/// 距离 1 意味着每次回拷源区间都盖在正在写的位置上（重叠拷贝），
+/// 而 `length(258) > distance(1)`。这正是 `copy_from_window` 要处理的形态：
+/// 输入很小（几十 KB），输出随 `repeats` 线性增长，能用一个不起眼的小流
+/// 把「逐字节回拷」写成 O(n²)。
+///
+/// 不自带 gzip 容器：`inflate` 直接吃 raw DEFLATE，测试不必凑 CRC。
+fn fixed_huffman_overlap_stream(repeats : Int32) -> Bytes {
+  let bits : Array[Int32] = []
+  // 位写入都按 DEFLATE 的 LSB-first；Huffman 码本身按 MSB-first 展开
+  let write_bits = (value : Int32, count : Int32) => {
+    for index = 0; index < count; index = index + 1 {
+      bits.push((value >> index) & 1)
+    }
+  }
+  let write_code = (code : Int32, count : Int32) => {
+    for index = count - 1; index >= 0; index = index - 1 {
+      bits.push((code >> index) & 1)
+    }
+  }
+  write_bits(1, 1) // BFINAL
+  write_bits(1, 2) // BTYPE = 01（固定 Huffman）
+  // 字面量 'a' = 97 落在 0..143 区间：8 位码，0x30 + 97
+  write_code(0x30 + 97, 8)
+  // 长度 258 对应符号 285（280..287 区间，8 位码 0xC0 + (285 - 280)）
+  // 距离 1 对应距离符号 0（固定 5 位码，值就是 0）
+  for _ in 0..<repeats {
+    write_code(0xC5, 8)
+    write_code(0, 5)
+  }
+  // 结束符号 256 在 256..279 区间：7 位码，256 - 256 = 0
+  write_code(0, 7)
+  let byte_count = (bits.length() + 7) / 8
+  let packed : Array[Byte] = Array::make(byte_count, b'\x00')
+  for index, bit in bits {
+    if bit == 1 {
+      let byte_index = index / 8
+      packed[byte_index] = (packed[byte_index].to_int() | (1 << (index % 8))).to_byte()
+    }
+  }
+  Bytes::from_array(packed)
+}
+
+///|
+/// 重叠拷贝的回归：一段「距离 1、长度 258」的匹配会反复盖住正在写的位置。
+///
+/// 修复前 `copy_from_window` 对重叠的那一支每个字节都 `Buffer::to_bytes()` 一次，
+/// 那是整体拷贝，于是这条测试退化成 O(n²)：40000 次重复（约 10MB 输出）
+/// 几十秒都跑不完，表现为「跑起来没有任何输出」。现在每个字节只读一次，
+/// 这条用例在 1 秒内完成；回归了就会立刻挂住。
+test "inflate handles long overlapping back-references without quadratic blowup" {
+  let repeats = 40000
+  let stream = fixed_huffman_overlap_stream(repeats)
+  let raw = inflate(stream) catch {
+    err => fail("inflate failed: " + err.to_string())
+  }
+  let expected = 1 + 258 * repeats
+  assert_eq(raw.length(), expected)
+  // 全 'a'：首、中、尾都要对，顺带钉住重叠拷贝把内容也写对了
+  assert_eq(raw[0], b'a')
+  assert_eq(raw[expected / 2], b'a')
+  assert_eq(raw[expected - 1], b'a')
+}

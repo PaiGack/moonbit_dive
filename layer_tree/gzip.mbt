@@ -360,14 +360,16 @@ fn copy_from_window(
   if back <= 0 || back > produced {
     raise Gzip("distance points before the start of the output")
   }
-  let view : BytesView = output.to_bytes()
+  // 逐字节推进：`back < length` 时源区间会盖到正在写的位置，
+  // 必须一边写一边读，不能整段复制。
+  //
+  // 读回已写内容用 `Buffer::view()`（共享底层存储的切片，O(1)），
+  // **不要**用 `to_bytes()`——它是整体拷贝，每写一个字节都拷一遍，
+  // 让一次解压退化成 O(n²)：真实镜像的 80MB 层会「跑起来没有任何输出」，
+  // 看上去就是挂死。`view()` 每次重新取，避免 `write_byte` 扩容后视图失效。
   for index = 0; index < length; index = index + 1 {
     let source = produced - back + index
-    let byte = if source < produced {
-      view[source]
-    } else {
-      output.to_bytes()[source]
-    }
+    let byte = output.view()[source]
     output.write_byte(byte)
   }
 }

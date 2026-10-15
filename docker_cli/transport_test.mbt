@@ -578,3 +578,112 @@ async test "a dead socket path hands the fetch to the next backend" {
   @docker_cli.remove_fake_cli_dir(bin)
   @docker_cli.remove_temp_bytes(archive_path)
 }
+
+///|
+/// 响应头发出去之后就不动了——这正是 CNB 里转发进来的 socket 的形态：
+/// 文件在、`connect` 成功、状态行和头都答得出来，真读 body 时对端却没影了。
+///
+/// 期望：请求在超时内返回 `Cancelled`（说的是「超时」，不是某个 errno），
+/// 而且错误信息里路径**只出现一次**——不能是
+/// 「<path> failed: <path> failed: connect failed: errno 2」。
+#cfg(not(platform="windows"))
+async test "a socket that stalls mid-body surfaces a timeout, not a mangled errno" {
+  let server = @docker_cli.UnixSocketServer::start()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      let conn = server.accept() catch { err => fail("accept failed: \{err}") }
+      ignore(@docker_cli.read_until(conn, CRLFCRLF) catch { _ => b"" })
+      // 头说 chunked，body 一个字节都不给，然后一直挂着
+      conn.write(
+        @utf8.encode(
+          "HTTP/1.1 200 OK\r\n" + "Transfer-Encoding: chunked\r\n" + "\r\n",
+        ),
+      ) catch {
+        _ => ()
+      }
+      @async.sleep(5000)
+      conn.close()
+    })
+    let error = try {
+      @docker_cli.http_over_unix(
+        server.path,
+        {
+          http_method: "GET",
+          path: "/images/nope:latest/get",
+          host: "localhost",
+          headers: [],
+          body: b"",
+        },
+        200,
+      )
+      |> ignore
+      fail("a stalled body must not return a response")
+    } catch {
+      err => err
+    }
+    // 超时是 `Cancelled`：一句「超时」，不是「connect failed: errno 2」
+    assert_true(error is @docker_cli.Cancelled(_))
+    let text = Show::to_string(error)
+    assert_true(text.contains("was cancelled"))
+    // 路径只出现一次：不再是把渲染过的错误再包一层
+    assert_eq(count_occurrences(text, server.path), 1)
+  })
+  server.close()
+}
+
+///|
+/// `text` 里 `needle` 出现的次数。
+#cfg(not(platform="windows"))
+fn count_occurrences(text : String, needle : String) -> Int32 {
+  if needle.is_empty() {
+    return 0
+  }
+  let mut count = 0
+  let mut offset = 0
+  while offset <= text.length() - needle.length() {
+    if text[offset:offset + needle.length()] == needle {
+      count = count + 1
+      offset = offset + needle.length()
+    } else {
+      offset = offset + 1
+    }
+  }
+  count
+}
+
+///|
+/// 候选全失败时，报的必须是**第一条**（也就是被选中的那条后端）的原因。
+///
+/// 序列通常长这样：DOCKER_HOST 指的 socket → 不存在的 `/var/run/docker.sock`
+/// → PATH 上的 CLI。真正在用的第一条超时之后，尾巴上那条够不着的兜底项
+/// 会给出一个「connect failed: errno 2」，如果拿它当结果，用户看到的是
+/// 「不是我用过的后端」「不像超时」的一句玄学——只能自己猜。
+#cfg(not(platform="windows"))
+async test "when every backend fails the first backend's reason is reported" {
+  let first = @docker_cli.DockerCliSource::new(
+    @docker_cli.fake_failing_cli("first backend is down", 1),
+  )
+  let second = @docker_cli.DockerCliSource::new(
+    @docker_cli.fake_failing_cli("second backend is down", 1),
+  )
+  let error = try {
+    @docker_cli.save_or_pull_across_backends(
+      [
+        @docker_cli.ImageBackend::Cli(first),
+        @docker_cli.ImageBackend::Cli(second),
+      ],
+      0,
+      "nope:latest",
+      pull_if_missing=false,
+    )
+    |> ignore
+    fail("both backends fail, this must not return")
+  } catch {
+    err => err
+  }
+  let text = Show::to_string(error)
+  // 第一条的原因在，最后一条的原因不在主句里（只出现在逐条列表里）
+  assert_true(text.contains("first backend is down"))
+  assert_true(text.contains("backends tried"))
+  assert_true(text.contains("second backend is down"))
+}

@@ -75,26 +75,55 @@ pub async fn http_over_unix(
     read_response(connection, socket_path)
   }
   if timeout_ms > 0 {
+    // 超时不走 `catch`：`moonbitlang/async` 的取消**不是**一个可捕获的错误
+    // （见 `with_timeout_opt` 的注释——`catch` 抓不到取消），超时只会让
+    // `with_timeout_opt` 返回 `None`。所以这里的 `catch` 只接 `work()` 自己
+    // 抛的错，原样带出去即可。
+    //
+    // 之前是 `catch { err => raise Backend(socket_path, -1, err.to_string()) }`：
+    // 把一个已经成型的 `Backend` 渲染成字符串再塞回 `Backend`，
+    // `Show` 再渲染一次，用户看到的是
+    // 「/var/run/docker.sock failed: /var/run/docker.sock failed: connect failed: errno 2」。
+    // 一次失败被描述两遍，排查的人只能猜。
     let result = @async.with_timeout_opt(timeout_ms, () => work()) catch {
-      err => raise Backend(socket_path, -1, err.to_string())
+      err => raise preserve(err)
     }
     match result {
       Some(response) => response
       None => raise Cancelled(socket_path)
     }
   } else {
-    work() catch {
-      err => raise Backend(socket_path, -1, err.to_string())
-    }
+    work()
+  }
+}
+
+///|
+/// `catch` 拿到的是 `Error`，这里把它还原成 `DockerCliError`。
+///
+/// 能原样还原的直接还原（保住 `name` / `code` 这些结构化字段，
+/// `Show` 只渲染一次）；认不出来的才折成 `Backend`。
+fn preserve(err : Error) -> DockerCliError {
+  match err {
+    DockerCliError::NoBackend(detail) => NoBackend(detail)
+    DockerCliError::Backend(name, code, detail) => Backend(name, code, detail)
+    DockerCliError::ExecutableNotFound(name) => ExecutableNotFound(name)
+    DockerCliError::Cancelled(name) => Cancelled(name)
+    DockerCliError::Archive(detail) => Archive(detail)
+    DockerCliError::InvalidReference(detail) => InvalidReference(detail)
+    DockerCliError::ImageNotFound(reference) => ImageNotFound(reference)
+    _ => Backend("http", -1, err.to_string())
   }
 }
 
 ///|
 /// 把建连失败收成 `Backend`：unix socket 上「连不上」
 /// 通常意味着 daemon 没起，错误信息要能让用户看懂。
+///
+/// 已经是 `Backend` 的就不再包一层：`Show` 会按 `name` 渲染成
+/// 「<name> failed: <detail>」，再包一次就是「<name> failed: <name> failed: ...」。
 fn connect_error(path : String, err : DockerCliError) -> DockerCliError {
   match err {
-    Backend(_, _, detail) => Backend(path, -1, detail)
+    Backend(_, _, _) => err
     _ => Backend(path, -1, err.to_string())
   }
 }
