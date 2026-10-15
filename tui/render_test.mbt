@@ -64,7 +64,7 @@ test "draw leaves the detail pane blank without a source" {
   let (screen, frame) = render_fixture()
   draw(screen, frame)
   // 右栏第一列（41）是空的
-  assert_eq(screen.get(41, 1), ' ')
+  assert_eq(screen.get(41, 1), " ")
 }
 
 ///|

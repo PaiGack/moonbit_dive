@@ -38,7 +38,7 @@ async test "painter writes only dirty cells on the second frame" {
   let painter = Painter::new()
   ignore(with_pipe_tty(tty => painter.paint(tty, screen)))
   // 改第二行；第一行不动
-  screen.set(0, 1, 'W')
+  screen.set(0, 1, "W")
   let written = with_pipe_tty(tty => painter.paint(tty, screen))
   // 只重发那一个变化的格子
   assert_true(written.contains("W"))
@@ -68,7 +68,7 @@ async test "painter skips cells written back to their old value" {
   screen.write_text(0, 0, "abcd")
   let painter = Painter::new()
   ignore(with_pipe_tty(tty => painter.paint(tty, screen)))
-  screen.set(0, 0, 'a')
+  screen.set(0, 0, "a")
   let written = with_pipe_tty(tty => painter.paint(tty, screen))
   assert_false(written.contains("abcd"))
 }
