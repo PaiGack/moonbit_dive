@@ -58,6 +58,26 @@ pub(all) struct ResolvedBackend {
 pub extend ResolvedBackend with @debug.Debug::{to_repr}
 
 ///|
+/// 取归档过程里的一个阶段，供调用方（CLI 的 `--verbose`）边做边播报。
+///
+/// 存在的理由：这些信息原来只在**整个取归档成功之后**才一次性打印，
+/// 于是用户看到的是「已经取完了才说 will pull」这种倒放的日志；
+/// 而取归档阶段若迟迟没有输出，人只会以为进程卡死。
+pub(all) enum FetchStage {
+  /// 选定后端，开始取：`backend` 是探测挑中的那一个
+  Resolved(ImageBackend)
+  /// 正在试某条后端（含降级后换的下一条）
+  Trying(ImageBackend)
+  /// 本地没有这个镜像，正在拉
+  Pulling(String)
+  /// 正在 `save` 出归档
+  Saving(String)
+} derive(Debug)
+
+///|
+pub extend FetchStage with @debug.Debug::{to_repr}
+
+///|
 /// 一次后端调用的默认超时（毫秒）。
 ///
 /// 不能是 0（无超时）：`/var/run/docker.sock` 在 CNB 这类环境里是**转发进来**的，
@@ -157,6 +177,7 @@ pub async fn fetch_archive(
     env,
     timeout_ms~,
     pull_if_missing~,
+    on_stage=fn(_) { () },
   )
   archive
 }
@@ -191,6 +212,7 @@ pub async fn fetch_archive_verbose(
   timeout_ms~ : Int32 = default_timeout_ms,
   candidates? : Array[BackendCandidate],
   pull_if_missing~ : Bool = false,
+  on_stage~ : (FetchStage) -> Unit = fn(_) { () },
 ) -> (Bytes, ResolvedBackend) raise DockerCliError {
   let candidates = match candidates {
     Some(candidates) => candidates
@@ -202,6 +224,7 @@ pub async fn fetch_archive_verbose(
     env,
     timeout_ms~,
     pull_if_missing~,
+    on_stage~,
   )
 }
 
@@ -220,14 +243,17 @@ async fn fetch_archive_with_backends(
   env : Map[String, String],
   timeout_ms~ : Int32,
   pull_if_missing~ : Bool,
+  on_stage~ : (FetchStage) -> Unit,
 ) -> (Bytes, ResolvedBackend) raise DockerCliError {
   let resolved = resolve_backend(candidates, env, timeout_ms~)
+  on_stage(Resolved(resolved.backend))
   let backends = backend_chain(candidates, resolved, env, timeout_ms~)
   let archive = save_or_pull_across_backends(
     backends,
     0,
     reference,
     pull_if_missing~,
+    on_stage~,
   )
   (archive, resolved)
 }
@@ -252,13 +278,20 @@ pub async fn save_or_pull_across_backends(
   index : Int32,
   reference : String,
   pull_if_missing~ : Bool = false,
+  on_stage~ : (FetchStage) -> Unit = fn(_) { () },
 ) -> Bytes raise DockerCliError {
   let mut last : DockerCliError? = None
   let mut position = index
   let count = backends.length()
   while position < count {
+    on_stage(Trying(backends[position]))
     let outcome : Result[Bytes, DockerCliError] = try
-      save_or_pull_once(backends[position], reference, pull_if_missing~)
+      save_or_pull_once(
+        backends[position],
+        reference,
+        pull_if_missing~,
+        on_stage~,
+      )
     catch {
       err => Err(err)
     } noraise {
@@ -287,10 +320,13 @@ async fn save_or_pull_once(
   backend : ImageBackend,
   reference : String,
   pull_if_missing~ : Bool,
+  on_stage~ : (FetchStage) -> Unit = fn(_) { () },
 ) -> Bytes raise DockerCliError {
   if pull_if_missing && !image_is_local(backend, reference) {
+    on_stage(Pulling(reference))
     ImageSource::pull(backend, reference)
   }
+  on_stage(Saving(reference))
   ImageSource::save(backend, reference)
 }
 

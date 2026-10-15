@@ -234,13 +234,42 @@ async fn socket_health(path : String, timeout_ms~ : Int32) -> String? {
     },
     timeout_ms,
   ) catch {
-    err =>
-      return Some("\{path} is a socket but does not answer: \{err.to_string()}")
+    err => {
+      // `err.to_string()` 的 `Backend(path, ...)` 形态已经带了 `<path> failed: `，
+      // 直接拼在 `<path> is a socket but does not answer: ` 后面会把路径念两遍。
+      // 这里把重复的前缀剥掉，只留原因。
+      let detail = strip_path_prefix(path, err.to_string())
+      return Some("\{path} is a socket but does not answer: \{detail}")
+    }
   }
   if ping.status != 200 {
     return Some("\{path} answered _ping with HTTP \{ping.status}")
   }
   None
+}
+
+///|
+/// 去掉错误文本里重复的 `<path> ` 前缀。
+///
+/// `DockerCliError` 的 `Show` 会把来源名字拼进文本：
+/// `Backend` 是 `<name> failed: <detail>`，`Cancelled` 是 `<name> was cancelled`。
+/// 当 `<name>` 恰好就是调用方自己也要打的那条路径时，
+/// 外层再补一句 `<path> ...` 就成了「路径念两遍」。
+///
+/// 两种形态都剥掉，只留原因部分（`connect failed: errno 111`、`was cancelled` …）。
+fn strip_path_prefix(path : String, text : String) -> String {
+  // `Backend` 形态：`<path> failed: <detail>`，只留 `<detail>`
+  let failed = "\{path} failed"
+  if text.has_prefix(failed) {
+    let rest = text[failed.length():].to_owned()
+    return if rest.has_prefix(": ") { rest[2:].to_owned() } else { rest }
+  }
+  // `Cancelled` 形态：`<path> was cancelled`，整串的重心就是「被取消了」
+  let cancelled = "\{path} was cancelled"
+  if text.has_prefix(cancelled) {
+    return "was cancelled"
+  }
+  text
 }
 
 ///|

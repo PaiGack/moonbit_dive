@@ -63,6 +63,11 @@ moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 就会静默挂住，啥也看不到。后端探测与降级见
 [`docker_cli/README.mbt.md`](docker_cli/README.mbt.md)。
 
+`--timeout` 只包住 docker 调用。**取到归档之后的解压与叠树是纯本地计算，不受它约束**，
+在很大的层上本身就要花时间——`--verbose` 会把这一段也点出来
+（`fetched N bytes` → `parsing archive (decompress + stack layers)...`），
+免得中间那段沉默被当成卡死。
+
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
 docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image` 给镜像名）。
 

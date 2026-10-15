@@ -350,7 +350,19 @@ fn inflate_block(
 ///|
 /// 从已解出的输出里按距离回拷 `length` 个字节。
 ///
-/// 距离可能小于长度（重叠拷贝），因此必须逐字节推进而不是整段复制。
+/// 距离可能小于长度（重叠拷贝，`back < length`），因此这**不是**一次整段复制：
+/// 后写的字节会立刻成为后续读取的源。逐字节推进是语义要求。
+///
+/// 性能上只跟「输出总量的常数倍」成正比，不能是平方：
+/// 原先每读一个字节都调一次 `output.to_bytes()`，而 `to_bytes` 会把**整段**
+/// 已解出的数据复制一份——于是回拷一次是 O(输出长度)，解一整层是 O(N²)。
+/// 真实镜像的一层动辄几十 MB，慢到看起来像挂死（issue #42 的现场）。
+///
+/// 这里改成读 `Buffer::view()`——它是与缓冲区共享存储的零拷贝视图，
+/// 长度等于当前已写字节数。缓冲区在写入过程中可能扩容，视图因此会失效
+/// （旧视图的长度停在扩容前、覆盖不到新写的字节）；
+/// 所以每次取源字节前确认视图覆盖得到 `source`，覆盖不到就重新取一次视图。
+/// 重新取是 O(1)，于是整段解压回到 O(输出总量)。
 fn copy_from_window(
   output : @buffer.Buffer,
   back : Int32,
@@ -360,15 +372,14 @@ fn copy_from_window(
   if back <= 0 || back > produced {
     raise Gzip("distance points before the start of the output")
   }
-  let view : BytesView = output.to_bytes()
+  let mut view : ArrayView[Byte] = output.view()
   for index = 0; index < length; index = index + 1 {
     let source = produced - back + index
-    let byte = if source < produced {
-      view[source]
-    } else {
-      output.to_bytes()[source]
+    // 视图必须覆盖 `source`：缓冲区扩容后旧视图会短一截，这时重新取。
+    if source >= view.length() {
+      view = output.view()
     }
-    output.write_byte(byte)
+    output.write_byte(view[source])
   }
 }
 
