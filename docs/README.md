@@ -14,4 +14,5 @@
 | [p5-docker-cli.md](p5-docker-cli.md) | P5 `docker_cli`：CLI / Engine 双后端、探测降级、与 P2/P3 的接线 |
 | [docker-cli-survey.md](docker-cli-survey.md) | docker cli 封装的生态调研、范围取舍（结论已按 P5 issue #17 修订）、P2 的 tar 坑 |
 | [p6-tui.md](p6-tui.md) | P6 `tui`：交互式看树（基于 `moonbit-community/tty`，路径 A） |
+| [issue-62-mouse-click-fold-survey.md](issue-62-mouse-click-fold-survey.md) | #62 鼠标点击展开/折叠的调研与候选方案 |
 | [repo-layout.md](repo-layout.md) | 仓库结构、开发工作流、提交与发布约定 |
