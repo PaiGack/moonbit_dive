@@ -391,7 +391,7 @@ fn draw_help(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   let lines = [
     "↑↓ / j k       move or scroll", "←→ / h l       fold / unfold the tree",
     "PgUp / PgDn    page", "[ ]            previous / next layer", "Tab            switch focus (tree ↔ detail)",
-    "?              toggle this panel", "q / Esc        quit", "click          select the row / focus the pane",
+    "?              toggle this panel", "q / Esc        quit", "click          select; on a folder also fold / unfold",
     "wheel          scroll the pane under the pointer", "right click    fold / unfold the row under the pointer",
     "s              sort by size (again: by name)",
   ]

@@ -14,6 +14,10 @@ pub fn action_of_key(@input.KeyEvent) -> Action
 
 pub fn action_of_mouse(@input.MouseEvent) -> MouseAction
 
+pub fn mouse_tracking_mode(pixel_mouse? : Bool) -> @tty.MouseTrackingMode
+
+pub fn resolve_mouse(@input.MouseEvent, Int, Int) -> @input.MouseEvent
+
 pub fn analysis_of_decompressed(@layer_tree.DecompressedLayers) -> (@image_analysis.Analysis, @image_analysis.Report)?
 
 pub fn apply_action(Action, AppState) -> Bool
@@ -304,6 +308,7 @@ pub fn TreeView::page_size(Self) -> Int
 pub fn TreeView::page_up(Self, Int) -> Unit
 pub fn TreeView::refresh(Self) -> Unit
 pub fn TreeView::select_at_screen_row(Self, Int) -> Bool
+pub fn TreeView::toggle_fold_at_screen_row(Self, Int) -> Bool
 pub fn TreeView::to_repr(Self) -> @debug.Repr
 pub fn TreeView::toggle(Self) -> Unit
 

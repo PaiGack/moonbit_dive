@@ -457,6 +457,26 @@ pub fn TreeView::index_at_screen_row(
 }
 
 ///|
+/// 坐标反查 + 切展开态：右键点击、以及左键点目录行共用（#62）。
+///
+/// 返回 `false` 表示光标没落在任何可见行上（点了面板空白），
+/// 调用方据此什么都不做——与 `select_at_screen_row` 一个口径。
+///
+/// 落在**文件行**上是「选中但不开合」：先落光标再调 `toggle`，
+/// 而 `toggle` 对非目录行是空操作。所以「点文件只选中」这条等价于
+/// 「点目录顺带开合」的同一段代码，不需要在这里分叉。
+pub fn TreeView::toggle_fold_at_screen_row(
+  self : TreeView,
+  screen_row : Int32,
+) -> Bool {
+  if !self.select_at_screen_row(screen_row) {
+    return false
+  }
+  self.toggle()
+  true
+}
+
+///|
 /// 坐标反查 + 落光标：点击/滚轮共用的落点。
 ///
 /// 反查失败（点在空白处）时不动光标，返回 `false`，调用方据此决定

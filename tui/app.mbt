@@ -142,6 +142,7 @@ pub fn AppState::toggle_sort(self : AppState) -> Unit {
 /// 三条路都会还原终端。
 pub async fn run_app(tty : @tty.Tty, state : AppState) -> Unit {
   let painter = Painter::new()
+  let size = window_size(tty)
   let alt = AltScreen::new()
   alt.enter(tty)
   defer @async.protect_from_cancel(() => alt.leave(tty))
@@ -149,8 +150,11 @@ pub async fn run_app(tty : @tty.Tty, state : AppState) -> Unit {
   // 「关掉鼠标」在 tty 里是一串独立的模式位（`disable_mouse`），不是一条 `Command`。
   // 两个 defer 的顺序与进出全屏对称：开在进屏之后，关在离屏之前——
   // 鼠标跟踪是全局的，漏关掉会让退出后的 shell 把每次点击吐成 `\x1b[<...` 垃圾。
-  // 只开 `Click`：拖拽/框选不是本轮目标，`Drag` 模式会让终端把每次移动都吐过来。
-  tty.enable_mouse(@tty.MouseTrackingMode::Click)
+  //
+  // 模式取见 `mouse_tracking_mode`（#62）：`Drag` 比 #51 的 `Click` 多一档
+  // 「按住移动」。像素坐标的 kitty 鼠标报告由 `resolve_mouse` 兜底换算回格子，
+  // 不再像 tty 0.5.0 那样静默 `Unknown` 丢掉。
+  tty.enable_mouse(mouse_tracking_mode(pixel_mouse=false))
   defer @async.protect_from_cancel(() => tty.disable_mouse())
   draw_frame(tty, painter, state)
   while true {
@@ -164,8 +168,11 @@ pub async fn run_app(tty : @tty.Tty, state : AppState) -> Unit {
         let action = action_of_key(key)
         quit = apply_action(action, state)
       }
-      @tty.Event::Input(@input.InputEvent::Mouse(mouse)) =>
+      @tty.Event::Input(@input.InputEvent::Mouse(mouse)) => {
+        // 像素口径 → 格子口径（#62）；普通终端原样返回
+        let mouse = resolve_mouse(mouse, size.cols, size.rows)
         quit = handle_mouse(mouse, state)
+      }
       @tty.Event::Input(_) => ()
       @tty.Event::Resize(_) => ()
     }
@@ -251,7 +258,10 @@ pub fn handle_mouse(event : @input.MouseEvent, state : AppState) -> Bool {
       // 也不该把键盘焦点从原处夺走（详情面板没有「行」，
       // 点到内容区即视为有效）
       if pane_id == PaneId::Tree {
-        if state.view.select_at_screen_row(row_in_pane) {
+        // 左键点目录行顺带切展开态（#62）：与键盘 `Enter` 对称，
+        // 右键的老手感照旧。文件行只落光标——`toggle_fold_at_screen_row`
+        // 里的 `toggle` 对非目录行是空操作，两种行因此共用一段代码
+        if state.view.toggle_fold_at_screen_row(row_in_pane) {
           state.focus = Focus::Tree
         }
       } else if pane_id == PaneId::Detail {
@@ -266,9 +276,7 @@ pub fn handle_mouse(event : @input.MouseEvent, state : AppState) -> Bool {
     MouseAction::ToggleFold =>
       if pane_id == PaneId::Tree {
         state.focus = Focus::Tree
-        if state.view.select_at_screen_row(row_in_pane) {
-          state.view.toggle()
-        }
+        ignore(state.view.toggle_fold_at_screen_row(row_in_pane))
       }
     MouseAction::ScrollUp =>
       // 滚轮按面板分派：树滚光标，详情滚视口——与键盘的焦点规则一致，
