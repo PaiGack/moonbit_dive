@@ -54,6 +54,7 @@ async test "README example" {
 | 后端抽象 | `ImageSource`、`ImageBackend`、`DockerCliSource`、`EngineSource` |
 | 探测与降级 | `default_candidates`、`probe_backends`、`resolve_backend`、`describe_backends` |
 | 一步取归档 | `fetch_archive`、`fetch_archive_verbose` |
+| 取归档进度 | `FetchStage`、`fetch_archive_verbose(on_stage=...)`、`save_or_pull_across_backends` |
 | CLI 后端 | `save_args`、`inspect_args`、`run_cli`、`run_cli_to_file`、`DockerCliSource::save_to_file` |
 | Engine 后端 | `http_over_unix`、`EngineSource::negotiate`、`EngineSource::pull`、`pull_error_of_stream` |
 | 拉取策略 | `save_maybe_pulling`、`fetch_archive(pull_if_missing=true)`、`DockerCliSource::pull`、`pull_args` |
@@ -106,6 +107,11 @@ socket 在、`connect` 也成功，但对端不通——`timeout_ms = 0` 会让�
 
 `cmd/main` 的 `--timeout <秒>` 可以调大它（比如拉几百 MB 的镜像）；
 只认正整数，**不提供 0**——不留「挂死」那条路。
+
+它只管 docker 调用。**取到归档之后的解压与叠树是纯本地计算，不受超时约束**，
+在很大的层上本来就要花时间。`--verbose` 会把这段也播报出来
+（`fetched N bytes` → `parsing archive (decompress + stack layers)...`），
+免得中间那段沉默被当成卡死。
 
 超时到点报的是 `Cancelled`（`<socket> was cancelled`）：一句「超时」。
 不要让它变成「`connect failed: errno 2`」那种玄学——那既不像超时、
@@ -265,8 +271,10 @@ CLI 侧：`cmd/main` 用显式开关 `--from-image` 把位置参数当镜像名�
 （`moon run --target native cmd/main -- nginx:latest --from-image`），
 本地缺镜像时默认先拉一次（对齐原版 dive），想纯离线就
 `moon run --target native cmd/main -- nginx:latest --from-image --no-pull`；
-取到归档后走既有的 `ImageSource::from_tar_bytes`；`--verbose` 打 `describe_backends`
-的探测记录（`[ok]/[no]` 一行一条，走 stderr）。
+取到归档后走既有的 `ImageSource::from_tar_bytes`；`--verbose` **边做边播报**
+（`using <backend>` / `trying ...` / `saving ...`），结束后再补 `describe_backends`
+的探测记录（`[ok]/[no]` 一行一条）与 `fetched N bytes`——全走 stderr。
+不是「全部做完再回放一份日志」，那样读起来像倒放，中间还会突然安静。
 端到端（fake docker，不依赖真实 daemon）见 `cmd/main/from_image_wbtest.mbt`，
 说明见 [docs/p5-docker-cli.md](../docs/p5-docker-cli.md)。
 

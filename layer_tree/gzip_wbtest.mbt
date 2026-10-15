@@ -271,3 +271,60 @@ test "inflate handles long overlapping back-references without quadratic blowup"
   assert_eq(raw[expected / 2], b'a')
   assert_eq(raw[expected - 1], b'a')
 }
+
+///|
+/// 回拷路径的正确性：距离 < 长度时必须逐字节推进（重叠拷贝）。
+///
+/// 这类流在真实镜像层里遍地都是（连续重复的字节/片段），也正是
+/// 「每读一个字节就 `to_bytes()` 复制整段输出」那一版最吃亏的形状。
+/// 这里用一个 20 万字节的重复负载把两条都钉住：
+/// 结果必须逐字节正确，且不能退化成平方复杂度（旧实现下这条要几十秒）。
+test "inflate handles long overlapping back-references" {
+  // 'A' × 200000 压缩后只有 230 字节，解压几乎全部走「距离 1、长度 258」的回拷
+  let raw = @encoding.encode(UTF8, "A")
+  let payload = gzip_repeat_payload(200000, raw[0])
+  let stream = gzip_reference_backref()
+  let restored = gzip_decompress(stream) catch {
+    err => fail("back-reference stream failed: " + err.to_string())
+  }
+  assert_eq(restored.length(), 200000)
+  for index = 0; index < restored.length(); index = index + 1 {
+    if restored[index] != raw[0] {
+      fail("byte \{index} is not the repeated value")
+    }
+  }
+  // 兜底：同一份数据自己压一遍也要能还原（覆盖 compress 侧）
+  let round = gzip_decompress(gzip_compress(payload)) catch {
+    err => fail("round trip failed: " + err.to_string())
+  }
+  assert_eq(round.length(), payload.length())
+}
+
+///|
+/// 生成 `count` 份 `byte` 的负载。
+fn gzip_repeat_payload(count : Int32, byte : Byte) -> Bytes {
+  let out = @buffer.Buffer()
+  for index = 0; index < count; index = index + 1 {
+    out.write_byte(byte)
+  }
+  out.to_bytes()
+}
+
+///|
+/// Python zlib（level 9）压出的 `'A' × 200000`：230 字节，
+/// 解压路径几乎全是「距离 1、长度 258」的重叠回拷。
+fn gzip_reference_backref() -> Bytes {
+  let bytes : Array[Byte] = [
+    31, 139, 8, 0, 7, 166, 208, 106, 2, 255, 237, 193, 49, 1, 0, 0, 0, 194, 160,
+    108, 235, 95, 202, 12, 254, 64, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 175, 1,
+    209, 106, 235, 172, 64, 13, 3, 0,
+  ]
+  Bytes::from_array(bytes)
+}

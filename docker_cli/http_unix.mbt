@@ -93,7 +93,9 @@ pub async fn http_over_unix(
       None => raise Cancelled(socket_path)
     }
   } else {
-    work()
+    work() catch {
+      err => raise describe_socket_failure(socket_path, err)
+    }
   }
 }
 
@@ -102,6 +104,9 @@ pub async fn http_over_unix(
 ///
 /// 能原样还原的直接还原（保住 `name` / `code` 这些结构化字段，
 /// `Show` 只渲染一次）；认不出来的才折成 `Backend`。
+///
+/// 这一步是超时分支专用：`with_timeout_opt` 会把内部抛出的错转成 `Error`，
+/// 类型信息在那一下就没了，只能在这里按变体接回来。
 fn preserve(err : Error) -> DockerCliError {
   match err {
     DockerCliError::NoBackend(detail) => NoBackend(detail)
@@ -112,6 +117,24 @@ fn preserve(err : Error) -> DockerCliError {
     DockerCliError::InvalidReference(detail) => InvalidReference(detail)
     DockerCliError::ImageNotFound(reference) => ImageNotFound(reference)
     _ => Backend("http", -1, err.to_string())
+  }
+}
+
+///|
+/// 把 unix socket 上的失败收成一条 `Backend`，**不重复套壳**。
+///
+/// `connect_error` / `read_response` 抛出来的已经是带上下文的 `Backend`
+/// （`Show` 会渲染成 `<path> failed: <detail>`），这里若原样再包一层
+/// `Backend(path, -1, err.to_string())`，用户看到的就是
+/// `<path> failed: <path> failed: ...`——同一条路径被念两遍。
+/// 只有非 `Backend` 的错才需要补一层上下文。
+fn describe_socket_failure(
+  socket_path : String,
+  err : DockerCliError,
+) -> DockerCliError {
+  match err {
+    Backend(_, _, _) => err
+    _ => Backend(socket_path, -1, err.to_string())
   }
 }
 

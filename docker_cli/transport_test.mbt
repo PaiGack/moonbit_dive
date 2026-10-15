@@ -632,26 +632,6 @@ async test "a socket that stalls mid-body surfaces a timeout, not a mangled errn
 }
 
 ///|
-/// `text` 里 `needle` 出现的次数。
-#cfg(not(platform="windows"))
-fn count_occurrences(text : String, needle : String) -> Int32 {
-  if needle.is_empty() {
-    return 0
-  }
-  let mut count = 0
-  let mut offset = 0
-  while offset <= text.length() - needle.length() {
-    if text[offset:offset + needle.length()] == needle {
-      count = count + 1
-      offset = offset + needle.length()
-    } else {
-      offset = offset + 1
-    }
-  }
-  count
-}
-
-///|
 /// 候选全失败时，报的必须是**第一条**（也就是被选中的那条后端）的原因。
 ///
 /// 序列通常长这样：DOCKER_HOST 指的 socket → 不存在的 `/var/run/docker.sock`
