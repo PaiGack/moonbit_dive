@@ -667,3 +667,120 @@ async test "when every backend fails the first backend's reason is reported" {
   assert_true(text.contains("backends tried"))
   assert_true(text.contains("second backend is down"))
 }
+
+///|
+/// 一条 lane 的一轮：socket 后端说「没有这个镜像」，序列后面还有一条能用的
+/// CLI，归档就该从 CLI 出来。返回 `""` 表示这一轮正常，否则是失败原因。
+///
+/// 返回字符串而不是直接 `fail()`，是为了让并发 lane 把各自的失败收集起来
+/// 一次报出来——第一个失败就把整轮掐掉的话，看不到「失败了多少次」，
+/// 也就分不清是环境噪声还是稳定复现。
+#cfg(not(platform="windows"))
+async fn eagain_round(round : Int32) -> String {
+  // 归档每轮现造：与 `save` 出来的字节逐位比对，顺带把负载抬到真实水位
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=eagain-\{round}\n"),
+  ])
+  let archive = @docker_cli.build_docker_archive([("eagain", layer)])
+  let archive_path = write_temp_bytes("eagain-\{round}.tar", archive)
+  let (bin, _program) = @docker_cli.write_fake_cli_named(
+    "docker",
+    @docker_cli.fake_recording_cli(
+      archive_path + ".calls",
+      archive_path,
+      "[{\"Id\":\"sha256:eagain\"}]",
+    ),
+  )
+  let server = @docker_cli.UnixSocketServer::start() catch {
+    err => return "server: \{err}"
+  }
+  let reason = try {
+    @async.with_task_group(group => {
+      group.spawn_bg(no_wait=true, () => {
+        serve_one(server, _ => ping_response("1.45"))
+        serve_one(server, _ => ping_response("1.45"))
+        serve_one(server, _ => {
+          length_response(
+            404,
+            @utf8.encode("{\"message\":\"No such image: eagain\"}"),
+          )
+        })
+      })
+      let resolved = @docker_cli.resolve_backend(
+        [
+          @docker_cli.BackendCandidate::Socket(server.path),
+          @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+        ],
+        { "PATH": bin },
+        timeout_ms=1000,
+      ) catch {
+        err => fail("round \{round}: probe failed: \{err}")
+      }
+      let chain = @docker_cli.backend_chain(
+        [
+          @docker_cli.BackendCandidate::Socket(server.path),
+          @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+        ],
+        resolved,
+        { "PATH": bin },
+        timeout_ms=1000,
+      )
+      let saved = @docker_cli.save_or_pull_across_backends(
+        chain,
+        0,
+        "eagain:latest",
+        pull_if_missing=false,
+      ) catch {
+        err => fail("round \{round}: \{err}")
+      }
+      if saved != archive {
+        fail(
+          "round \{round}: archive mismatch, \{saved.length()} vs \{archive.length()} bytes",
+        )
+      }
+    })
+    ""
+  } catch {
+    err => err.to_string()
+  }
+  server.close()
+  @docker_cli.remove_fake_cli_dir(bin)
+  remove_temp_bytes(archive_path)
+  reason
+}
+
+///|
+/// 并发的 CLI 读取不能把瞬时的 `EAGAIN` 当成后端故障，也不能丢字节。
+///
+/// 复现手法：多条 lane 同时跑「unix socket 后端说没有 + CLI 兜底」这条完整链路
+/// （就是上面换路用例的形状），每条 lane 再循环多轮。同一事件循环上既有 socket
+/// 收发、又有子进程 spawn / 读管道，与 `moon test` 默认 10 路并发跑测试的情形
+/// 一致——单跑一个用例复现不了，必须凑齐并发度。
+///
+/// 触发的是 `moonbitlang/async` 用边沿触发（`EPOLLET`）注册管道 fd 的窗口：
+/// `wait_read()` 刚返回、真正 `read(2)` 却拿到 `EAGAIN`（就绪边沿被别处消费掉了）。
+/// 底层只重试一次，第二次仍 `EAGAIN` 就抛出来。修复前这会变成
+/// `Backend("read", ...)`——报出来跟「docker 用不了」一模一样，而子进程
+/// 其实好得很；若拿一次性的 `read_all()` 去重试，更会退化成「退出码 0、
+/// 输出为空」的假成功，比报错更难查。
+///
+/// 所以这里不只断言「不报错」，还逐字节校验归档内容。
+#cfg(not(platform="windows"))
+async test "concurrent cli reads survive transient EAGAIN without losing bytes" {
+  let failures = []
+  @async.with_task_group(group => {
+    for lane in 0..<10 {
+      group.spawn_bg(no_wait=true, () => {
+        for round in 0..<30 {
+          let reason = eagain_round(lane * 100 + round)
+          if reason != "" {
+            failures.push(reason)
+          }
+        }
+      })
+    }
+  })
+  if failures.length() > 0 {
+    fail("cli reads failed \{failures.length()} times: \{failures[0]}")
+  }
+}

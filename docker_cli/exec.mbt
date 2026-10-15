@@ -154,13 +154,82 @@ fn make_pipe() -> (@process.ReadFromProcess, &@process.ProcessOutput) raise Dock
 
 ///|
 /// 读干一个管道。
+///
+/// 自己一段段读、而不是 `read_all()`，是为了能**在重试时保住已读到的部分**：
+/// `read_all()` 是一次性的，中途抛错就整体作废，重跑一遍会丢掉这一轮之前
+/// 已经攒下的字节——对 `save` 出来的归档来说就是「退出码 0、输出为空」。
+///
+/// 为什么要重试：`EAGAIN` 是**可重试**的，不该上抛。`moonbitlang/async`
+/// 的事件循环用边沿触发（`EPOLLET`）注册管道 fd，并发任务多时会出现
+/// 「刚 `wait_read()` 返回、真正 `read(2)` 却拿到 `EAGAIN`」的窗口——
+/// 就绪边沿已经被消费掉了。底层 `read_via_event_bus_unix` 只重试一次，
+/// 第二次仍 `EAGAIN` 就把这个**瞬时**状态当成致命错抛出来。落到用户眼里是
+/// 「cli:/usr/bin/docker — .../docker failed: read failed: OSError(...Resource
+/// temporarily unavailable)」——明明子进程正常、归档就在管道里，
+/// 却报了一个和「docker 用不了」长得一样的错。
+///
+/// 对「阻塞语义的读」来说 `EAGAIN` 本来就等于「这会儿没数据，待会儿再来」，
+/// 所以这里让出一次、再读一遍；上限内没成功才当真正的故障。
+///
+/// 上限不宜大：管道对端是活着的子进程，正常情况下一次就能读完；
+/// 真挂了（对端不写也不关）会走外面的超时，不该在这里空转。
 async fn read_to_bytes(
   reader : @process.ReadFromProcess,
 ) -> Bytes raise DockerCliError {
-  let data = reader.read_all() catch {
-    err => raise Backend("read", -1, err.to_string())
+  let out = @buffer.Buffer()
+  let chunk = FixedArray::make(read_chunk_size, b'\x00')
+  let mut failures = 0
+  while true {
+    let outcome : Result[Int32, Error] = try
+      reader.read(chunk, offset=0, max_len=chunk.length())
+    catch {
+      err => Err(err)
+    } noraise {
+      n => Ok(n)
+    }
+    match outcome {
+      // 读到 0 = 对端关了写端，EOF
+      Ok(0) => break
+      Ok(n) => {
+        out.write_bytes(chunk.unsafe_reinterpret_as_bytes()[:n])
+        // 还读得出东西就说明没坏：把计数清零，
+        // 别让早先一次卡顿一直攒着、最后把这里判成失败
+        failures = 0
+      }
+      Err(err) => {
+        if !is_transient_read_error(err) || failures >= read_retry_limit {
+          raise Backend("read", -1, err.to_string())
+        }
+        failures = failures + 1
+      }
+    }
+    // 让出一次事件循环：重试要等新的就绪边沿，空转重读拿不到数据。
+    @async.sleep(read_retry_delay_ms)
   }
-  data.binary()
+  out.to_bytes()
+}
+
+///|
+/// 每次 `read` 的块大小。
+let read_chunk_size : Int32 = 65536
+
+///|
+/// 连续 `EAGAIN` 的重试上限，见 `read_to_bytes`。
+let read_retry_limit : Int32 = 64
+
+///|
+/// 连续 `EAGAIN` 之间的让出间隔（毫秒），见 `read_to_bytes`。
+let read_retry_delay_ms : Int32 = 1
+
+///|
+/// 这条读错误是「暂时读不到」而不是「读坏了」吗？
+///
+/// `moonbitlang/async` 把 `EAGAIN` / `EWOULDBLOCK` / `EINPROGRESS` 都归为
+/// 「非阻塞 IO 的暂时性错误」，`to_string()` 后都是 `Resource temporarily
+/// unavailable`。按文案识别是因为这层只拿到 `Error`，类型信息已在
+/// `catch` 那一步被抹掉了。
+fn is_transient_read_error(err : Error) -> Bool {
+  err.to_string().contains("Resource temporarily unavailable")
 }
 
 ///|
