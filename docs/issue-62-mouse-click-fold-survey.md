@@ -98,6 +98,26 @@
 先做 **A**（+ **D** 的 `Drag`），C 作为顺带：帮助浮层里补一句左键也能开合。
 B 不做——为它引状态不划算。
 
+### 已按 A + D + C 落地
+
+调研拍板后按这个组合实现（B 不做），改动点：
+
+- `TreeView::toggle_fold_at_screen_row`：坐标反查 + 落光标 + 切展开态，
+  左键与右键共用；`toggle` 对非目录行是空操作，所以「点目录开合、
+  点文件只选中」不额外分叉
+- `handle_mouse` 的 `Select` 分支改调它（右键那条也折成同一个函数）
+- `mouse_tracking_mode()`：默认 `Drag`（`?1002h`），像素鼠标终端上退到
+  `Motion`（`?1003h`）
+- `resolve_mouse(event, viewport_cols, viewport_rows)`：像素坐标折回格子坐标。
+  第一节第 3 条那截「`Unknown` 静默消失」由此兜住——**本轮已在 tty 0.5.0
+  源码 checkout 上实测**（`parse_sgr_mouse` 对 `CSI <0;10;5;1M` 返回 `Unknown`，
+  对 `CSI <0;10;5M` 正常返回 `Mouse(Press(Left), row 5, col 10)`），
+  不再是纯读码推导。折回格子后点击落在正确位置；贴边界时夹回视口内
+- 帮助浮层那一行改成 `click  select; on a folder also fold / unfold`（C）
+
+`moon test --target native -p tui` 164 条全绿（原 156 + 新增 8）。
+真正起终端点一遍仍然没做（本环境没有可交互 pty），这一条保留在第五节。
+
 ## 四、验收口径（无论选哪个方案）
 
 - 左键点目录行 → 开合；点文件行 → 只选中（`mouse_wbtest.mbt` 补两条）
@@ -106,8 +126,9 @@ B 不做——为它引状态不划算。
 - 折叠后再点同一行 → 展开，光标停在该目录行上（不跑到底）
 - `moon test --target native -p tui` 全绿；真终端上 `--tui` 冒烟一遍
 
-## 五、本轮没做到的
+## 五、没做到的（更新于落地之后）
 
-- **没起真终端实测**：本环境能跑测试（`moon test --target native -p tui` → 156 全绿，
-  依赖已拉取），但没有可交互的 pty，第一节第 3 条的 kitty 冲突只有源码推导
+- **没起真终端点一遍**：本环境没有可交互的 pty。第一节第 3 条那截已用
+  tty 0.5.0 源码 checkout 上的 `parse_csi` 实测钉住（`CSI <0;10;5;1M` → `Unknown`），
+  但「真终端上报什么形状」仍靠 kitty 协议文档与这次换算兜底
 - 没有统计「哪些终端默认开 kitty mouse reporting」——这决定第 3 条的实际影响面

@@ -172,6 +172,62 @@ test "right click toggles the fold of the row under the pointer" {
 }
 
 ///|
+/// 左键点目录行：选中并开合（#62）。
+///
+/// `/etc` 是第 0 行可见行 → 内容区第 0 行 → 屏幕第 3 行。
+test "left click on a folder toggles its fold" {
+  let state = mouse_state()
+  ignore(
+    handle_mouse(
+      mouse_at(@input.MouseEventKind::Press(@input.MouseButton::Left), 3, 3),
+      state,
+    ),
+  )
+  assert_eq(state.focus, Focus::Tree)
+  assert_eq(state.view.cursor, 0)
+  assert_true(state.view.collapsed.contains("/etc"))
+  // 折叠后光标仍停在目录行上（`toggle` 不挪光标），再点一次展开回来
+  ignore(
+    handle_mouse(
+      mouse_at(@input.MouseEventKind::Press(@input.MouseButton::Left), 3, 3),
+      state,
+    ),
+  )
+  assert_false(state.view.collapsed.contains("/etc"))
+  assert_eq(state.view.cursor, 0)
+}
+
+///|
+/// 左键点文件行只选中，不开合（没有可开合的东西）。
+test "left click on a file only selects it" {
+  let state = mouse_state()
+  // `/etc/hosts` 是第 1 行可见行 → 内容区第 1 行 → 屏幕第 4 行
+  ignore(
+    handle_mouse(
+      mouse_at(@input.MouseEventKind::Press(@input.MouseButton::Left), 4, 3),
+      state,
+    ),
+  )
+  assert_eq(state.view.cursor, 1)
+  assert_true(state.view.collapsed.is_empty())
+  assert_eq(state.focus, Focus::Tree)
+}
+
+///|
+/// 左键点面板空白处：既不选行，也不开合（折叠状态一个都不该动）。
+test "left click on empty space does not toggle anything" {
+  let state = mouse_state()
+  ignore(
+    handle_mouse(
+      mouse_at(@input.MouseEventKind::Press(@input.MouseButton::Left), 20, 3),
+      state,
+    ),
+  )
+  assert_true(state.view.collapsed.is_empty())
+  assert_eq(state.view.cursor, 0)
+}
+
+///|
 /// 拖拽 / 移动不产生任何状态变化（本轮不做拖拽与框选）。
 test "drag and move never change the state" {
   let state = mouse_state()

@@ -97,20 +97,24 @@ async fn mouse_pipe_tty(f : async (@tty.Tty) -> Unit) -> String {
 ///|
 /// 鼠标跟踪的开关与进出全屏配对：开了就得关，且关在切回主屏之前——
 /// 漏关掉会让退出后的 shell 把每次点击吐成 `\x1b[<...` 垃圾（#51）。
+///
+/// 跟踪模式从 `Click`（`1000h`）换成 `Drag`（`1002h`）是 #62 的顺手改动：
+/// 多一档「按住移动」，点击本身两种模式都报。
 async test "app enables and disables mouse tracking around the alt screen" {
   let written = mouse_pipe_tty(tty => {
     // 复刻 `run_app` 的进出顺序：进全屏 → 开鼠标 → ... → 关鼠标 → 离屏
     let alt = AltScreen::new()
     alt.enter(tty)
-    tty.enable_mouse(@tty.MouseTrackingMode::Click)
+    tty.enable_mouse(mouse_tracking_mode(pixel_mouse=false))
     tty.disable_mouse()
     alt.leave(tty)
   })
-  // SGR 鼠标 + 按下跟踪
+  // SGR 鼠标 + 按住跟踪（`Drag`；`Enable` 侧会先把三个模式位都关一遍，
+  // 所以这里只断言最后开着的那个）
   assert_true(written.contains("\u{1b}[?1006h"))
-  assert_true(written.contains("\u{1b}[?1000h"))
+  assert_true(written.contains("\u{1b}[?1002h"))
   // 退出侧：三个模式位都要关
-  assert_true(written.contains("\u{1b}[?1000l"))
+  assert_true(written.contains("\u{1b}[?1002l"))
   assert_true(written.contains("\u{1b}[?1006l"))
   // 关鼠标排在离开 alternate screen 之前
   let mouse_off = written.find("\u{1b}[?1006l").unwrap()

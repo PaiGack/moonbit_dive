@@ -137,9 +137,9 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 - 布局记在 `AppState.last_layout`（画帧时回填），不在事件处理里重算——
   重算要终端尺寸，而事件处理是同步的
 
-鼠标跟踪用 `Click` 模式，与进出全屏配对：`run_app` 里 `enable_mouse` /
-`disable_mouse` 一对 `defer`。漏关掉会让**退出后的 shell** 把每次点击吐成
-一段 `\x1b[<...` 垃圾，所以关它排在切回主屏之前。
+鼠标跟踪用 `Drag` 模式（#51 当时是 `Click`，见 #62 那节），与进出全屏配对：
+`run_app` 里 `enable_mouse` / `disable_mouse` 一对 `defer`。漏关掉会让
+**退出后的 shell** 把每次点击吐成一段 `\x1b[<...` 垃圾，所以关它排在切回主屏之前。
 
 顺带补了一个纯键盘可达的排序键 `s`（按名字 ↔ 按体积）：右键切展开态本身
 与键盘的 `Enter` 同效，排序却没有对应键，只做鼠标会让键鼠两套操作不对称。
@@ -179,3 +179,28 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 
 候选方案：A 左键点目录即开合（推荐）；B 双击开合（要引状态，不推荐）；
 C 只补提示（不解决问题）；D 配合 A，把跟踪模式换 `Drag` 并对 kitty 扩展做降级。
+
+### 落地（A + D，C 顺手）
+
+选的是 **A + D**，C 顺带；B 不做。改动收在两处：
+
+- `TreeView::toggle_fold_at_screen_row`（`tree_view.mbt`）：坐标反查 + 落光标 +
+  切展开态，左键与右键共用；`toggle` 对非目录行是空操作，所以
+  「点目录开合、点文件只选中」是同一段代码
+- `handle_mouse` 的 `Select` 分支改调它（`app.mbt`），右键那条也折成同一个函数
+- `mouse_tracking_mode()`：默认 `Drag`（`?1002h`，比 `Click` 多一档「按住移动」）；
+  像素鼠标终端上退到 `Motion`（那套要 any-event 才说话）
+- `resolve_mouse(event, viewport_cols, viewport_rows)`：像素坐标 → 格子坐标。
+  tty 0.5.0 的 `CSI <` 只认 `cb;col;row M/m`，kitty 那套的多余参数一律
+  `Unknown`（本轮在 tty 源码 checkout 上实测过，不是纯推导）；
+  折回格子后点击至少落在正确位置，不再整棵树点不动。
+  换算贴边界时夹回视口内，宁可落点偏一点也不能点到屏幕外
+- 帮助浮层那一行改成 `click  select; on a folder also fold / unfold`，
+  右键那行保留（C）
+
+验收口径（与调研一致）：
+
+- 左键点目录开合、点文件只选中、右键不变、点空白与边框不动、
+  折叠后再点回来光标仍停在目录行上
+- 像素坐标能折回格子，且不越出视口
+- `moon test --target native -p tui` 全绿（164 条）
