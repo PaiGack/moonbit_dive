@@ -13,6 +13,7 @@ layer_tree/             # P2
 image_analysis/         # P3
 image_ci/               # P4
 docker_cli/             # P5（独立包，不被 P1–P4 依赖）
+tui/                    # P6（native only，交互式看树）
 docs/                   # 设计文档与拆分规划
 ```
 
@@ -24,6 +25,10 @@ docs/                   # 设计文档与拆分规划
 `dive <image> --layer N [--path P]`。给了 `--layer` / `--path` 就不做门禁判定，
 只打印那一层的文件树与该层 diff；`--path` 按目录下钻，纯给 shell 用，
 不做 TUI（gocui 那部分不在范围内）。实现落在 `layer_tree::browse_layers`。
+
+P6 `tui` 是交互式看树，底层用 `moonbit-community/tty`，因此与 `docker_cli` 一样标
+`supported_targets = "-all+native"`，只支持 native。数据来自 P2 的 `browse_layers` 与
+P3 的分析结果，TUI 只再包一层视图。设计见 [p6-tui.md](p6-tui.md)。
 
 P5 `docker_cli` 已按同样约定落地（`moon.pkg` + README + 测试），见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)。
 它是唯一带平台约束的包：进程与 unix socket 只在 native / wasm 后端可用，

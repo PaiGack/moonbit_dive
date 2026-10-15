@@ -3,6 +3,8 @@ import {
   "PaiGack/dive/image_ci",
   "PaiGack/dive/docker_cli",
   "PaiGack/dive/layer_tree",
+  "PaiGack/dive/tui",
+  "moonbit-community/tty",
   "moonbitlang/async",
   "moonbitlang/core/argparse",
   "moonbitlang/x/fs",

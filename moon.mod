@@ -28,4 +28,5 @@ description = "A MoonBit toolkit for analyzing OCI container images: layer stack
 import {
   "moonbitlang/x@0.5.5",
   "moonbitlang/async@0.22.5",
+  "moonbit-community/tty@0.5.0",
 }

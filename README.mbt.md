@@ -11,6 +11,7 @@ MoonBit 重写 [wagoodman/dive](https://github.com/wagoodman/dive)（Go，MIT）
 - `image_analysis`：镜像体积分析、跨层重复文件、efficiency score，输出报告
 - `image_ci`：镜像体积门禁规则 DSL 与 CLI（exit code / CI 注解）——**已落地**，见 [`image_ci/README.mbt.md`](image_ci/README.mbt.md)
 - `docker_cli`：Docker Engine 封装（docker/podman/nerdctl CLI 后端 + unix socket Engine 后端），把镜像名变成 tar/layout（独立包，不被前四包依赖）
+- `tui`：交互式看树（基于 `moonbit-community/tty`，native only），把逐层视图接成可上下走、可折叠、可切层的画面
 
 ## 用一下
 
@@ -25,6 +26,10 @@ moon run --target native cmd/main -- demo-image.tar --rules rules.json --format 
 # 逐层浏览（dive 交互界面的只读替身）：看第 N 层应用完之后的文件树与这层 diff
 moon run --target native cmd/main -- demo-image.tar --layer 1
 moon run --target native cmd/main -- demo-image.tar --layer 1 --path /app
+
+# 交互式看树（TUI）：上下走行、折叠目录、左右切层
+moon run --target native cmd/main -- demo-image.tar --tui
+moon run --target native cmd/main -- nginx:latest --from-image --tui
 
 # 按效率看路径：谁把 efficiency 分数拉下来的
 moon run --target native cmd/main -- demo-image.tar --efficiency
@@ -61,5 +66,11 @@ moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
 docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image` 给镜像名）。
 
-详见 [`docs/`](docs/README.md) 下的设计文档；进度看板见 issue #8；docker cli 封装见 issue #17。
+`--tui` 打开交互式看树：`↑↓`/`jk` 走行，`←→`/`hl` 收起展开，`Enter`/`Tab` 切展开态，
+`[`/`]` 换层，`q`/`Esc` 退出。它占主屏、不切 alternate screen（路径 A，见
+[`tui/README.mbt.md`](tui/README.mbt.md) 与 [`docs/p6-tui.md`](docs/p6-tui.md)），
+只支持 native，且需要一个真终端（stdin/stdout 都不是 tty 时退 exit 2）。
+
+详见 [`docs/`](docs/README.md) 下的设计文档；进度看板见 issue #8；docker cli 封装见 issue #17；
+交互式看树的落地进度见 issue #46。
 
