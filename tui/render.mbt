@@ -377,16 +377,18 @@ pub fn truncate_keep_tail(text : String, width : Int32) -> String {
   if display_width(text) <= width {
     return text
   }
-  let chars = text.to_array()
-  let mut kept = String::make(0, ' ')
+  // 从尾部按 cluster 往回捡：cluster 是终端里的最小字形单位，
+  // 半个 ZWJ 序列或半个组合字符留在开头，终端会把它当成一个新字形画出来。
+  let clusters = graphemes(text).to_array()
+  let mut kept = ""
   let mut used = 0
-  let mut index = chars.length() - 1
+  let mut index = clusters.length() - 1
   while index >= 0 {
-    let width_of = char_width(chars[index])
+    let width_of = display_width(clusters[index])
     if used + width_of > width - 3 {
       break
     }
-    kept = "\{chars[index]}\{kept}"
+    kept = "\{clusters[index]}\{kept}"
     used = used + width_of
     index = index - 1
   }

@@ -116,7 +116,7 @@ fn is_dirty(
 }
 
 ///|
-/// 取某行 `[start, end]`（闭区间）的字符拼成串，占位符与行尾空格一并去掉。
+/// 取某行 `[start, end]`（闭区间）的格子拼成串，占位格与行尾空格一并去掉。
 fn segment_string(
   screen : Screen,
   start : Int32,
@@ -124,12 +124,8 @@ fn segment_string(
   row : Int32,
 ) -> String {
   let builder = StringBuilder()
-  let blank = '\u{0}'
   for col = start; col <= end; col = col + 1 {
-    let char = screen.cells[row * screen.cols + col]
-    if char != blank {
-      builder.write_char(char)
-    }
+    builder.write_string(screen.cells[row * screen.cols + col])
   }
   // 未写过的格子是空格，照常吐出去：宽度正好等于区间列数，
   // 终端光标按列推进，后面内容不会左移
@@ -142,7 +138,7 @@ fn segment_string(
 /// 新基线不带脏标记：基线只用来比字符，`dirty` 属于「这一帧写过什么」，
 /// 拷过去会让下一帧把这一帧的脏格全部重画。
 fn clone_screen(screen : Screen) -> Screen {
-  let cells = Array::make(screen.cols * screen.rows, ' ')
+  let cells = Array::make(screen.cols * screen.rows, " ")
   for index = 0; index < screen.cells.length(); index = index + 1 {
     cells[index] = screen.cells[index]
   }

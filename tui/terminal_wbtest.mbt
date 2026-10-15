@@ -2,11 +2,11 @@
 /// 基线克隆不带脏标记：脏标记属于「这一帧写过什么」，拷过去会让下一帧全量重画。
 test "clone_screen keeps cells but clears dirty" {
   let screen = Screen::new(3, 2)
-  screen.set(0, 0, 'a')
-  screen.set(2, 1, 'b')
+  screen.set(0, 0, "a")
+  screen.set(2, 1, "b")
   let clone = clone_screen(screen)
-  assert_eq(clone.get(0, 0), 'a')
-  assert_eq(clone.get(2, 1), 'b')
+  assert_eq(clone.get(0, 0), "a")
+  assert_eq(clone.get(2, 1), "b")
   assert_eq(clone.cols, 3)
   assert_eq(clone.rows, 2)
   assert_false(clone.dirty[0])
@@ -20,13 +20,13 @@ test "is_dirty requires both a write and a change" {
   let baseline = Screen::new(3, 1)
   // 基线有内容、当前是空格，但当前没写过 → 不算脏
   assert_false(is_dirty(current, baseline, 0, 0))
-  current.set(0, 0, 'a')
+  current.set(0, 0, "a")
   assert_true(is_dirty(current, baseline, 0, 0))
   // 写回原值：脏了但没变 → 不必重画
   let same = Screen::new(3, 1)
   let same_base = Screen::new(3, 1)
-  same.set(1, 0, 'x')
-  same_base.set(1, 0, 'x')
+  same.set(1, 0, "x")
+  same_base.set(1, 0, "x")
   assert_false(is_dirty(same, same_base, 1, 0))
 }
 
@@ -35,7 +35,7 @@ test "is_dirty requires both a write and a change" {
 test "is_dirty treats cells outside the baseline as changed" {
   let current = Screen::new(4, 2)
   let baseline = Screen::new(2, 1)
-  current.set(3, 1, 'z')
+  current.set(3, 1, "z")
   assert_true(is_dirty(current, baseline, 3, 1))
 }
 
@@ -54,7 +54,7 @@ test "segment_string skips wide-char placeholders" {
 /// 区间宽度按列补齐：末尾的空白也要吐出来，否则光标推进量会短、后面内容左移。
 test "segment_string pads to the interval width" {
   let screen = Screen::new(5, 1)
-  screen.set(0, 0, 'a')
+  screen.set(0, 0, "a")
   // 区间 [0,3] 是 4 列，只有首格有内容
   let segment = segment_string(screen, 0, 3, 0)
   assert_eq(segment, "a   ")

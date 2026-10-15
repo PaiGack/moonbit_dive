@@ -32,18 +32,18 @@ fn paint_border(screen : Screen, pane : Pane, focused : Bool) -> Unit {
   let (top, bottom) = (rect.top, rect.bottom)
   // 上下两条横边
   for col = left + 1; col < right; col = col + 1 {
-    screen.set(col, top, '-')
-    screen.set(col, bottom, '-')
+    screen.set(col, top, "-")
+    screen.set(col, bottom, "-")
   }
   // 左右两条竖边
   for row = top + 1; row < bottom; row = row + 1 {
-    screen.set(left, row, '|')
-    screen.set(right, row, '|')
+    screen.set(left, row, "|")
+    screen.set(right, row, "|")
   }
-  screen.set(left, top, '+')
-  screen.set(right, top, '+')
-  screen.set(left, bottom, '+')
-  screen.set(right, bottom, '+')
+  screen.set(left, top, "+")
+  screen.set(right, top, "+")
+  screen.set(left, bottom, "+")
+  screen.set(right, bottom, "+")
   // 标题压在顶边上（从 left+2 起，给两个角留位置）
   if pane.title.is_empty() {
     return
@@ -68,7 +68,7 @@ pub fn clear_pane(screen : Screen, pane : Pane) -> Unit {
   }
   for row = top; row <= bottom; row = row + 1 {
     for col = left; col <= right; col = col + 1 {
-      screen.set(col, row, ' ')
+      screen.set(col, row, " ")
     }
   }
 }

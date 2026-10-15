@@ -177,7 +177,7 @@ test "draw keeps a gap between the name and the size tail" {
   assert_true(body.contains("1 B [L0]"))
   assert_false(body.contains("main1 B"))
   // 行的首列是内容（不是边框）：单栏左侧边框在列 0，内容从列 1 起
-  assert_eq(screen.get(0, 2), '|')
+  assert_eq(screen.get(0, 2), "|")
 }
 
 ///|

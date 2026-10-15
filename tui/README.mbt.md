@@ -16,7 +16,8 @@
 
 ```
 screen.mbt      L0 按列×行的字符画布；写入即标脏，供增量重画
-width.mbt       L0 显示宽度（CJK 占两列、组合字符零宽）与按列截断/补齐
+width.mbt       L0 显示宽度（按 grapheme cluster：CJK 两列、ZWJ emoji 一簇两列）与按列截断/补齐
+width_tables.mbt L0 零宽码点区间表（生成，勿手改；见 scripts/gen_width_tables.py）
 terminal.mbt    L0 画布 → 终端字节流：首帧全量、之后只吐脏格
 alt_screen.mbt  L0 alternate screen 的进/出序列，退出幂等、异常也还原
 layout.mbt      L1 分栏布局引擎：面板矩形 + 边框 + 内容区 + 帮助浮层让位
@@ -114,15 +115,27 @@ moon run --target native cmd/main -- demo-image.tar --tui --layer 0
 
 ## 设计取舍
 
+## 设计取舍
+
 ### 按列而不是按字符排版
 
 CJK 占两列、组合字符零宽，`width.mbt` 把这件事钉住；
 只按 `String::length` 排版，中文目录名会把整栏对齐带歪。
 
-自研而不是引 `unicodewidth` / `grapheme`：本轮画面只要 ASCII + 常见 CJK，
-引第三方会把「文本测量」这个本可独立验收的点绑死在别人的版本上。
-真要做 grapheme cluster（ZWJ emoji 序列）再单开 issue 换实现——
-接口只有 `display_width` / `char_width`，换起来不牵动画面代码。
+宽度按 grapheme cluster，不是按码点：一个 ZWJ 家族 emoji（`👨‍👩‍👧‍👦`）在终端里
+只画一个字形、占 2 列，按码点相加会算成 8 列。`width.mbt` 先划 cluster，
+簇的宽度由簇内第一个有宽度的码点定；`screen.mbt` 的格子因此存字符串，
+一个 cluster 完整落进首格，截断只切在簇边界上。
+
+自研 cluster 划分，只借零宽表：`kawaz/grapheme`（cluster）与
+`moonbit-community/unicodewidth`（宽度）都不引——后者钉着 `x@0.4.44`，
+与本仓 `x@0.5.5` 有收敛风险，引库也把「文本测量」这个可独立验收的点绑死在别人的版本上。
+唯一借来的是零宽码点表：`scripts/gen_width_tables.py` 从 unicodewidth 的打包表
+筛出 Mn/Me/Cf（Unicode 16.0），生成 `width_tables.mbt`，表落地后本仓不再依赖它。
+cluster 划分取 UAX #29 里对宽度有影响的子集（GB9/GB9a/GB12/GB13），不做完整规则。
+
+VS16 会把窄字抬成两列：`1` + VS16 + U+20E3（keycap）在终端里占 2 列，
+簇宽在遇到 VS16 且当前为 1 列时会抬到 2 列。
 
 ### 边框用 ASCII
 
@@ -154,7 +167,17 @@ alternate screen 是独立缓冲区，正常退出回到主屏、原来的输出
 ### 不做样式
 
 前景/背景/加粗本轮用不到，带上它会让「缓冲 diff」和「SGR 序列拼接」缠在一起。
-`Screen` 只存字符，焦点靠标题栏的 `>` 标记表达（不用反白），要用色再加一层。
+`Screen` 只存字符串格子（一个 cluster 一格），焦点靠标题栏的 `>` 标记表达（不用反白），
+要用色再加一层。
+
+### 换层用回调注入
+
+视图只管「光标在哪」，取另一层的树是数据源的事，键盘逻辑因此完全不依赖 `layer_tree`。
+
+### 拍平可见行
+
+树是嵌套的、按键是线性的，每帧现算可见行既慢又难保证光标稳定；
+一次性算出来，键盘只在数组上移动光标。
 
 ### 量化到可测的部分
 
@@ -174,6 +197,5 @@ moon test --target native -p tui
 
 - 样式与配色
 - 鼠标事件（tty 已解出，但本轮不接）
-- grapheme cluster 级别的文本测量
 - 边看边改（TUI 是只读视图，不产生镜像变更）
 - 多标签 / 多镜像并列（一次只看一个镜像）

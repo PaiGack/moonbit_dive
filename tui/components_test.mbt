@@ -18,16 +18,16 @@ fn pane_fixture(focused~ : Bool = false) -> (Screen, Pane) {
 test "paint_pane draws a box around the pane" {
   let (screen, pane) = pane_fixture()
   paint_pane(screen, pane, false)
-  assert_eq(screen.get(0, 0), '+')
-  assert_eq(screen.get(9, 0), '+')
-  assert_eq(screen.get(0, 5), '+')
-  assert_eq(screen.get(9, 5), '+')
+  assert_eq(screen.get(0, 0), "+")
+  assert_eq(screen.get(9, 0), "+")
+  assert_eq(screen.get(0, 5), "+")
+  assert_eq(screen.get(9, 5), "+")
   // 顶边：`+- files +`——标题从第 3 列起，占住中间的横线
-  assert_eq(screen.get(1, 0), '-')
-  assert_eq(screen.get(2, 0), ' ')
-  assert_eq(screen.get(8, 0), ' ')
-  assert_eq(screen.get(0, 3), '|')
-  assert_eq(screen.get(9, 3), '|')
+  assert_eq(screen.get(1, 0), "-")
+  assert_eq(screen.get(2, 0), " ")
+  assert_eq(screen.get(8, 0), " ")
+  assert_eq(screen.get(0, 3), "|")
+  assert_eq(screen.get(9, 3), "|")
 }
 
 ///|
@@ -48,11 +48,11 @@ test "paint_pane marks the focused pane in its title" {
 test "clear_pane keeps the border intact" {
   let (screen, pane) = pane_fixture()
   paint_pane(screen, pane, false)
-  screen.set(4, 3, 'x')
+  screen.set(4, 3, "x")
   clear_pane(screen, pane)
-  assert_eq(screen.get(4, 3), ' ')
-  assert_eq(screen.get(0, 0), '+')
-  assert_eq(screen.get(0, 3), '|')
+  assert_eq(screen.get(4, 3), " ")
+  assert_eq(screen.get(0, 0), "+")
+  assert_eq(screen.get(0, 3), "|")
 }
 
 ///|
