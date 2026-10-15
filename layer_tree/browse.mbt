@@ -38,6 +38,17 @@ pub(all) struct LayerView {
   tree : FileTree
   /// 该层的 diff（相对第 `layer - 1` 层；第 0 层与空树比）
   diff : Diff
+  /// 聚合 diff：第 `layer` 层的树相对**第 0 层之前**（空树）的整体差异。
+  ///
+  /// 原版 dive 的 `CompareAllLayers` 档位就是它，且口径是「这期间被碰过」：
+  /// 第 0 层写过、第 2 层又改回原样的路径仍算 `modified`（见 `diff_aggregate`）。
+  aggregate : Diff
+  /// 聚合档下每一层的体积（该层树上所有文件字节合计），下标即层号。
+  ///
+  /// 有了它，「聚合档的体积」也能按同一条比较区间算：
+  /// `[:l].last() - ([:base].last() ?? 0)` 就是「这段区间整体涨了多少」，
+  /// 与聚合 diff 落在同一把尺子上（`aggregate_size_delta`）。
+  layer_sizes : Array[Int32]
 } derive(Debug)
 
 ///|
@@ -96,7 +107,11 @@ pub fn browse_decompressed(
   decompressed : DecompressedLayers,
 ) -> Array[LayerView] {
   let tree = FileTree::new()
-  let views = []
+  let views : Array[LayerView] = []
+  let diffs : Array[Diff] = []
+  let layer_sizes : Array[Int32] = []
+  // 聚合档的比较起点：第 0 层之前的空树；第 0 层应用完之后换成它的快照。
+  let empty = FileTree::new()
   for index, raw in decompressed.raws {
     let before = tree.snapshot()
     // 已经解压过的层不该再出 tar 错：真出了就是「解压产物」这一契约被破坏，
@@ -105,10 +120,54 @@ pub fn browse_decompressed(
       Ok(_) => ()
       Err(err) => abort("applying decompressed layer \{index} failed: \{err}")
     }
-    let diff = diff_snapshots(before, tree.snapshot(), index - 1, index)
-    views.push({ layer: index, tree: tree.snapshot(), diff, })
+    let snapshot = tree.snapshot()
+    let diff = diff_snapshots(before, snapshot, index - 1, index)
+    // 逐层 diff 先入账：聚合档吃的就是「区间内各层的 diff」，含当前这一层
+    diffs.push(diff)
+    // 聚合档复用同一次快照与已经算好的逐层 diff，不回 tar 重新叠层
+    let aggregate = if index == 0 {
+      diff_aggregate(empty, snapshot, diffs, -1, 0)
+    } else {
+      diff_aggregate(views[0].tree, snapshot, diffs, 0, index)
+    }
+    layer_sizes.push(total_file_bytes(snapshot))
+    views.push({ layer: index, tree: snapshot, diff, aggregate, layer_sizes, })
   }
   views
+}
+
+///|
+/// 树上所有文件节点的字节合计（目录、链接按 0 计）。
+fn total_file_bytes(tree : FileTree) -> Int32 {
+  let mut total = 0
+  for path, node in tree.nodes {
+    if path != "/" && node.is_file() {
+      total = total + node.size
+    }
+  }
+  total
+}
+
+///|
+/// 聚合档的体积差：从 `base` 层（不含，`-1` 表示空树）到当前层的整体涨跌。
+///
+/// 与聚合 diff 同一条区间：`base` 取 `layer - 1` 时答案与逐层档一致
+/// （拿某一层的快照差），取 `-1` 时就是「相对空树一共写了多少」。
+/// `layer_sizes` 只到 `self.layer`，越界时退化成 0，不把「没有的层」当成一份数据。
+pub fn LayerView::aggregate_size_delta(self : LayerView, base : Int32) -> Int32 {
+  let after = self.layer_size(self.layer)
+  let before = if base < 0 { 0 } else { self.layer_size(base) }
+  after - before
+}
+
+///|
+/// 视图里某一层的体积；越界给 0。
+pub fn LayerView::layer_size(self : LayerView, layer : Int32) -> Int32 {
+  if layer < 0 || layer >= self.layer_sizes.length() {
+    0
+  } else {
+    self.layer_sizes[layer]
+  }
 }
 
 ///|
@@ -122,6 +181,24 @@ pub fn LayerView::changed_paths(self : LayerView) -> Array[String] {
     result.push(path)
   }
   for path in self.diff.removed {
+    result.push(path)
+  }
+  result.sort_by(path_order)
+  result
+}
+
+///|
+/// 聚合档下「这段区间整体变了什么」的路径清单，口径同 `changed_paths`，
+/// 只是读 `aggregate` 而不是 `diff`。
+pub fn LayerView::aggregate_changed_paths(self : LayerView) -> Array[String] {
+  let result = []
+  for path in self.aggregate.added {
+    result.push(path)
+  }
+  for path in self.aggregate.modified {
+    result.push(path)
+  }
+  for path in self.aggregate.removed {
     result.push(path)
   }
   result.sort_by(path_order)

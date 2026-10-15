@@ -91,3 +91,17 @@ test "tui flag defaults to off and is independent" {
   assert_eq(with_tui.layer, None)
   assert_eq(with_tui.format, "text")
 }
+
+///|
+/// `--aggregate` 默认关；打开后不影响其它开关的语义（issue #69）。
+test "aggregate flag defaults to off and is independent" {
+  let options = parse_options(["demo.tar"])
+  assert_false(options.aggregate)
+  let with_aggregate = parse_options(["demo.tar", "--aggregate", "--layer", "2"])
+  assert_true(with_aggregate.aggregate)
+  assert_eq(with_aggregate.layer, Some(2))
+  // 顺手开 `--aggregate` 不该改掉门禁/视图的开关
+  assert_false(with_aggregate.efficiency)
+  assert_false(with_aggregate.tui)
+  assert_eq(with_aggregate.format, "text")
+}

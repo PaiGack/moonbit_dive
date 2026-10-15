@@ -44,6 +44,20 @@ pub(all) enum RowStatus {
 } derive(Eq, Debug)
 
 ///|
+/// diff 的**比较档位**（对齐原版 dive 的 `viewmodel.LayerCompareMode`）：
+/// 树本身只有一棵，换档位换的是「拿哪一段区间的 diff 给行上色」。
+///
+/// - `Single`：当前层相对上一层（现状，`Ctrl+L`）
+/// - `Aggregate`：当前层相对第 0 层之前的整段累积（`Ctrl+A`）
+///
+/// 分开一个枚举而不是一个 `Bool`：状态行、标题、帮助浮层都要把当前档位说出来，
+/// 「同一条路径为什么这次是绿的、下次是黄的」得有个名字可指。
+pub(all) enum CompareMode {
+  Single
+  Aggregate
+} derive(Eq, Debug)
+
+///|
 /// 看树的状态机。
 ///
 /// `collapsed` 存「被收起的目录路径」而不是「展开过的」：新出现的目录默认展开，
@@ -67,6 +81,10 @@ pub(all) struct TreeView {
   mut page_height : Int32
   /// 一行是按「名字」还是按「大小」排序（`data_set_sort` 写，`all_rows` 按它重排）
   mut sort_by_size : Bool
+  /// 当前比较档位（渲染上色与标题都看它）
+  mut compare_mode : CompareMode
+  /// 聚合档下被删除的路径（不在树上，给删除列表用）；单层档只放该层的 `removed`
+  mut removed : Array[String]
 } derive(Debug)
 
 ///|
@@ -88,8 +106,13 @@ pub fn TreeView::from_tree_with_diff(
   layer : Int32,
   total_layers : Int32,
   by_size : Bool,
+  compare_mode~ : CompareMode = CompareMode::Single,
 ) -> TreeView {
   let rows = sort_rows(flatten(tree, diff), by_size)
+  let removed = match diff {
+    Some(diff) => diff.removed.copy()
+    None => []
+  }
   let view = {
     layer,
     total_layers,
@@ -100,6 +123,8 @@ pub fn TreeView::from_tree_with_diff(
     offset: 0,
     page_height: 0,
     sort_by_size: by_size,
+    compare_mode,
+    removed,
   }
   view.refresh()
   view
@@ -410,6 +435,23 @@ pub fn TreeView::clamp_offset(self : TreeView) -> Unit {
 pub fn TreeView::page_size(self : TreeView) -> Int32 {
   self.page_height
 }
+
+///|
+pub extend CompareMode with Eq::{equal, not_equal}
+
+///|
+pub extend CompareMode with @debug.Debug::{to_repr}
+
+///|
+pub impl Show for CompareMode with fn to_string(self : CompareMode) {
+  match self {
+    Single => "layer"
+    Aggregate => "aggregate"
+  }
+}
+
+///|
+pub extend CompareMode with Show::{to_string, output}
 
 ///|
 pub extend RowStatus with @debug.Debug::{to_repr}

@@ -56,8 +56,8 @@ test "README example" {
 | 压解压 | `gzip_decompress`、`inflate`、`crc32`、`decompress_layer` |
 | 层应用 | `apply_layer`、`apply_layer_with_media_type`、`apply_layers_with_diffs` |
 | whiteout | `whiteout_kind`、`WhiteoutKind`、`remove_subtree`、`make_opaque` |
-| 层间 diff | `diff_snapshots`、`diff_against_empty`、`Diff` |
-| 逐层浏览 | `browse_layers`、`browse_decompressed`、`LayerView`、`LayerView::subtree`、`LayerView::changed_paths` |
+| 层间 diff | `diff_snapshots`、`diff_against_empty`、`diff_aggregate`、`Diff` |
+| 逐层浏览 | `browse_layers`、`browse_decompressed`、`LayerView`、`LayerView::subtree`、`LayerView::changed_paths`、`LayerView::aggregate_changed_paths` |
 | 解压一次多路复用 | `decompress_layers`、`DecompressedLayers` |
 | 树渲染 | `render_tree`、`render_tree_between`、`render_diff` |
 
@@ -143,6 +143,51 @@ test "README decompress once" {
 
 `browse_layers` / `analyze_layers` 这些收原始字节的入口都保留，
 它们内部就是「先 `decompress_layers` 再走已解压入口」，语义完全一致。
+
+## 两个比较档位：当前层 vs 聚合
+
+`LayerView` 带两份 diff，对应原版 dive（Go）layer 面板的 `Ctrl+L` / `Ctrl+A`：
+
+| 字段 | 比较区间 | 看到的是什么 |
+|---|---|---|
+| `diff` | `[n-1, n]` | 这一层相对上一层改了什么 |
+| `aggregate` | `[第 0 层之前, n]` | 从 `L0` 到现在这一整段累积改了什么 |
+
+**换的是比较区间，不是数据源**：树只有一棵（`LayerView.tree`），切档位只换给行上色的那份 diff。
+
+聚合档不是「拿两棵树做一次 `diff_snapshots`」——那样「第 0 层写过、第 2 层又改回原样」
+的路径在两个端点上字节一模一样，会被判成没动过。它按区间**累积**：
+
+- 取区间内各层 diff 里被碰过的全部路径
+- 按两端的树归类：只在终点 -> `added`，两头都在 -> `modified`，只在起点 -> `removed`
+- 区间内碰过、最后两头都不在的路径丢掉（视图画的是终点的树，没有行可以落）
+- 没被直接碰过、但子树里有改动的目录并入 `modified`
+  （对齐 dive 的 `deriveDiffType`：父目录合并子节点的 diff）
+
+被删的路径不在终点的树上，所以 `aggregate.removed` 是「删除」唯一的出口：
+CLI 的 `--aggregate` 单列一段，TUI 用 `d` 打开一张可滚动的列表。
+
+```mbt check
+///|
+test "README aggregate compare" {
+  let l0 = build_tar([Dir("app"), File("app/main", "v1")])
+  let l1 = build_tar([File("app/main", "v2-longer")])
+  // 第 2 层改回与第 0 层一模一样的字节
+  let l2 = build_tar([File("app/main", "v1")])
+  let views = browse_layers([l0, l1, l2]) catch { err => fail(err.to_string()) }
+  // 逐层档：第 2 层相对第 1 层动了这条路径
+  assert_eq(views[2].diff.modified, ["/app/main"])
+  // 聚合档：与第 0 层比字节一样，但这段区间里碰过，仍算 modified
+  assert_eq(views[2].aggregate.modified, ["/app", "/app/main"])
+  assert_eq(views[2].aggregate.removed, [])
+  // 区间起点是第 0 层的树，体积差就是「从第 0 层到现在涨了多少」
+  assert_eq(views[2].aggregate_size_delta(0), 0)
+}
+```
+
+`aggregate_size_delta(base)` 是**端点差**（终点的树减去起点的树），
+与聚合 diff 的「碰过即算」不是同一把尺子：被改回原样的路径在 diff 里是 `modified`，
+在体积差里贡献 0。两个数各有各的用处，别互相印证。
 
 ## 设计要点
 

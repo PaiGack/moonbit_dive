@@ -34,6 +34,8 @@ pub let default_render_options : RenderOptions
 
 pub fn diff_against_empty(FileTree, Int) -> Diff
 
+pub fn diff_aggregate(FileTree, FileTree, Array[Diff], Int, Int) -> Diff
+
 pub fn diff_snapshots(FileTree, FileTree, Int, Int) -> Diff
 
 pub fn gzip_compress(BytesView) -> Bytes
@@ -217,8 +219,13 @@ pub(all) struct LayerView {
   layer : Int
   tree : FileTree
   diff : Diff
+  aggregate : Diff
+  layer_sizes : Array[Int]
 } derive(@debug.Debug)
+pub fn LayerView::aggregate_changed_paths(Self) -> Array[String]
+pub fn LayerView::aggregate_size_delta(Self, Int) -> Int
 pub fn LayerView::changed_paths(Self) -> Array[String]
+pub fn LayerView::layer_size(Self, Int) -> Int
 pub fn LayerView::output(Self, &Logger) -> Unit
 pub fn LayerView::subtree(Self, String) -> FileTree
 pub fn LayerView::to_repr(Self) -> @debug.Repr

@@ -300,3 +300,161 @@ async test "from-image with --no-pull never fetches" {
   @docker_cli.remove_temp_bytes(archive_path)
   @docker_cli.remove_fake_cli_dir(dir)
 }
+
+///|
+/// 三层内存来源：L1 改写 `/etc/hosts`，L2 把它改回 L0 的字节并删掉 `/etc/old`。
+///
+/// 走 `ImageSource::from_oci_layout` 而不是手拼结构：`ImageSource` 的字段是
+/// 包内可见，内存造来源的公开入口就是它。
+fn image_of_layers(
+  name : String,
+  layers : Array[Bytes],
+) -> @image_ci.ImageSource raise {
+  // config 要带 `rootfs`：`from_oci_layout` 会解析它（真 OCI layout 从来都有）
+  @image_ci.ImageSource::from_oci_layout(
+    name, "{}", "{\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[]}}",
+    layers,
+  )
+}
+
+///|
+/// 解析一段 argv（不含程序名），与 `cli_wbtest.mbt` 同一口径。
+fn options_of(args : Array[String]) -> Options raise {
+  Options::from_matches(
+    cli().parse(argv=args) catch {
+      err => fail("should parse: \{err}")
+    },
+  )
+}
+
+///|
+/// 只读视图的文本：`render_layer_view` 是纯函数，测试直接断言它的输出，
+/// 不必去截 `println` 的 stdout。
+fn layer_view_text(
+  options : Options,
+  layers : Array[BytesView],
+) -> String raise {
+  let views = @layer_tree.browse_layers(layers) catch {
+    err => raise CommandError::Analysis(err.to_string())
+  }
+  let wanted = match options.layer {
+    Some(layer) => layer
+    None => views.length() - 1
+  }
+  if wanted < 0 || wanted >= views.length() {
+    raise CommandError::Analysis("layer \{wanted} out of range")
+  }
+  render_layer_view(views[wanted], options, views.length())
+}
+
+///|
+/// 聚合档与单层档的差别在 CLI 上也成立：同一条路径「被改回原样」时，
+/// `--aggregate` 仍把它算进 `modified`，不给开关时按逐层口径（默认行为不变）。
+test "aggregate flag switches the compare range of the layer view" {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::File("etc/old", "x"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.2 longer"),
+  ])
+  let l2 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::Whiteout("etc", "old"),
+  ])
+  let layers : Array[BytesView] = [l0, l1, l2]
+
+  // 单层档：第 2 层相对第 1 层改了 hosts（尺寸不同），old 被删
+  let single = layer_view_text(options_of(["demo.tar", "--layer", "2"]), layers)
+  assert_true(single.contains("compare: layer"))
+  assert_true(single.contains("L1 -> L2"))
+  assert_true(single.contains("removed (not in the tree):"))
+  assert_true(single.contains("/etc/old"))
+
+  // 聚合档：与第 0 层之前比，hosts 是「这期间被碰过」，old 仍然是被删的那条
+  let aggregated = layer_view_text(
+    options_of(["demo.tar", "--layer", "2", "--aggregate"]),
+    layers,
+  )
+  assert_true(aggregated.contains("compare: aggregate"))
+  assert_true(aggregated.contains("L0 -> L2"))
+  assert_true(aggregated.contains("/etc/hosts"))
+  assert_true(aggregated.contains("/etc/old"))
+  assert_true(aggregated.contains("removed (not in the tree):"))
+}
+
+///|
+/// 默认档位下 `--layer` 的输出与从前一致：不给 `--aggregate` 时不多不少。
+test "the layer view is unchanged without the aggregate flag" {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "bb"),
+    @layer_tree.TarEntrySpec::File("etc/new", "n"),
+  ])
+  let layers : Array[BytesView] = [l0, l1]
+  let text = layer_view_text(options_of(["demo.tar", "--layer", "1"]), layers)
+  assert_true(text.contains("layer 1 of 2"))
+  assert_true(text.contains("compare: layer"))
+  // 这一档没有删除：不该多出那一段
+  assert_false(text.contains("removed (not in the tree):"))
+}
+
+///|
+/// `--aggregate` 的 JSON：`compare`、`aggregateBytes`、`base` 三个新字段，
+/// 既有字段（tree / layer / diff 三组）一个都没动。
+test "aggregate json adds the compare fields" {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "bb"),
+  ])
+  let layers : Array[BytesView] = [l0, l1]
+  let json = layer_view_json_for(
+    options_of(["demo.tar", "--layer", "1", "--aggregate", "--format", "json"]),
+    layers,
+  )
+  assert_true(json.contains("\"compare\": \"aggregate\""))
+  // 聚合区间是「第 0 层之前 -> 第 1 层」：多写了 1 个字节（"a" -> "bb"）
+  assert_true(json.contains("\"aggregateBytes\": 1"))
+  assert_true(json.contains("\"layer\": 1"))
+  // 聚合区间的起点是第 0 层的树
+  assert_true(json.contains("\"base\": 0"))
+  // 既有字段照旧在
+  assert_true(json.contains("\"tree\":"))
+  assert_true(json.contains("\"modified\":"))
+}
+
+///|
+/// 与 `layer_view_text` 同形，只是走后者的 JSON 分支。
+fn layer_view_json_for(
+  options : Options,
+  layers : Array[BytesView],
+) -> String raise {
+  let views = @layer_tree.browse_layers(layers) catch {
+    err => raise CommandError::Analysis(err.to_string())
+  }
+  layer_view_to_json(
+    views[views.length() - 1],
+    compare_diff(views[views.length() - 1], options),
+    options,
+  ).stringify(indent=2)
+}
+
+///|
+/// `image_of_layers` 也要有人用：钉住内存来源能造出「多层 + 无压缩」的镜像。
+test "image_of_layers builds a multi-layer source" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
+  ])
+  let source = image_of_layers("demo.tar", [layer, layer]) catch {
+    err => fail("image source: \{err}")
+  }
+  assert_eq(source.layers.length(), 2)
+  assert_eq(source.format, "oci-layout")
+  // 层字节原样带出来，没有压缩信息时按未压缩处理
+  assert_true(source.layers[0].data.length() > 0)
+}

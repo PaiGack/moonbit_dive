@@ -24,6 +24,12 @@ pub(all) struct Frame {
   detail_scroll : Viewport
   /// 帮助浮层是否展开（`layout.help_visible` 已经收了「放不下」的情况）
   help_visible : Bool
+  /// 删除列表浮层是否展开（与帮助共用同一块浮层位置，两者不同时开）
+  removed_visible : Bool
+  /// 删除列表的行
+  removed : Array[String]
+  /// 删除列表的滚动位置
+  removed_scroll : Viewport
 } derive(Debug)
 
 ///|
@@ -71,7 +77,7 @@ pub(all) struct DetailEntry {
 ///|
 /// 画一整帧。
 ///
-/// 顺序：标题行 → 两个主面板的框 → 主体内容 → 状态行 → 帮助浮层。
+/// 顺序：标题行 → 两个主面板的框 → 主体内容 → 状态行 → 浮层（帮助 / 删除列表）。
 /// 框先画是因为内容只写内容区，不会盖住框；状态行最后保证它压在所有东西之上
 /// （窄屏时主体可能与它重叠）。
 pub fn draw(screen : Screen, frame : Frame) -> Unit {
@@ -84,9 +90,63 @@ pub fn draw(screen : Screen, frame : Frame) -> Unit {
   draw_tree_pane(screen, layout, frame)
   draw_detail_pane(screen, layout, frame)
   draw_status_bar(screen, layout, frame)
-  if frame.help_visible {
+  if frame.removed_visible {
+    draw_removed(screen, layout, frame)
+  } else if frame.help_visible {
     draw_help(screen, layout, frame)
   }
+}
+
+///|
+/// 删除列表浮层（`d`）：聚合档下 `removed` 可能有几百条，它们不在树上、
+/// 没有行可以标红，所以在树的位置上单独给一张可滚动的列表。
+///
+/// 与详情面板一样走 `Viewport`：内容长度每帧会变（换档 / 换层），
+/// 先把计数对齐再取窗口，滚动偏移因此不会指到不存在的行上。
+fn draw_removed(screen : Screen, layout : Layout, frame : Frame) -> Unit {
+  let pane = match layout.pane(PaneId::Help) {
+    Some(pane) => pane
+    None => return
+  }
+  clear_pane(screen, pane)
+  let width = pane.inner_width()
+  let height = pane.inner_height()
+  let (origin_col, origin_row) = (pane.inner_left(), pane.inner_top())
+  let count = frame.removed.length()
+  let lines : Array[String] = if count == 0 {
+    ["(nothing was removed in this range)"]
+  } else {
+    let lines = ["removed \{count} path(s) - not in the tree, listed only here"]
+    for path in frame.removed {
+      lines.push(path)
+    }
+    lines
+  }
+  frame.removed_scroll.set_content(lines.length())
+  for row = 0; row < height; row = row + 1 {
+    match frame.removed_scroll.line_at(row) {
+      Some(index) => {
+        let style = if count > 0 && index > 0 {
+          style_removed
+        } else {
+          style_default
+        }
+        screen.write_styled(
+          origin_col,
+          origin_row + row,
+          truncate_to_width(lines[index], width),
+          style,
+        )
+      }
+      None => ()
+    }
+  }
+  paint_overflow_hint(
+    screen,
+    pane,
+    frame.removed_scroll.offset + height,
+    lines.length(),
+  )
 }
 
 ///|
@@ -96,12 +156,16 @@ fn is_focused_pane(frame : Frame, id : PaneId) -> Bool {
 }
 
 ///|
-/// 标题行：左对齐镜像名，右对齐 `LAYER x/y`。
+/// 标题行：左对齐镜像名，右对齐 `LAYER x/y` 与当前 diff 档位。
 ///
 /// 全屏下标题行不画框（它只有一行），保持与状态行的对称。
+///
+/// 档位必须写出来：「同一条路径为什么这次是绿的、下次是黄的」全靠它解释。
+/// 单层档写作 `layer`，聚合档写作 `agg L0..Ln`——后者顺带把比较区间的起点
+/// 说清楚（第 0 层之后的变化）。
 fn draw_header(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   screen.clear_row(layout.header_row)
-  let mark = "LAYER \{frame.view.layer + 1}/\{frame.view.total_layers}"
+  let mark = "LAYER \{frame.view.layer + 1}/\{frame.view.total_layers}  \{compare_label(frame.view)}"
   let mark_width = display_width(mark)
   if mark_width >= layout.cols {
     // 太窄就只放层号，别让标题把层号挤没
@@ -116,6 +180,23 @@ fn draw_header(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   let title = "dive  \{frame.image}"
   screen.write_text(0, layout.header_row, pad_to_width(title, title_width))
   screen.write_text(layout.cols - mark_width, layout.header_row, mark)
+}
+
+///|
+/// 档位标签：单层档是 `layer`，聚合档是 `agg L0..Ln`。
+///
+/// 聚合档的区间写全而不是只写 `aggregate`：起点是第 0 层（`L0` 表示「第 0 层
+/// 之前」那一侧为空），读的人才知道自己在跟谁比。
+fn compare_label(view : TreeView) -> String {
+  match view.compare_mode {
+    Single => "layer"
+    Aggregate =>
+      if view.layer == 0 {
+        "agg L0"
+      } else {
+        "agg L0..L\{view.layer}"
+      }
+  }
 }
 
 ///|
@@ -365,14 +446,18 @@ fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
     // 提示要短到能塞进 80 列的窄屏：`q quit` 被截掉时，
     // 用户最容易以为「退不出去」（鼠标提示在 `?` 的浮层里，见 `draw_help`）
     Focus::Tree =>
-      "↑↓ move  click  ←→ fold  [ ] layer  s sort  Tab focus  ?  q quit"
+      "↑↓ move  ^A/^L diff  d removed  [ ] layer  s sort  ?  q quit"
     Focus::Detail => "↑↓ / wheel scroll  Tab focus  ?  q quit"
   }
   let order = if frame.view.sort_by_size { "size" } else { "name" }
-  let position = if frame.view.visible.length() == 0 {
+  let mut position = if frame.view.visible.length() == 0 {
     "0/0 \{order}"
   } else {
     "\{frame.view.cursor + 1}/\{frame.view.visible.length()} \{order}"
+  }
+  // 删除条数贴着位置显示：它是「这一档里少了什么」的唯一入口（`d` 展开列表）
+  if frame.view.removed.length() > 0 {
+    position = "\{frame.view.removed.length()} removed  \{position}"
   }
   let position_width = display_width(position)
   let position_start = layout.cols - position_width
@@ -399,7 +484,7 @@ fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
 /// 图例的字面量与颜色：两组「符号 + 词」，颜色与树里的行一一对应。
 ///
 /// 只列树里真会上色的两类：删除的路径已经不在树上，没有行可以标红，
-/// 图例里放个永远不出现的 `- remove` 只会让人找它。
+/// 它由状态行的 `N removed` 与 `d` 的列表回答，颜色图例留给树上真有的两类。
 ///
 /// 单字母 + 一个词，是为了在 80 列里也放得下——写全 `added` / `modified`
 /// 状态行就剩不下按键提示了。
@@ -453,7 +538,8 @@ fn draw_help(screen : Screen, layout : Layout, frame : Frame) -> Unit {
     "PgUp / PgDn    page", "[ ]            previous / next layer", "Tab            switch focus (tree ↔ detail)",
     "?              toggle this panel", "q / Esc        quit", "click          select; on a folder also fold / unfold",
     "wheel          scroll the pane under the pointer", "right click    fold / unfold the row under the pointer",
-    "s              sort by size (again: by name)",
+    "s              sort by size (again: by name)", "Ctrl+A         diff vs. everything since L0 (aggregate)",
+    "Ctrl+L         diff vs. the previous layer only", "d              list the paths removed in this range",
   ]
   let height = pane.inner_height()
   let (origin_col, origin_row) = (pane.inner_left(), pane.inner_top())
