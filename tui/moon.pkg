@@ -1,0 +1,20 @@
+import {
+  "PaiGack/dive/layer_tree",
+  "PaiGack/dive/image_analysis",
+  "moonbit-community/tty",
+  "moonbit-community/tty/input",
+  "moonbitlang/async",
+  "moonbitlang/async/io" @async/io,
+  "moonbitlang/core/debug",
+}
+
+import {
+  "moonbitlang/async/pipe" @async/pipe,
+} for "wbtest"
+
+// tty 只支持 native（见 tty 的 moon.pkg），本包因此同样收窄到 native。
+// 与 docker_cli / cmd/main 同一套约定：CI 与本地构建都显式 `--target native`。
+
+warnings = "-test_unqualified_package"
+
+supported_targets = "-all+native"

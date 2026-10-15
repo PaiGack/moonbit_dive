@@ -37,12 +37,71 @@ async fn main {
       return
     }
   }
+  // `--tui` 走交互式看树：它不是「一份报告」，而是把同一批数据接成可上下走的视图，
+  // 因此单独一条分支，不混进 `run` 的判定链路。退出码只有 0 / 2。
+  if options.tui {
+    run_tui(options, source) catch {
+      err => {
+        report_error(err)
+        exit_process(@image_ci.exit_config_error)
+      }
+    }
+    exit_process(@image_ci.exit_ok)
+  }
   match run(options, source) {
     Ok(code) => exit_process(code)
     Err(error) => {
       report_error(error)
       exit_process(@image_ci.exit_config_error)
     }
+  }
+}
+
+///|
+/// `--tui` 分支：打开交互式看树。
+///
+/// 数据全部来自既有链路（`browse_layers` + `image_analysis`），
+/// 这里只做「解出字节 → 建视图状态 → 进主循环」。
+/// 终端不可用时按「运行错误」退 2——而不是静默回落到文本输出，
+/// 否则脚本里 `--tui` 会莫名其妙地变成一条一次性的报告。
+async fn run_tui(
+  options : Options,
+  source : @image_ci.ImageSource,
+) -> Unit raise CommandError {
+  let tty = @tty.Tty::stdio() catch {
+    _ =>
+      raise CommandError::Analysis(
+        "--tui needs a terminal (stdio is not a tty)",
+      )
+  }
+  if source.layers.is_empty() {
+    raise CommandError::Image("image has no layers")
+  }
+  let layers : Array[BytesView] = []
+  for layer in source.layers {
+    let raw = layer.raw_bytes() catch {
+      err => raise CommandError::Image(err.to_string())
+    }
+    layers.push(raw)
+  }
+  let views = @layer_tree.browse_layers(layers) catch {
+    err => raise CommandError::Analysis(err.to_string())
+  }
+  // 详情面板的数字来自一次完整分析；拿不到就退化成「没有详情」，画面照常可用
+  let details = match @tui.analysis_of_layers(layers) {
+    Some((analysis, report)) => Some(@tui.detail_source_of(analysis, report))
+    None => None
+  }
+  let initial_layer = match options.layer {
+    Some(layer) => layer
+    None => views.length() - 1
+  }
+  let state = @tui.AppState::new(views, details, options.image, initial_layer~)
+  // `with_raw_mode` 保证退出时把终端状态还原，哪怕主循环里抛错。
+  // 它自己会抛 OSError（终端状态拿不到时），统一折成「分析错误」好让退出码收敛。
+  tty.with_raw_mode(() => @tui.run_app(tty, state)) catch {
+    err =>
+      raise CommandError::Analysis("cannot run the interactive browser: \{err}")
   }
 }
 
@@ -107,6 +166,10 @@ fn cli() -> @argparse.Command {
         "verbose",
         about="print the docker backend probing log to stderr (with --from-image)",
       ),
+      @argparse.FlagArg(
+        "tui",
+        about="open the interactive layer browser (native only, needs a real terminal)",
+      ),
     ],
     positionals=[
       @argparse.PositionArg(
@@ -133,6 +196,8 @@ struct Options {
   no_pull : Bool
   /// 打 `docker_cli` 的后端探测记录
   verbose : Bool
+  /// 打开交互式看树（native only）
+  tui : Bool
   top : Int32
   /// 单次 docker 调用的超时（毫秒）。刻意**不接受 0**：
   /// 无超时正是「半死 socket → 静默挂住」的老问题，不给用户留这个坑
@@ -159,6 +224,7 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     from_image: flag_of(matches, "from-image"),
     no_pull: flag_of(matches, "no-pull"),
     verbose: flag_of(matches, "verbose"),
+    tui: flag_of(matches, "tui"),
     top: top_of(matches),
     docker_timeout_ms: docker_timeout_of(matches),
   }
