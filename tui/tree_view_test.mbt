@@ -186,6 +186,51 @@ test "tree view handles an empty tree" {
 }
 
 ///|
+/// 建一棵树 + 本层 diff，用于状态着色测试。
+fn layered_view() -> TreeView raise {
+  let base = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::File("etc/old", "x"),
+  ])
+  let top = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.2 longer"),
+    @layer_tree.TarEntrySpec::File("etc/new", "y"),
+    @layer_tree.TarEntrySpec::Whiteout("etc", "old"),
+  ])
+  let layers : Array[BytesView] = [base, top]
+  let views = @layer_tree.browse_layers(layers) catch {
+    err => fail(err.to_string())
+  }
+  // 第 1 层的 diff：hosts 改写、new 新增、old 被 whiteout 删掉
+  TreeView::from_tree_with_diff(views[1].tree, Some(views[1].diff), 1, 2, false)
+}
+
+///|
+/// 每行的状态来自这一层的 diff：新增 / 改写 / 没动过。
+test "tree view maps the layer diff onto row status" {
+  let view = layered_view()
+  let status = fn(path) {
+    view.all_rows[view.index_of_path(path).unwrap()].status
+  }
+  assert_eq(status("/etc/new"), RowStatus::Added)
+  assert_eq(status("/etc/hosts"), RowStatus::Modified)
+  assert_eq(status("/etc"), RowStatus::Unchanged)
+  // `old` 被 whiteout 删掉了，不在树上：没有行给它上色，状态里也不留 `Removed`
+  assert_true(view.index_of_path("/etc/old") is None)
+}
+
+///|
+/// 不给 diff 时一律 `Unchanged`（颜色不上），旧调用点行为不变。
+test "tree view without a diff keeps every row unchanged" {
+  let tree = sample_tree()
+  let view = TreeView::from_tree(tree, 0, 3)
+  for row in view.all_rows {
+    assert_eq(row.status, RowStatus::Unchanged)
+  }
+}
+
+///|
 /// 坐标反查与「行下标 → 屏幕行」互逆：画在第 `row` 行的项，
 /// 反查 `row` 一定拿回它自己。
 test "tree view maps screen rows back to indices" {
@@ -252,7 +297,7 @@ test "tree view sorts rows by size on demand" {
   }
   let by_name = TreeView::from_tree(tree, 0, 1)
   assert_eq(by_name.visible[0].path, "/big")
-  let by_size = TreeView::from_tree_sorted(tree, 0, 1, true)
+  let by_size = TreeView::from_tree_with_diff(tree, None, 0, 1, true)
   assert_true(by_size.sort_by_size)
   // 目录 `small` 排最前，后面是文件按体积降序
   assert_eq(by_size.visible[0].path, "/small")

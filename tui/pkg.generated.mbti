@@ -292,7 +292,6 @@ pub fn TreeView::collapse(Self) -> Unit
 pub fn TreeView::cursor_path_from_visible(Self) -> String?
 pub fn TreeView::expand(Self) -> Unit
 pub fn TreeView::from_tree(@layer_tree.FileTree, Int, Int) -> Self
-pub fn TreeView::from_tree_sorted(@layer_tree.FileTree, Int, Int, Bool) -> Self
 pub fn TreeView::index_at_screen_row(Self, Int) -> Int?
 pub fn TreeView::index_of_path(Self, String) -> Int?
 pub fn TreeView::move_down(Self) -> Unit

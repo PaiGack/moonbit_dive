@@ -60,3 +60,50 @@ test "segment_string pads to the interval width" {
   assert_eq(segment, "a   ")
   assert_eq(display_width(segment), 4)
 }
+
+///|
+/// 基线的样式要一起拷过来：只拷字符的话下一帧会把「同字不同色」当成没变。
+test "clone_screen keeps styles but clears dirty" {
+  let screen = Screen::new(2, 1)
+  screen.set_styled(0, 0, "a", style_added)
+  let clone = clone_screen(screen)
+  assert_eq(clone.style_at(0, 0), style_added)
+  assert_eq(clone.style_at(1, 0), style_default)
+  assert_false(clone.dirty[0])
+}
+
+///|
+/// 样式不同也算脏——这是「样式进脏格判定」的最小断言。
+test "is_dirty treats a style-only change as a change" {
+  let current = Screen::new(2, 1)
+  let baseline = Screen::new(2, 1)
+  baseline.set(0, 0, "a")
+  current.set_styled(0, 0, "a", style_added)
+  assert_true(is_dirty(current, baseline, 0, 0))
+  // 样式写回默认值：脏了但没变
+  let same = Screen::new(2, 1)
+  let same_base = Screen::new(2, 1)
+  same.set_styled(1, 0, "x", style_added)
+  same_base.set_styled(1, 0, "x", style_added)
+  assert_false(is_dirty(same, same_base, 1, 0))
+}
+
+///|
+/// 脏段里逐格切样式：段首、段中、复位三处都要有字节。
+test "segment_string switches style inside a segment" {
+  let screen = Screen::new(4, 1)
+  screen.write_text(0, 0, "abcd")
+  screen.set_styled(0, 0, "a", style_added)
+  screen.set_styled(1, 0, "b", style_added)
+  screen.set_styled(2, 0, "c", style_modified)
+  let segment = segment_string(screen, 0, 3, 0)
+  assert_eq(segment, "\u{1b}[0m\u{1b}[92mab\u{1b}[0m\u{1b}[93mc\u{1b}[0md")
+}
+
+///|
+/// 全默样式的段不插任何 SGR（绝大多数画面走这条路径）。
+test "segment_string leaves a plain segment untouched" {
+  let screen = Screen::new(3, 1)
+  screen.write_text(0, 0, "abc")
+  assert_eq(segment_string(screen, 0, 2, 0), "abc")
+}

@@ -44,7 +44,8 @@ test "draw paints the status bar" {
   let (screen, frame) = render_fixture()
   draw(screen, frame)
   let status = screen.row_string(23)
-  assert_true(status.contains("q"))
+  // 提示右端可能被图例挤掉，开头与右侧的位置计数一定在
+  assert_true(status.contains("move"))
   assert_true(status.contains("1/3"))
   // 排序口径跟着光标位置一起显示（#51 的 `s` 键）
   assert_true(status.contains("name"))
@@ -260,4 +261,119 @@ test "draw scrolls the detail pane" {
   draw(screen, frame)
   assert_true(screen.row_string(2)[42:].contains("wasted"))
   assert_false(screen.row_string(2)[42:].contains("/etc/hosts"))
+}
+
+///|
+/// 建一个带 diff 的帧：`/etc/new` 新增、`/etc/hosts` 改写、`/etc` 没动过。
+fn diff_fixture() -> (Screen, Frame) raise {
+  let base = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::File("etc/old", "x"),
+  ])
+  let top = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.2 longer"),
+    @layer_tree.TarEntrySpec::File("etc/new", "y"),
+    @layer_tree.TarEntrySpec::Whiteout("etc", "old"),
+  ])
+  let layers : Array[BytesView] = [base, top]
+  let views = @layer_tree.browse_layers(layers) catch {
+    err => fail(err.to_string())
+  }
+  let view = TreeView::from_tree_with_diff(
+    views[1].tree,
+    Some(views[1].diff),
+    1,
+    2,
+    false,
+  )
+  let layout = Layout::compute(80, 24)
+  let screen = Screen::new(layout.cols, layout.rows)
+  (
+    screen,
+    {
+      layout,
+      view,
+      image: "demo:latest",
+      details: None,
+      focus: Focus::Tree,
+      detail_scroll: Viewport::new(0, 1),
+      help_visible: false,
+    },
+  )
+}
+
+///|
+/// 三类变化各上各的色；没动过的行暗一档（光标行除外，见下一个用例）。
+test "draw colours rows by their diff status" {
+  let (screen, frame) = diff_fixture()
+  draw(screen, frame)
+  let pane = frame.layout.pane(PaneId::Tree).unwrap()
+  let style_of = fn(path) {
+    let index = frame.view.index_of_path(path).unwrap()
+    let row = pane.inner_top() + index - frame.view.offset
+    screen.style_at(pane.inner_left(), row)
+  }
+  assert_eq(style_of("/etc/new"), style_added)
+  assert_eq(style_of("/etc/hosts"), style_modified)
+  // 没动过的 `/etc` 是暗一档；把光标挪开是为了不让它落在 `/etc` 上
+  frame.view.move_to(frame.view.index_of_path("/etc/new").unwrap())
+  draw(screen, frame)
+  assert_eq(style_of("/etc"), style_dim)
+}
+
+///|
+/// 光标行不换色：位置已经由 `>` 标出，再叠颜色会让两件事互相盖住。
+test "draw leaves the cursor row in the default style" {
+  let (screen, frame) = diff_fixture()
+  frame.view.move_to(frame.view.index_of_path("/etc/new").unwrap())
+  draw(screen, frame)
+  let pane = frame.layout.pane(PaneId::Tree).unwrap()
+  let row = pane.inner_top() + frame.view.cursor - frame.view.offset
+  assert_eq(screen.style_at(pane.inner_left(), row), style_default)
+  // 相邻的改写行仍然带色
+  let hosts = frame.view.index_of_path("/etc/hosts").unwrap()
+  assert_eq(
+    screen.style_at(
+      pane.inner_left(),
+      pane.inner_top() + hosts - frame.view.offset,
+    ),
+    style_modified,
+  )
+}
+
+///|
+/// 状态行带图例：三组「符号 + 词」各自上色，颜色不自解释。
+test "draw paints the diff legend in the status bar" {
+  let (screen, frame) = diff_fixture()
+  draw(screen, frame)
+  let status = screen.row_string(frame.layout.status_row)
+  assert_true(status.contains("+ add"))
+  assert_true(status.contains("~ change"))
+  // 每段只染自己的那几列，段间是默认样式，不是整行刷色
+  let style_at = fn(col) { screen.style_at(col, frame.layout.status_row) }
+  // 图例贴着右侧的位置计数排：`1/3` 占最后三列
+  let legend_width = display_width("+ add") + 2 + display_width("~ change")
+  // 位置计数是 `1/3 name`：图例贴在它左侧，中间空一格
+  let position_width = display_width("1/3 name")
+  let start = 80 - position_width - 1 - legend_width
+  assert_eq(style_at(start), style_added)
+  assert_eq(style_at(start + 4), style_added)
+  assert_eq(style_at(start + 5), style_default)
+  assert_eq(style_at(start + 7), style_modified)
+  // 位置计数本身不上色（`1/3 size` 占右端，取末列即可）
+  assert_eq(style_at(79), style_default)
+}
+
+///|
+/// 窄屏放不下图例时整块不画：状态行被啃掉一半比没有图例更难看。
+test "draw drops the whole legend when the status row is too narrow" {
+  let (_, base) = render_fixture()
+  // 15 列的图例 + 1 格间隔 + 位置计数，20 列里塞不下
+  let layout = Layout::compute(18, 10)
+  let narrow = Screen::new(layout.cols, layout.rows)
+  draw(narrow, { ..base, layout, })
+  let status = narrow.row_string(layout.status_row)
+  assert_false(status.contains("add"))
+  assert_false(status.contains("change"))
 }

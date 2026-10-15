@@ -48,12 +48,18 @@ pub fn AppState::new(
   initial_layer~ : Int32 = 0,
 ) -> AppState {
   let layer = clamp(initial_layer, 0, max(views.length() - 1, 0))
-  let tree = if views.length() > 0 {
-    views[layer].tree
+  // 没有层（空镜像）时给一棵空树：视图逻辑本身不需要「至少有一层」这个前提
+  let view = if views.length() > 0 {
+    TreeView::from_tree_with_diff(
+      views[layer].tree,
+      Some(views[layer].diff),
+      layer,
+      views.length(),
+      false,
+    )
   } else {
-    @layer_tree.FileTree::new()
+    TreeView::from_tree(@layer_tree.FileTree::new(), layer, 0)
   }
-  let view = TreeView::from_tree(tree, layer, views.length())
   {
     views,
     details,
@@ -73,8 +79,9 @@ pub fn AppState::switch_layer(self : AppState, layer : Int32) -> Unit {
     return
   }
   let keep = self.view.cursor_path_from_visible()
-  let view = TreeView::from_tree_sorted(
+  let view = TreeView::from_tree_with_diff(
     self.views[layer].tree,
+    Some(self.views[layer].diff),
     layer,
     self.views.length(),
     self.view.sort_by_size,
@@ -106,8 +113,9 @@ pub fn AppState::toggle_sort(self : AppState) -> Unit {
   let by_size = !self.view.sort_by_size
   let layer = self.view.layer
   let keep = self.view.cursor_path_from_visible()
-  let view = TreeView::from_tree_sorted(
+  let view = TreeView::from_tree_with_diff(
     self.views[layer].tree,
+    Some(self.views[layer].diff),
     layer,
     self.views.length(),
     by_size,
