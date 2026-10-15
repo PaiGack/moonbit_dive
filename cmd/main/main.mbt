@@ -58,12 +58,15 @@ async fn main {
 }
 
 ///|
-/// `--tui` 分支：打开交互式看树。
+/// `--tui` 分支：打开全屏交互式看树（路径 B）。
 ///
 /// 数据全部来自既有链路（`decompress_layers` + `browse_decompressed`
 /// + `analyze_decompressed`），这里只做「解压一遍 → 建视图状态 → 进主循环」。
 /// 终端不可用时按「运行错误」退 2——而不是静默回落到文本输出，
 /// 否则脚本里 `--tui` 会莫名其妙地变成一条一次性的报告。
+///
+/// 全屏的进出由 `@tui.run_app` 自己管（进 alternate screen、退出还原），
+/// 这里只提供「raw mode」这一层保护：两者都失效才会把终端留在坏状态。
 async fn run_tui(
   options : Options,
   source : @image_ci.ImageSource,
@@ -101,7 +104,8 @@ async fn run_tui(
     None => views.length() - 1
   }
   let state = @tui.AppState::new(views, details, options.image, initial_layer~)
-  // `with_raw_mode` 保证退出时把终端状态还原，哪怕主循环里抛错。
+  // `with_raw_mode` 保证退出时把终端状态还原，哪怕主循环里抛错；
+  // alternate screen 的还原由 `run_app` 的 defer 管（见 `tui/alt_screen.mbt`）。
   // 它自己会抛 OSError（终端状态拿不到时），统一折成「分析错误」好让退出码收敛。
   tty.with_raw_mode(() => @tui.run_app(tty, state)) catch {
     err =>
