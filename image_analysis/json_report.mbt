@@ -1,6 +1,6 @@
 ///|
 /// JSON 报告的结构版本号。字段有增删改时递增，供 P4 的门禁判定做兼容处理。
-pub let json_report_schema_version : Int32 = 1
+pub let json_report_schema_version : Int32 = 2
 
 ///|
 /// 报告转 JSON：结构化字段，供 P4 的门禁判定消费。
@@ -8,7 +8,8 @@ pub let json_report_schema_version : Int32 = 1
 /// 字段布局：
 /// - `schemaVersion` / `layers`：概览
 /// - `image.currentBytes` / `currentPaths` / `writtenBytes`：体积口径
-/// - `image.wasted.overwritten` / `image.wasted.deleted`：浪费拆分
+/// - `image.wastedBytes` / `image.userWastedPercent`：dive 的同名出口
+/// - `image.wasted.overwritten` / `image.wasted.deleted`：浪费拆分（本仓口径）
 /// - `efficiency.score`(0..1) + `minBytes` / `cumulativeBytes`：分子分母，便于复核
 /// - `layerStats[]`：每层的 added / overwritten / deleted 路径数与写入 / 浪费字节
 /// - `wastefulPaths[]`：浪费最多的路径，含 `writes` 与 `currentLayer`
@@ -23,6 +24,9 @@ pub fn report_to_json(report : Report) -> Json {
       "currentBytes": Json(report.final_file_bytes),
       "currentPaths": Json(report.final_paths),
       "writtenBytes": Json(report.total_bytes),
+      "userBytes": Json(report.user_bytes),
+      "wastedBytes": Json(wasted_bytes(report)),
+      "userWastedPercent": Json(round6(user_wasted_percent(report))),
       "wasted": Json::object({
         "overwritten": Json(report.overwritten_wasted),
         "deleted": Json(report.deleted_wasted),

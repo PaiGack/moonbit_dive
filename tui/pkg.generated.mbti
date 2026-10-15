@@ -130,6 +130,7 @@ pub(all) struct DetailEntry {
   versions : Int
   cumulative : Int
   min_bytes : Int
+  size : Int
 } derive(Eq, @debug.Debug)
 pub fn DetailEntry::equal(Self, Self) -> Bool
 pub fn DetailEntry::not_equal(Self, Self) -> Bool
@@ -140,6 +141,7 @@ pub(all) struct DetailSource {
   wasted : Int
   total : Int
   efficiency : Double
+  top_wasteful : Array[(String, Int, Int)]
 } derive(@debug.Debug)
 pub fn DetailSource::to_repr(Self) -> @debug.Repr
 

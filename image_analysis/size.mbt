@@ -145,6 +145,27 @@ pub fn Analysis::total_bytes(self : Analysis) -> Int32 {
 }
 
 ///|
+/// 用户自己写的字节：除第 0 层（base image）之外所有层的写入合计。
+///
+/// 对齐 dive 的 `userWastedPercent` 分母（`image/analysis.go` 里
+/// `for idx, layer := range layers { if idx == 0 { continue } ... }`）：
+/// base image 的内容被覆盖不该算用户的账。
+///
+/// 口径与 `total_bytes` 同源，只是砍掉第 0 层：累加每层的 `written_bytes`
+/// **减去**该层吃掉的旧内容（`wasted` + `erased`），剩下的才是净写入。
+/// 层数 ≤ 1 时没有用户层，返回 0。
+pub fn Analysis::user_bytes(self : Analysis) -> Int32 {
+  let mut total = 0
+  for usage in self.usages {
+    if usage.layer == 0 {
+      continue
+    }
+    total = total + usage.written_bytes - usage.wasted_bytes
+  }
+  total
+}
+
+///|
 /// 某路径的体积账；从未被写入过的路径返回 `None`。
 pub fn Analysis::path_size(self : Analysis, path : String) -> PathSize? {
   self.sizes.get(path)

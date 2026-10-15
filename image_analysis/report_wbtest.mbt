@@ -27,9 +27,12 @@ test "text report snapshots the whole picture" {
       #|image:
       #|  current: 16 bytes in 2 paths
       #|  written: 31 bytes
-      #|  wasted: 15 bytes (48.4%)
+      #|  user written: 1 bytes (all layers but the base)
+      #|  wasted: 21 bytes (67.7%)
+      #|    by path (cumulative - min): 21 bytes
       #|    overwritten: 10 bytes
       #|    deleted: 5 bytes
+      #|  user wasted: 2100% of 1 bytes
       #|efficiency: 32.3% (10/31)
       #|wasteful paths:
       #|  10 bytes  x2  /app/main.js
@@ -49,7 +52,7 @@ test "json report has the documented shape" {
     Json::Object(fields) => fields
     _ => fail("report must be a JSON object")
   }
-  assert_eq(fields.get("schemaVersion"), Some(Json(1)))
+  assert_eq(fields.get("schemaVersion"), Some(Json(2)))
   assert_eq(fields.get("layers"), Some(Json(3)))
   let image = match fields.get("image") {
     Some(Json::Object(image)) => image
@@ -57,6 +60,19 @@ test "json report has the documented shape" {
   }
   assert_eq(image.get("currentBytes"), Some(Json(16)))
   assert_eq(image.get("writtenBytes"), Some(Json(31)))
+  // dive 的两个同名出口：`wastedBytes` 取 `cumulative - min`（= `Σ paths[].size`），
+  // 那个数不等于下面 `wasted` 拆分里的 10 + 5 —— 两者口径不同，别混用
+  assert_eq(image.get("wastedBytes"), Some(Json(21)))
+  assert_eq(image.get("userBytes"), Some(Json(1)))
+  assert_eq(wasted_bytes(build_report(analysis, tree)), 21)
+  assert_true(wasted_bytes(build_report(analysis, tree)) != 10 + 5)
+  // `userWastedPercent` 的分母不含第 0 层：L0 写 15，L1 写 16 又被 L2 删掉 5，
+  // 用户净写 1 字节 —— 用户只该为自己那几层负责
+  assert_eq(image.get("userWastedPercent"), Some(Json(21.0)))
+  assert_eq(
+    image.get("wasted"),
+    Some(Json::object({ "overwritten": Json(10), "deleted": Json(5) })),
+  )
   let efficiency = match fields.get("efficiency") {
     Some(Json::Object(efficiency)) => efficiency
     _ => fail("efficiency must be an object")
@@ -82,12 +98,15 @@ test "json report text is stable" {
     report_to_json_string(build_report(analysis, tree)),
     content=(
       #|{
-      #|  "schemaVersion": 1,
+      #|  "schemaVersion": 2,
       #|  "layers": 2,
       #|  "image": {
       #|    "currentBytes": 16,
       #|    "currentPaths": 2,
       #|    "writtenBytes": 26,
+      #|    "userBytes": 6,
+      #|    "wastedBytes": 16,
+      #|    "userWastedPercent": 2.666667,
       #|    "wasted": {
       #|      "overwritten": 10,
       #|      "deleted": 0

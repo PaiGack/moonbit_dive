@@ -43,6 +43,10 @@ pub fn report_to_json(Report) -> Json
 
 pub fn report_to_json_string(Report) -> String
 
+pub fn user_wasted_percent(Report) -> Double
+
+pub fn wasted_bytes(Report) -> Int
+
 pub fn wasted_ratio(Report) -> Double
 
 // Errors
@@ -66,6 +70,7 @@ pub fn Analysis::path_size(Self, String) -> PathSize?
 pub fn Analysis::to_repr(Self) -> @debug.Repr
 pub fn Analysis::to_string(Self) -> String
 pub fn Analysis::total_bytes(Self) -> Int
+pub fn Analysis::user_bytes(Self) -> Int
 pub fn Analysis::waste_ranking(Self, limit? : Int) -> Array[PathSize]
 pub fn Analysis::wasted_bytes(Self) -> Int
 pub impl Show for Analysis
@@ -181,9 +186,11 @@ pub(all) struct Report {
   final_file_bytes : Int
   final_paths : Int
   total_bytes : Int
+  user_bytes : Int
   overwritten_wasted : Int
   deleted_wasted : Int
   efficiency : Efficiency
+  inefficient_paths : Array[PathEfficiencyRow]
   usages : Array[LayerUsage]
   wasteful_paths : Array[PathSize]
   hotspots : Array[Hotspot]

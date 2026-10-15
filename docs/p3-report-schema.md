@@ -3,7 +3,7 @@
 `image_analysis` 的 JSON 报告由 `report_to_json` / `report_to_json_string` 产出，
 用于 P4 的体积门禁判定与外部工具消费。
 
-- 顶层带 `schemaVersion`（当前 `1`），字段有增删改时递增
+- 顶层带 `schemaVersion`（当前 `2`），字段有增删改时递增
 - 所有字节数都是整数（`Int32`）
 - 分数是 `0..1` 的浮点，输出保留 6 位小数，保证文本快照稳定
 - 未提供块级阈值判定，门禁在 P4 的 `image_ci` 里做
@@ -27,8 +27,30 @@
 | `currentBytes` | int | 最后一层树上文件的字节合计 |
 | `currentPaths` | int | 最后一层树上的路径数（文件、目录、链接都算） |
 | `writtenBytes` | int | 累积写入字节 = `currentBytes` + 全部浪费 |
+| `userBytes` | int | 用户写入的字节（**不含第 0 层**）；`userWastedPercent` 的分母 |
+| `wastedBytes` | int | 浪费字节，口径 `Σ (cumulative - min)`，即 `Σ efficiency.paths` 里每行的 `size` |
+| `userWastedPercent` | float | `wastedBytes / userBytes`，**分母不含 base image**（对齐 dive） |
 | `wasted.overwritten` | int | 跨层重复写入浪费的字节 |
 | `wasted.deleted` | int | whiteout / opaque 抹掉的字节 |
+
+### `wastedBytes` 与 `wasted.*` 的口径差异
+
+两个数都叫「浪费」但不是一回事，`wastedBytes` 才是 dive 同名出口的那个：
+
+| 场景 | `wasted.overwritten`（真实丢掉的） | `wastedBytes`（`cumulative - min`） |
+|---|---|---|
+| 10 字节被 100 字节覆盖 | 10 | 90 |
+| 10 字节被写成同样的 10 字节 | 10 | 10 |
+| 被 whiteout 删掉 | 原大小 | 原大小（min 取 0） |
+| 100 字节被 1 字节覆盖 | 100 | 1 |
+
+`wastedBytes == cumulativeBytes - minBytes`，也就是逐路径效率表
+（`--efficiency`）里每行 `size` 的合计。求和时别把两者混在一起。
+
+**`userWastedPercent` 会超过 100%**：分子是整份 `wastedBytes`（含 base image 里
+被覆盖的内容），分母只算用户层。base image 很大、用户只盖了几层时这就是常态，
+dive 原版同样如此——它是「用户层的改动换来多少浪费」的相对指标，
+不是「用户写的东西浪费了百分之几」。
 
 ## `efficiency`
 
@@ -73,12 +95,15 @@
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "layers": 2,
   "image": {
     "currentBytes": 16,
     "currentPaths": 2,
     "writtenBytes": 26,
+    "userBytes": 6,
+    "wastedBytes": 16,
+    "userWastedPercent": 2.666667,
     "wasted": { "overwritten": 10, "deleted": 0 }
   },
   "efficiency": { "score": 0.384615, "minBytes": 10, "cumulativeBytes": 26 },

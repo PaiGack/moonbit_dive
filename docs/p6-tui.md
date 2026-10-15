@@ -59,6 +59,26 @@ tui/
 每层可独立验收：L0/L1 是纯计算与纯布局，L2 是纯状态机，L3 是按键与焦点映射，
 L4 才有副作用（终端 IO）。
 
+### L4 模型层：详情面板的数从哪来（#72）
+
+详情面板照 dive 的 `view/image_details.go` 排两段：上面是选中路径的账
+（efficiency / wasted / total + 该路径的 versions / cumulative / min / overhead），
+下面是整镜像的 inefficient files 表（`count / total space / path`）。
+
+数字**不在这里算**：
+
+| 面板上的东西 | 出处 |
+|---|---|
+| `efficiency` | `Report.efficiency.score()` |
+| `wasted` | `image_analysis::wasted_bytes(report)`，即 `Σ (cumulative - min)`，dive 的口径 |
+| 逐路径的 `versions` / `cumulative` / `min` | `EfficiencyReport.paths`（`Analysis::efficiency()`） |
+| 下方那张表的行 | `Report::inefficient_paths`（= `efficiency_view_rows`，与 `--efficiency` 视图同源） |
+
+早先那一版是 `cumulative = node_size * layers.length()` —— tar 层里没留历史大小，
+注释自己认账「不假装精确」。现在逐路径版本表是分析阶段就填好的
+（`VersionTable`），近似段整段删掉，面板与 CLI 的数字对得上。
+`model_wbtest.mbt` 里有一条用例按「`Σ 表里的 size` == 面板的 `wasted`」钉住自洽。
+
 ## 关键取舍
 
 ### 按列排版，宽度自研

@@ -88,12 +88,18 @@ test "draw explains a missing detail source instead of leaving it blank" {
 test "draw paints the detail pane with a source" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
-  entries.set("/etc/hosts", { versions: 2, cumulative: 200, min_bytes: 100, })
+  entries.set("/etc/hosts", {
+    versions: 2,
+    cumulative: 200,
+    min_bytes: 100,
+    size: 100,
+  })
   let source : DetailSource = {
     entries,
     wasted: 4096,
     total: 8192,
     efficiency: 0.5,
+    top_wasteful: [],
   }
   draw(screen, { ..base, details: Some(source), })
   // 右栏区域应出现 efficiency 字样
@@ -113,12 +119,18 @@ test "draw paints the detail pane with a source" {
 test "draw shows the size record for the selected path" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
-  entries.set("/etc/hosts", { versions: 3, cumulative: 300, min_bytes: 100, })
+  entries.set("/etc/hosts", {
+    versions: 3,
+    cumulative: 300,
+    min_bytes: 100,
+    size: 200,
+  })
   let source : DetailSource = {
     entries,
     wasted: 200,
     total: 8192,
     efficiency: 0.9,
+    top_wasteful: [],
   }
   base.view.move_to(base.view.index_of_path("/etc/hosts").unwrap())
   draw(screen, { ..base, details: Some(source), })
@@ -128,6 +140,58 @@ test "draw shows the size record for the selected path" {
   }
   assert_true(joined.contains("versions"))
   assert_true(joined.contains("overhead"))
+  // overhead 用的是 entry.size（精确值），不是再算一遍 cumulative - min_bytes
+  assert_true(joined.contains("overhead    200 B"))
+}
+
+///|
+/// 详情面板下方那张 inefficient files 表：dive 面板的列名与口径。
+///
+/// 表里只出 `cumulative - min` 这一个口径，抬头写明它是什么，
+/// 免得被当成 `wasteful paths` 的 `wasted_bytes`。
+test "draw paints the inefficient files table under the detail" {
+  let (screen, base) = render_fixture()
+  let source : DetailSource = {
+    entries: Map([]),
+    wasted: 1200,
+    total: 8192,
+    efficiency: 0.25,
+    top_wasteful: [
+      ("/node_modules/pkg/index.js", 2, 1200),
+      ("/app/util.js", 2, 8),
+    ],
+  }
+  draw(screen, { ..base, details: Some(source), })
+  let mut joined = ""
+  for row = 1; row < 23; row = row + 1 {
+    joined = joined + screen.row_string(row)[41:].to_owned() + "|"
+  }
+  assert_true(joined.contains("count  total space  path"))
+  assert_true(joined.contains("x2"))
+  assert_true(joined.contains("1.2 KB"))
+  // 长路径按面板宽度截断（保留尾部），但一定出现在表里
+  assert_true(joined.contains("/app/util.js"))
+  assert_true(joined.contains("node_modules"))
+}
+
+///|
+/// 没有 inefficient 行时（干净镜像）表里给一句 `(none)`，不留半截表格。
+test "draw marks an empty inefficient table" {
+  let (screen, base) = render_fixture()
+  let source : DetailSource = {
+    entries: Map([]),
+    wasted: 0,
+    total: 8192,
+    efficiency: 1.0,
+    top_wasteful: [],
+  }
+  draw(screen, { ..base, details: Some(source), })
+  let mut joined = ""
+  for row = 1; row < 23; row = row + 1 {
+    joined = joined + screen.row_string(row)[41:].to_owned() + "|"
+  }
+  assert_true(joined.contains("count  total space  path"))
+  assert_true(joined.contains("(none)"))
 }
 
 ///|
@@ -244,12 +308,18 @@ test "draw paints the help overlay above the panes" {
 test "draw scrolls the detail pane" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
-  entries.set("/etc/hosts", { versions: 2, cumulative: 200, min_bytes: 100, })
+  entries.set("/etc/hosts", {
+    versions: 2,
+    cumulative: 200,
+    min_bytes: 100,
+    size: 100,
+  })
   let source : DetailSource = {
     entries,
     wasted: 4096,
     total: 8192,
     efficiency: 0.5,
+    top_wasteful: [],
   }
   base.view.move_to(base.view.index_of_path("/etc/hosts").unwrap())
   let frame : Frame = { ..base, details: Some(source), }

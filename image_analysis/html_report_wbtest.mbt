@@ -4,7 +4,18 @@
 /// 快照钉的是「渲染结构」：字段全部来自 `Report`，与 JSON 报告的字段一一对应；
 /// 改样式会动到快照，改字段会同时动到三份报告的测试，属于预期。
 test "html report snapshots the whole picture" {
-  let (tree, analysis) = report_fixture()
+  // 两层覆盖写：让 `count` 与 `total space` 都有意义（report_fixture 的三层里
+  // 删除层会把被删的路径也计成 second write，读起来容易误判）
+  let (tree, analysis) = analyze_fixture([
+    layer_fixture([
+      @layer_tree.TarEntrySpec::Dir("app"),
+      @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),
+      @layer_tree.TarEntrySpec::File("app/README.md", "hello"),
+    ]),
+    layer_fixture([
+      @layer_tree.TarEntrySpec::File("app/main.js", "0123456789abcdef"),
+    ]),
+  ])
   let html = report_to_html(build_report(analysis, tree))
   // 结构上必须是一份自洽的 HTML 文档，且无外部依赖
   assert_true(html.has_prefix("<!DOCTYPE html>"))
@@ -50,31 +61,45 @@ test "html report snapshots the whole picture" {
       #|<section class="cards">
       #|<div class="card">
       #|<div class="card-label">layers</div>
-      #|<div class="card-value">3</div>
+      #|<div class="card-value">2</div>
       #|</div>
       #|<div class="card">
       #|<div class="card-label">current</div>
-      #|<div class="card-value">16 B</div>
-      #|<div class="card-hint">2 paths on the final tree</div>
+      #|<div class="card-value">21 B</div>
+      #|<div class="card-hint">3 paths on the final tree</div>
       #|</div>
       #|<div class="card">
       #|<div class="card-label">efficiency</div>
-      #|<div class="card-value">32.3%</div>
+      #|<div class="card-value">48.4%</div>
       #|<div class="card-hint">min / cumulative</div>
       #|</div>
       #|<div class="card">
       #|<div class="card-label">wasted</div>
-      #|<div class="card-value">48.4%</div>
-      #|<div class="card-hint">15 B of 31 B written</div>
+      #|<div class="card-value">16 B</div>
+      #|<div class="card-hint">cumulative - min (dive: inefficientBytes), 51.6% of 31 B written</div>
+      #|</div>
+      #|<div class="card">
+      #|<div class="card-label">user wasted</div>
+      #|<div class="card-value">266.7%</div>
+      #|<div class="card-hint">16 B of 6 B user-written (base layer excluded)</div>
       #|</div>
       #|</section>
       #|<section class="panel">
       #|<h2>efficiency</h2>
       #|<div class="bar">
-      #|<div class="bar-fill" style="width:32.3%"></div>
+      #|<div class="bar-fill" style="width:48.4%"></div>
       #|</div>
-      #|<p class="fraction">10 / 31 bytes (32.3%)</p>
+      #|<p class="fraction">15 / 31 bytes (48.4%)</p>
       #|<p class="hint">score = sum(min_discovered) / sum(cumulative), aggregated per path across layers; wasted bytes are counted separately (see below).</p>
+      #|</section>
+      #|<section class="panel">
+      #|<h2>inefficient files</h2>
+      #|<table>
+      #|<thead><tr><th>count</th><th>total space</th><th>min</th><th>path</th></tr></thead>
+      #|<tbody>
+      #|<tr><td>x2</td><td>16 B</td><td>10 B</td><td class="path">/app/main.js</td></tr>
+      #|</tbody>
+      #|</table>
       #|</section>
       #|<section class="panel">
       #|<h2>layers</h2>
@@ -83,7 +108,6 @@ test "html report snapshots the whole picture" {
       #|<tbody>
       #|<tr><td>L0</td><td>3</td><td>0</td><td>0</td><td>15 B</td><td>0 B</td><td>0 B</td></tr>
       #|<tr><td>L1</td><td>0</td><td>1</td><td>0</td><td>16 B</td><td>10 B</td><td>0 B</td></tr>
-      #|<tr><td>L2</td><td>0</td><td>0</td><td>1</td><td>0 B</td><td>5 B</td><td>0 B</td></tr>
       #|</tbody>
       #|</table>
       #|</section>
@@ -93,7 +117,6 @@ test "html report snapshots the whole picture" {
       #|<thead><tr><th>path</th><th>wasted</th><th>writes</th><th>state</th></tr></thead>
       #|<tbody>
       #|<tr><td class="path">/app/main.js</td><td>10 B</td><td>x2</td><td>L1</td></tr>
-      #|<tr><td class="path">/app/README.md</td><td>5 B</td><td>x1</td><td>deleted</td></tr>
       #|</tbody>
       #|</table>
       #|</section>
@@ -102,7 +125,7 @@ test "html report snapshots the whole picture" {
       #|<table>
       #|<thead><tr><th>path</th><th>size</th><th>files</th></tr></thead>
       #|<tbody>
-      #|<tr><td class="path">/app</td><td>16 B</td><td>1</td></tr>
+      #|<tr><td class="path">/app</td><td>21 B</td><td>2</td></tr>
       #|</tbody>
       #|</table>
       #|</section>
