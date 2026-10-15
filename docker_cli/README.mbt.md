@@ -163,6 +163,13 @@ listen / accept 只服务测试，不进成品包的公开 API。
 
 端到端用例见 `pipeline_test.mbt`。
 
+CLI 侧：`cmd/main` 用显式开关 `--from-image` 把位置参数当镜像名接到本包
+（`moon run --target native cmd/main -- nginx:latest --from-image`），
+取到归档后走既有的 `ImageSource::from_tar_bytes`；`--verbose` 打 `describe_backends`
+的探测记录（`[ok]/[no]` 一行一条，走 stderr）。
+端到端（fake docker，不依赖真实 daemon）见 `cmd/main/from_image_wbtest.mbt`，
+说明见 [docs/p5-docker-cli.md](../docs/p5-docker-cli.md)。
+
 ## 许可与出处
 
 - 后端探测与降级的思路来自 dive 的 `dive/image/docker/engine_resolver.go`（MIT）

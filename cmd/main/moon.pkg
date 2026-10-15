@@ -1,9 +1,16 @@
 import {
   "PaiGack/dive/image_analysis",
   "PaiGack/dive/image_ci",
+  "PaiGack/dive/docker_cli",
   "PaiGack/dive/layer_tree",
+  "moonbitlang/async",
   "moonbitlang/core/argparse",
   "moonbitlang/x/fs",
 }
 
 pkgtype(kind: "executable")
+
+// `--from-image` 走 docker_cli（子进程 / unix socket），只有 native 有入口；
+// 与 docker_cli 的约定一致，这里显式声明，避免默认 wasm 构建去解析这个依赖。
+
+supported_targets = "-all+native"

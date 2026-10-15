@@ -59,8 +59,27 @@ pub(open) trait ImageSource {
 ### 与四包的接线
 
 - 产物统一收敛到既有输入格式：docker-archive tar，**不改 P1–P4 的输入契约**
-- P4 的 CLI 输入探测顺序扩成：显式文件路径 → 魔数识别 → stdin → **镜像名（触发本包）**（P4 未落地）
+- `cmd/main` 用 **显式开关** `--from-image` 把镜像名接到本包
+  （见 [#28](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/28)）：
+
+  ```bash
+  # 显式声明「这是镜像名」，走本包取归档后再进 P2/P3/P4
+  moon run --target native cmd/main -- nginx:latest --from-image
+  # 后端与探测过程可见（[ok]/[no] 一行一条，走 stderr）
+  moon run --target native cmd/main -- nginx:latest --from-image --verbose
+  # 与既有开关组合，行为不变
+  moon run --target native cmd/main -- nginx:latest --from-image --rules rules.json --format annotations
+  ```
+
+  取到归档后走既有的 `ImageSource::from_tar_bytes`，**不新开分析链路**。
+  探测失败（`NoBackend` / `ExecutableNotFound` / `InvalidReference` / `Backend`）
+  打人话 + 安装提示，不吞 docker 的 stderr，按「入参/环境不对」退 exit 2。
+- **不做自动魔数嗅探**：只认显式 `--from-image`，避免「给个文件却去连 daemon」这种意外行为。
+  原先设想的「探测顺序里自动识别镜像名」不再做。
 - 单独成包，**不进入 P1–P4 依赖链**；只用默认离线能力时 `dive x.tar` 的链路不受影响
+- 本包只有 native 入口（子进程 / unix socket），因此 `cmd/main` 也声明
+  `supported_targets = "-all+native"`；`--from-image` 的端到端覆盖见
+  `cmd/main/from_image_wbtest.mbt`（fake docker 走 PATH 探测，不依赖真实 daemon）
 
 ## 非目标
 
@@ -80,7 +99,10 @@ pub(open) trait ImageSource {
 | `docker save` 出来的 tar 能被 P2 的 `apply_layers_with_diffs` 直接吃下，端到端一个用例 | ✅ | `pipeline_test.mbt` |
 | 大镜像走流式路径，不把整层读进内存 | ✅ | `save_to_file_memory_test.mbt`：100MB fixture + `/proc/self/status` |
 | README 给出「后端探测 → inspect → save → 分析」的完整命令与预期输出 | ✅ | `docker_cli/README.mbt.md`（示例被测试跑一遍） |
-| `moon check` / `moon test` 全绿 | ✅ | 268 个用例（native） |
+| `cmd/main --from-image` 端到端跑出体积报告（可 fake CLI） | ✅ | `cmd/main/from_image_wbtest.mbt`：fake docker 走 PATH 探测 → 既有链路 |
+| 无 daemon 时错误明确、exit 2、不 panic、不吞 stderr | ✅ | `cmd/main/from_image_wbtest.mbt` + `docker_cli/errors.mbt` 的 `Show` |
+| 不给 `--from-image` 时行为完全不变 | ✅ | `cli_wbtest.mbt`：默认 `from_image=false`，走文件路径 |
+| `moon check` / `moon test` 全绿 | ✅ | 292 个用例（native），见 `scripts/ci.sh` |
 
 ## 遗留
 
