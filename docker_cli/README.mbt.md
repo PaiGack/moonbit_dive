@@ -68,19 +68,37 @@ async test "README example" {
 DOCKER_HOST（unix://） → /var/run/docker.sock → docker → podman → nerdctl
 ```
 
-- `DOCKER_CLI=/opt/bin/docker` 显式指定时会把它对应的候选提到第一位
+- `DOCKER_CLI=/opt/bin/docker` 显式指定时，把这个**文件**提到第一位。
+  它是路径，不是「去 PATH 上找哪个名字」——PATH 上没有同名文件也照样能用
 - `tcp://` / `ssh://` / `npipe://` 属于后续 issue，探测时直接跳过
   （返回 `None` 而不是给半成品实现）
 - 顺序可配置：`default_candidates(env)` 返回的数组就是候选列表，调用方可以自己排
 
-**探测只看「能不能用」，不真的跑 `save`**：socket 看文件是不是 socket，
-CLI 看 `PATH` 上解析不解析得到（再兜 `/usr/bin`、`/usr/local/bin` 等几个常见位置）。
+**探测只做「能不能用」的判定，不真的跑 `save`**：
+
+- socket：先看文件类型，再发一个**有超时的** `_ping`。文件是 socket
+  ≠ daemon 可用——CNB / 容器里 `/var/run/docker.sock` 常由外层转发进来，
+  `connect(2)` 立刻成功但对端不通。不通就算这个候选不可用，让给后面的 CLI
+- CLI：看 `PATH` 上解析不解析得到（再兜 `/usr/bin`、`/usr/local/bin` 等几个常见位置）
+
 探测结果通过 `describe_backends` 一行一条打出来，排查时不用猜：
 
 ```
-[ok] unix:///var/run/docker.sock: socket exists
+[ok] unix:///var/run/docker.sock: socket answers _ping
 [no] docker: not found on PATH
 ```
+
+## 超时
+
+单次后端调用的默认超时是 **30 秒**（`default_timeout_ms`），不是「不设超时」。
+
+这条默认值不是随手定的：`/var/run/docker.sock` 是转发进来的时候，
+socket 在、`connect` 也成功，但对端不通——`timeout_ms = 0` 会让请求停在
+「等状态行」上**永远不返回**，用户看到的是「跑起来完全没有任何输出」。
+有超时才有一句能读的错误。
+
+`cmd/main` 的 `--timeout <秒>` 可以调大它（比如拉几百 MB 的镜像）；
+只认正整数，**不提供 0**——不留「挂死」那条路。
 
 ## 错误语义
 

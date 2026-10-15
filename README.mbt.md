@@ -36,6 +36,8 @@ moon run --target native cmd/main -- nginx:latest --from-image
 moon run --target native cmd/main -- nginx:latest --from-image --verbose
 # 完全离线：本地缺镜像也不拉，一次网络请求都不发
 moon run --target native cmd/main -- nginx:latest --from-image --no-pull
+# 单次 docker 调用最多等多久（秒，默认 30），拉大镜像时调大
+moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
@@ -50,7 +52,10 @@ moon run --target native cmd/main -- nginx:latest --from-image --no-pull
 `--from-image` 把位置参数当镜像名：本地缺这个镜像时**默认先拉一次**再取，
 对齐原版 dive（Go）——那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就
 `docker pull` 一次。要完全离线（绝不发起网络请求、`inspect` 说没有就直接 `save`）
-加 `--no-pull`。后端探测与降级见
+加 `--no-pull`。
+
+单次 docker 调用有 **30 秒默认超时**（`--timeout` 调大）：socket 半死时不给超时
+就会静默挂住，啥也看不到。后端探测与降级见
 [`docker_cli/README.mbt.md`](docker_cli/README.mbt.md)。
 
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
