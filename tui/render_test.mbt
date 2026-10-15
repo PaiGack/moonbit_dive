@@ -233,10 +233,10 @@ test "draw paints the help overlay above the panes" {
   for row = help_pane.rect.top; row <= help_pane.rect.bottom; row = row + 1 {
     joined = joined + screen.row_string(row)
   }
-  assert_true(joined.contains("switch focus"))
-  assert_true(joined.contains("toggle this panel"))
+  assert_true(joined.contains("ctrl+c quit"))
+  assert_true(joined.contains("filetree"))
   // 浮层自带边框（标题 `keys`）
-  assert_true(joined.contains("keys"))
+  assert_true(joined.contains("* keys") || joined.contains("keys"))
 }
 
 ///|
@@ -256,8 +256,9 @@ test "draw scrolls the detail pane" {
   draw(screen, frame)
   // 光标停在 `/etc/hosts`，详情首行是路径
   assert_true(screen.row_string(2)[42:].contains("/etc/hosts"))
-  // 滚 3 行：首行从路径变成 `wasted`（路径 + 空行 + efficiency 各占一行）
-  frame.detail_scroll.scroll_by(3)
+  // 往下滚几行：首行从路径变成后面的体积数字
+  // （路径 + 空行 + permissions + mtime + layer + efficiency 各占一行）
+  frame.detail_scroll.scroll_by(6)
   draw(screen, frame)
   assert_true(screen.row_string(2)[42:].contains("wasted"))
   assert_false(screen.row_string(2)[42:].contains("/etc/hosts"))

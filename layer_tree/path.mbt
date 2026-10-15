@@ -189,3 +189,29 @@ pub fn compare_ascii(left : String, right : String) -> Int32 {
     0
   }
 }
+
+///|
+/// 权限位 → `-rw-r--r--` 形态（10 列，dive 的 `MetadataString` 同款）。
+///
+/// 只做展示：`mode` 本身是低 12 位权限字面量（见 `Node::mode`），
+/// 这里不管 setuid/setgid/sticky（那三位不进这 9 列），
+/// 也不按 umask 或实际可执行性做判定——`0o644` 就是 `-rw-r--r--`。
+///
+/// `kind` 决定首字符：目录 `d`、软链 `l`、硬链 `h`，其余按普通文件。
+pub fn permission_string(mode : Int32, kind : NodeKind) -> String {
+  let mut text = match kind {
+    Directory => "d"
+    Symlink(_) => "l"
+    Hardlink(_) => "h"
+    File => "-"
+  }
+  let bits : Array[Int32] = [
+    0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001,
+  ]
+  let chars = ["r", "w", "x", "r", "w", "x", "r", "w", "x"]
+  for index, bit in bits {
+    let mark = if (mode & bit) != 0 { chars[index] } else { "-" }
+    text = text + mark
+  }
+  text
+}

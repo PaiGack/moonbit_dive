@@ -18,8 +18,10 @@ pub(all) enum MouseAction {
   ScrollDown
   /// 右键：切换光标所在目录的展开状态（`dive` 里也是右键收放）
   ToggleFold
-  /// `Ctrl + 左键`：切焦点（点一下树/详情，键盘就交给那块面板）
+  /// `Ctrl + 左键`：切焦点（点一下树/详情，键盘就交给那块面板）；
+  /// `Ctrl + 右键`：反向切（与 `Shift+Tab` 对称）
   SetFocus
+  SetFocusBack
   /// 没绑定的鼠标事件（拖拽、移动、中键、滚轮左右）
   None
 } derive(Eq, Debug)
@@ -48,7 +50,11 @@ pub fn action_of_mouse(event : @input.MouseEvent) -> MouseAction {
         MouseAction::Select
       }
     @input.MouseEventKind::Press(@input.MouseButton::Right) =>
-      MouseAction::ToggleFold
+      if event.modifiers.ctrl() {
+        MouseAction::SetFocusBack
+      } else {
+        MouseAction::ToggleFold
+      }
     @input.MouseEventKind::Scroll(@input.MouseScroll::Up) =>
       MouseAction::ScrollUp
     @input.MouseEventKind::Scroll(@input.MouseScroll::Down) =>
@@ -77,7 +83,7 @@ pub fn mouse_tracking_mode(pixel_mouse~ : Bool) -> @tty.MouseTrackingMode {
 }
 
 ///|
-/// 把一次鼠标事件落到格子坐标（#62）。
+/// 鼠标跟踪的模式位（#62，接替 #51 的 `Click`）。
 ///
 /// 为什么要这一层：tty 0.5.0 的 `CSI <` 只认 `cb ; col ; row M/m`；
 /// kitty 的鼠标协议会多带一块鼠标信息（`code ; x ; y ; d`），

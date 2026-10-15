@@ -239,7 +239,9 @@ pub fn handle_mouse(event : @input.MouseEvent, state : AppState) -> Bool {
   // 帮助浮层开着时，鼠标与键盘一个口径：先关掉再说，
   // 不然点到的是浮层底下那块看不见的面板
   if state.help_visible {
-    if action == MouseAction::Select || action == MouseAction::SetFocus {
+    if action == MouseAction::Select ||
+      action == MouseAction::SetFocus ||
+      action == MouseAction::SetFocusBack {
       return false
     }
   }
@@ -273,6 +275,8 @@ pub fn handle_mouse(event : @input.MouseEvent, state : AppState) -> Bool {
         PaneId::Detail => state.focus = Focus::Detail
         _ => ()
       }
+    // `Ctrl+右键`：反向切焦点，与 `Shift+Tab` 对称（键盘那侧的 `PrevFocus`）
+    MouseAction::SetFocusBack => state.focus = state.focus.prev()
     MouseAction::ToggleFold =>
       if pane_id == PaneId::Tree {
         state.focus = Focus::Tree

@@ -25,6 +25,10 @@ pub(all) struct Row {
   layer : Int32
   /// 这一层里该路径的变化类别（渲染按它上色）
   status : RowStatus
+  /// 低 12 位权限。数据源里本来就有，之前没带出来（`Ctrl+B` 要看它）
+  mode : Int32
+  /// entry 记录的修改时间（Unix 秒），0 表示数据源没给
+  mtime : Int32
 } derive(Eq, Debug)
 
 ///|
@@ -41,6 +45,17 @@ pub(all) enum RowStatus {
   Modified
   /// 这一层没动过它
   Unchanged
+} derive(Eq, Debug)
+
+///|
+/// 一行降在哪一档。与 `RowStatus` 合成一张 3x2 的表，
+/// `Ctrl+A/R/M/U` 四个过滤键就是从它派生出来的（`Row::in_group`）。
+///
+/// 没有 `Removed`：被删的路径不在这一层的树上，没有行可以给它归档。
+pub(all) enum RowGroup {
+  AddedOnly
+  ModifiedOnly
+  UnchangedOnly
 } derive(Eq, Debug)
 
 ///|
@@ -67,6 +82,8 @@ pub(all) struct TreeView {
   mut page_height : Int32
   /// 一行是按「名字」还是按「大小」排序（`data_set_sort` 写，`all_rows` 按它重排）
   mut sort_by_size : Bool
+  /// 只看某一档 diff（`Ctrl+A/R/M/U`）；`None` 表示四档都要（`Ctrl+U` 同效）
+  mut filter : RowGroup?
 } derive(Debug)
 
 ///|
@@ -100,6 +117,7 @@ pub fn TreeView::from_tree_with_diff(
     offset: 0,
     page_height: 0,
     sort_by_size: by_size,
+    filter: None,
   }
   view.refresh()
   view
@@ -158,6 +176,8 @@ fn flatten(tree : @layer_tree.FileTree, diff : @layer_tree.Diff?) -> Array[Row] 
       size: node.size,
       layer: node.layer,
       status,
+      mode: node.mode,
+      mtime: node.mtime,
     })
   }
   rows
@@ -216,6 +236,11 @@ pub fn TreeView::refresh(self : TreeView) -> Unit {
     if self.is_hidden(row.path) {
       continue
     }
+    // 过滤（`Ctrl+A/R/M/U`）在折叠之后再看：被折起来的行本来就不该出现，
+    // 顺序反过来会让「过滤掉的祖先」与「折叠掉的祖先」互相打架
+    if self.filter is Some(group) && !row.in_group(group) {
+      continue
+    }
     visible.push(row)
   }
   self.visible = visible
@@ -235,6 +260,15 @@ pub fn TreeView::refresh(self : TreeView) -> Unit {
 /// 当前光标行的路径（外部只读入口）。
 pub fn TreeView::cursor_path_from_visible(self : TreeView) -> String? {
   self.cursor_path()
+}
+
+///|
+/// 当前光标那一行（拿不到给 `None`）。详情面板的属性行要用它。
+pub fn TreeView::cursor_row(self : TreeView) -> Row? {
+  if self.cursor < 0 || self.cursor >= self.visible.length() {
+    return None
+  }
+  Some(self.visible[self.cursor])
 }
 
 ///|
@@ -368,6 +402,44 @@ pub fn TreeView::expand(self : TreeView) -> Unit {
 }
 
 ///|
+/// 全折叠 / 全展开（`Ctrl+Space`，原版 `ToggleAllCollapseDir`）。
+///
+/// 「现在算不算全折叠」不看 `collapsed` 的大小，看**效果**：只要还有一行目录
+/// 是摊开的，这次就是「全折叠」。理由是同名动作要幂等——按一次全折、
+/// 再按一次全展，中间若因为过滤 / 换层让 `collapsed` 变得不完整，
+/// 用大小去比就会在这两种状态之间抖动，看起来像没反应。
+///
+/// 全折叠时**光标留在原地**：跳到顶会让一屏内容整体换掉，
+/// 而「折起来但仍在原处」更接近「我只是把没用的收起来」。
+/// 若光标正好落在被折掉的子行上，`refresh` 会把它落到最近的可见祖先。
+///
+/// 先开着过滤时也照做：过滤与折叠互不覆盖，关掉过滤还能看到原来折到哪。
+pub fn TreeView::toggle_collapse_all(self : TreeView) -> Unit {
+  if self.any_expanded_dir() {
+    for row in self.all_rows {
+      if row.is_dir {
+        self.collapsed.set(row.path, ())
+      }
+    }
+  } else {
+    self.collapsed = Map([])
+  }
+  self.refresh()
+}
+
+///|
+/// 还有没有「摊开着」的目录；一个目录都没有时给 `false`
+/// （空树按「已经全折好」处理，再按一次就是全展，不会卡住）。
+fn TreeView::any_expanded_dir(self : TreeView) -> Bool {
+  for row in self.all_rows {
+    if row.is_dir && !self.collapsed.contains(row.path) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// 跳到父目录那一行；已在顶层就不动。
 fn TreeView::go_parent(self : TreeView) -> Unit {
   if self.cursor < 0 || self.cursor >= self.visible.length() {
@@ -416,6 +488,12 @@ pub extend RowStatus with @debug.Debug::{to_repr}
 
 ///|
 pub extend RowStatus with Eq::{equal, not_equal}
+
+///|
+pub extend RowGroup with @debug.Debug::{to_repr}
+
+///|
+pub extend RowGroup with Eq::{equal, not_equal}
 
 ///|
 pub extend Row with Eq::{equal, not_equal}
@@ -492,4 +570,60 @@ pub fn TreeView::select_at_screen_row(
     }
     None => false
   }
+}
+
+///|
+/// 一行是否属于 `Ctrl+A/R/M/U` 的某一档。
+///
+/// `dive` 那边是「把不同 diff 集合的行拼起来再过滤」，本仓没有「把 added /
+/// removed / modified / unmodified 四棵树拼成一张表」这一步（树本来就只有一个，
+/// 删除的路径不在树上），所以这里退化成对**行自带的 `status`** 做一次判定。
+/// 语义对齐：`added` 就是新增行、`modified` 就是改写行、`unmodified` 是没动过的行。
+///
+/// 被删掉的路径没有行，因此没有对应的一档——这一点在 `docs/p6-tui.md`
+/// 的差异说明里写清楚了，不是漏做。
+pub fn Row::in_group(self : Row, group : RowGroup) -> Bool {
+  match group {
+    RowGroup::AddedOnly => self.status == RowStatus::Added
+    RowGroup::ModifiedOnly => self.status == RowStatus::Modified
+    RowGroup::UnchangedOnly => self.status == RowStatus::Unchanged
+  }
+}
+
+///|
+/// 只要这三行里有一行属于 `group`，就不画「这类都没有」的提示。
+///
+/// 判空用**全量行**（`all_rows`）而不是可见行：折叠起来的目录里可能正好有
+/// 唯一的 added 行，这时候说「没有新增」是假话。
+pub fn TreeView::has_in_group(self : TreeView, group : RowGroup) -> Bool {
+  for row in self.all_rows {
+    if row.in_group(group) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// 当前是否只显示某一档（`Ctrl+A/R/M/U`）；`Ctrl+U` 是「全都要」。
+///
+/// 过滤与折叠是两件事，因此过滤不进 `refresh` 的 `collapsed` 判定里，
+/// 而是单独一层布尔：关掉过滤要能原样回到「跟没过滤前一样」。
+pub fn TreeView::only_group(self : TreeView) -> RowGroup? {
+  self.filter
+}
+
+///|
+/// 设 / 撤过滤档位。设成当前那一档会**切回全都要**（连按 `Ctrl+A` 两次等于没按），
+/// 与 dive 的 `InvertFilter` 同效；给 `None` 就是显式清掉。
+pub fn TreeView::set_filter(self : TreeView, group : RowGroup?) -> Unit {
+  self.filter = match group {
+    Some(next) =>
+      match self.filter {
+        Some(current) if current == next => None
+        _ => Some(next)
+      }
+    None => None
+  }
+  self.refresh()
 }

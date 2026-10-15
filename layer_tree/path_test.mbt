@@ -41,3 +41,15 @@ test "path_depth counts segments below the root" {
   assert_eq(path_depth("/usr"), 1)
   assert_eq(path_depth("/usr/local/bin"), 3)
 }
+
+///|
+/// 权限位 → `-rw-r--r--` 形态（详情面板的属性行要用）。
+test "permission_string renders the mode as a dive-style column" {
+  assert_eq(permission_string(0o644, NodeKind::File), "-rw-r--r--")
+  assert_eq(permission_string(0o755, NodeKind::Directory), "drwxr-xr-x")
+  assert_eq(permission_string(0o777, NodeKind::Symlink("x")), "lrwxrwxrwx")
+  assert_eq(permission_string(0o600, NodeKind::Hardlink("/a")), "hrw-------")
+  // 权限外的高位（setuid / setgid / sticky）不进这 9 列，不冒充它们在
+  assert_eq(permission_string(0o4755, NodeKind::File), "-rwxr-xr-x")
+  assert_eq(permission_string(0, NodeKind::File), "----------")
+}

@@ -32,6 +32,23 @@ test "mouse press maps to select or focus" {
 }
 
 ///|
+/// 右键是切展开态；`Ctrl + 右键` 是反向切焦点（与 `Shift+Tab` 对称）。
+test "right click folds, ctrl right click switches focus backwards" {
+  assert_eq(
+    action_of_mouse(
+      mouse(@input.MouseEventKind::Press(@input.MouseButton::Right)),
+    ),
+    MouseAction::ToggleFold,
+  )
+  assert_eq(
+    action_of_mouse(
+      mouse(@input.MouseEventKind::Press(@input.MouseButton::Right), ctrl=true),
+    ),
+    MouseAction::SetFocusBack,
+  )
+}
+
+///|
 /// 滚轮上下各走一步；左右滚轮本轮不接。
 test "mouse wheel maps to scrolling" {
   assert_eq(

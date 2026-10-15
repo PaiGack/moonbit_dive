@@ -33,9 +33,11 @@ test "action_of_key maps navigation keys" {
   assert_eq(action_of_key(key(@input.KeyCode::Char('j'))), Action::MoveDown)
   assert_eq(action_of_key(key(@input.KeyCode::Char('k'))), Action::MoveUp)
   assert_eq(action_of_key(key(@input.KeyCode::PageDown)), Action::PageDown)
-  assert_eq(action_of_key(key(@input.KeyCode::Char(' '))), Action::PageDown)
+  // `u`/`d` 是原版 dive 的 pgup/pgdn 别名，`Space` 归位成折叠
+  assert_eq(action_of_key(key(@input.KeyCode::Char('u'))), Action::PageUp)
+  assert_eq(action_of_key(key(@input.KeyCode::Char('d'))), Action::PageDown)
   assert_eq(action_of_key(key(@input.KeyCode::PageUp)), Action::PageUp)
-  assert_eq(action_of_key(key(@input.KeyCode::Char('b'))), Action::PageUp)
+  assert_eq(action_of_key(key(@input.KeyCode::Char(' '))), Action::Toggle)
   assert_eq(action_of_key(key(@input.KeyCode::Home)), Action::Home)
   assert_eq(action_of_key(key(@input.KeyCode::Char('g'))), Action::Home)
   assert_eq(action_of_key(key(@input.KeyCode::End)), Action::End)
@@ -60,6 +62,79 @@ test "action_of_key maps fold and layer keys" {
     action_of_key(key(@input.KeyCode::Char('c'), ctrl=true)),
     Action::Quit,
   )
+}
+
+///|
+/// `Ctrl` 那一组（原版 dive 的 key config）：`ctrl+c` 退出、`ctrl+space` 全折叠、
+/// `ctrl+a` 看详情、`ctrl+l` 只看改写、`ctrl+u` 撤销过滤。
+///
+/// `ctrl+space` 在终端里是 NUL，tty 把它解成 `Char(' ') + ctrl`（真终端实测，
+/// 不是「按 `Char('\u{0}')` 推导」）——这里就按那个形态钉住。
+test "action_of_key maps the ctrl chords" {
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('c'), ctrl=true)),
+    Action::Quit,
+  )
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char(' '), ctrl=true)),
+    Action::ToggleCollapseAll,
+  )
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('a'), ctrl=true)),
+    Action::CompareAll,
+  )
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('l'), ctrl=true)),
+    Action::FilterModified,
+  )
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('u'), ctrl=true)),
+    Action::FilterClear,
+  )
+  // `ctrl+space` 与不带修饰的空格是两个不同事件：一个全折叠、一个折叠一行
+  assert_eq(action_of_key(key(@input.KeyCode::Char(' '))), Action::Toggle)
+  // 没绑的 ctrl 组合不响应（`ctrl+m` 与 `Enter` 同码位，绑了等于偷偷改 Enter；
+  // `ctrl+b` 是 dive 的文件属性键，本仓常显不做）
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('m'), ctrl=true)),
+    Action::None,
+  )
+  assert_eq(
+    action_of_key(key(@input.KeyCode::Char('b'), ctrl=true)),
+    Action::None,
+  )
+}
+
+///|
+/// `Ctrl+Space` 全折叠 / 再按一次全展开，光标行被折掉时落到最近的祖先。
+test "apply_action toggles collapse all" {
+  let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
+  assert_false(apply_action(Action::ToggleCollapseAll, state))
+  assert_true(state.view.collapsed.contains("/etc"))
+  // 再按一次：全展（不是「再折一层」）
+  assert_false(apply_action(Action::ToggleCollapseAll, state))
+  assert_false(state.view.collapsed.contains("/etc"))
+}
+
+///|
+/// `Ctrl+L` 只看改写过的行，`Ctrl+U` 撤销；`Ctrl+A` 把焦点交给详情面板。
+test "apply_action filters rows and focuses the detail pane" {
+  let state = AppState::new(two_layers(), None, "demo", initial_layer=1)
+  let total = state.view.visible.length()
+  assert_false(apply_action(Action::FilterModified, state))
+  assert_eq(state.view.only_group(), Some(RowGroup::ModifiedOnly))
+  // L1 里只有 /etc/hosts 是改写的，其余行（/etc、/etc/extra）都被滤掉
+  assert_true(state.view.visible.length() < total)
+  for row in state.view.visible {
+    assert_eq(row.status, RowStatus::Modified)
+  }
+  assert_false(apply_action(Action::FilterClear, state))
+  assert_eq(state.view.only_group(), None)
+  assert_eq(state.view.visible.length(), total)
+  // `Ctrl+A`：焦点去详情面板（本仓没有层信息面板，详情就是「这一层动了什么」的承载面）
+  state.focus = Focus::Tree
+  assert_false(apply_action(Action::CompareAll, state))
+  assert_eq(state.focus, Focus::Detail)
 }
 
 ///|
