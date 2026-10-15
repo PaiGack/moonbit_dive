@@ -55,8 +55,14 @@ async fn run_once(
     // 一次 spawn 失败就先把写端关掉了，若重试还拿同一对写端，
     // 子进程拿到的就是已经关掉的 fd —— 退出码 0，输出却是空的。
     let (spawned, out_read, err_read) = spawn_with_retry(group, program, args)
-    let stdout = read_to_bytes(out_read)
-    let stderr = read_to_bytes(err_read)
+    // stdout 与 stderr **必须并发读干**：两边都是管道，容量只有几十 KB。
+    // 先用一个 `read_all` 读干 stdout 再读 stderr，子进程一旦往 stderr 写满
+    // 管道（`docker pull` 的进度、失败时的报错都能到这个量级）就会阻塞在写，
+    // 于是永远不关 stdout，主进程卡在「等 stdout 的 EOF」上——双方互等。
+    let stdout_task = group.spawn(() => read_to_bytes(out_read))
+    let stderr_task = group.spawn(() => read_to_bytes(err_read))
+    let stdout = stdout_task.wait()
+    let stderr = stderr_task.wait()
     let code = wait_quiet(spawned)
     (code, stdout, stderr)
   }) catch {

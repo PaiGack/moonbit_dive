@@ -32,3 +32,46 @@ async test "spawn_with_retry recovers from ETXTBSY and keeps the output" {
   assert_true(stdout.length() > 0)
   remove_fake_cli(program)
 }
+
+///|
+/// stderr 写满管道时 `run_cli` 不能死锁。
+///
+/// 复现手法：子进程往 stderr 写远超管道缓冲（Linux 上 64KB）的内容，
+/// stdout 只写一点点。如果实现是「先读干 stdout，再读 stderr」，
+/// 子进程会在写 stderr 时被阻塞、永远不关 stdout，主进程于是卡在
+/// 「等 stdout 的 EOF」上——双方互等，`run_cli` 永不返回。
+///
+/// `--pull` 引入的 `<tool> pull <ref>` 就是会吐大量 stderr 的那类命令，
+/// 这个用例守住「两个流并发读干」这条约束。
+#cfg(not(platform="windows"))
+async test "run_cli does not deadlock when stderr floods the pipe" {
+  let script =
+    #|#!/bin/sh
+    #|echo hello
+    #|i=0
+    #|while [ $i -lt 20000 ]; do
+    #|  echo "noise noise noise noise noise noise noise noise noise noise" >&2
+    #|  i=$((i+1))
+    #|done
+    #|
+  let program = write_fake_cli(script)
+  // 真的并发读的话秒回；死锁的话会一直等，5 秒足够区分
+  let result = @async.with_timeout_opt(5000, () => {
+    run_cli(program, [], 0) catch {
+      err => fail("run_cli failed: \{err}")
+    }
+  }) catch {
+    err => fail("unexpected error: \{err}")
+  }
+  match result {
+    Some((code, stdout, stderr)) => {
+      assert_eq(code, 0)
+      assert_true(stdout.length() > 0)
+      // 20000 行 × ~60 字节 ≈ 1.2MB，远大于管道缓冲
+      assert_true(stderr.length() > 65536)
+    }
+    None =>
+      fail("run_cli deadlocked: stderr flooded the pipe and blocked the child")
+  }
+  remove_fake_cli(program)
+}

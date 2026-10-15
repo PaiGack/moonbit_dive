@@ -157,12 +157,13 @@ async test "verbose does not change the fetched result" {
 }
 
 ///|
-/// 端到端：`--from-image --pull` 遇上「本地没有」的镜像时，先 pull 再 save，
+/// 端到端：`--from-image`（默认）遇上「本地没有」的镜像时，先 pull 再 save，
 /// 拿到的归档照样走既有分析链路。
 ///
-/// 这是 issue #42 的验收动作：`save` 对未知镜像会安静地吐空归档，
-/// 没有 `--pull` 时用户只能自己先 `docker pull`。
-async test "from-image with pull fetches a missing image first" {
+/// 这是 issue #42 的验收动作，也是 issue #44 的对齐结论：
+/// 原版 dive（Go）没有 `--pull` 开关，`ImageInspect` 报 not-found 就直接
+/// `docker pull` 一次；这里同样把「缺了就拉」作为默认行为。
+async test "from-image pulls a missing image by default" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
@@ -188,11 +189,11 @@ async test "from-image with pull fetches a missing image first" {
   let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
 
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image", "--pull"]) catch {
+    cli().parse(argv=["example:latest", "--from-image"]) catch {
       err => fail("should parse: \{err}")
     },
   )
-  assert_true(options.pull)
+  assert_false(options.no_pull)
   let source = load_source(options, env={ "PATH": bin }, candidates=cli_only()) catch {
     err => fail("from-image should load: \{describe_error(err)}")
   }
@@ -210,8 +211,8 @@ async test "from-image with pull fetches a missing image first" {
 }
 
 ///|
-/// 本地已有镜像时 `--pull` 不发起拉取：开关是「缺失才拉」，不是「每次都拉」。
-async test "from-image with pull leaves a local image alone" {
+/// 本地已有镜像时不发起拉取：策略是「缺失才拉」，不是「每次都拉」。
+async test "from-image leaves a local image alone" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
@@ -233,7 +234,7 @@ async test "from-image with pull leaves a local image alone" {
   let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
 
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image", "--pull"]) catch {
+    cli().parse(argv=["example:latest", "--from-image"]) catch {
       err => fail("should parse: \{err}")
     },
   )
@@ -244,6 +245,55 @@ async test "from-image with pull leaves a local image alone" {
 
   let calls = @async_fs.read_file(log).text()
   assert_true(calls.contains("inspect example:latest"))
+  assert_true(!calls.contains("pull example:latest"))
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
+  @docker_cli.remove_fake_cli_dir(dir)
+}
+
+///|
+/// `--no-pull`：本地缺镜像也绝不发起拉取。
+///
+/// 这是「完全离线」的开关：`inspect` 说没有之后直接 `save`，
+/// 日志里只有 `inspect → save`，一次 `pull` 都不该有。
+async test "from-image with --no-pull never fetches" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let archive = @docker_cli.build_docker_archive(
+    [("cafe", layer)],
+    config="cafe.json",
+    config_json=(
+      #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:cafe"] } }
+    ),
+  )
+  let archive_path = @docker_cli.write_temp_bytes("no-pull.tar", archive)
+  let dir = @async_fs.tmpdir(prefix="dive-from-image-no-pull-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  // inspect 失败 = 本地没有；但 `--no-pull` 下不该因此去拉
+  let script = @docker_cli.fake_recording_cli(
+    log,
+    archive_path,
+    "[]",
+    inspect_code=1,
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+
+  let options = Options::from_matches(
+    cli().parse(argv=["example:latest", "--from-image", "--no-pull"]) catch {
+      err => fail("should parse: \{err}")
+    },
+  )
+  assert_true(options.no_pull)
+  let source = load_source(options, env={ "PATH": bin }, candidates=cli_only()) catch {
+    err => fail("from-image should load: \{describe_error(err)}")
+  }
+  assert_eq(source.layers.length(), 1)
+
+  let calls = @async_fs.read_file(log).text()
   assert_true(!calls.contains("pull example:latest"))
 
   @docker_cli.remove_fake_cli_dir(bin)

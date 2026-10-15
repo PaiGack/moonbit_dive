@@ -111,7 +111,10 @@ daemon 会在流里回 200 之后再吐 `{"errorDetail":{"message":"..."}}`。
 
 「本地没有就先拉」由 `save_maybe_pulling` 收口，**触发条件是 `inspect` 说本地没有**，
 不是「`save` 失败就拉」——`save` 的失败面太宽（daemon 卡住、权限、磁盘满），
-一律去拉会用一次不必要的网络请求盖住真正的错误：
+一律去拉会用一次不必要的网络请求盖住真正的错误。
+
+`cmd/main` 的默认就是「缺了就拉」（对齐原版 dive），`--no-pull` 关掉它，
+`save_maybe_pulling(pull_if_missing=true/false)` 两端各对应一个开关。
 
 ```moonbit check
 ///|
@@ -226,7 +229,8 @@ listen / accept 只服务测试，不进成品包的公开 API。
 
 CLI 侧：`cmd/main` 用显式开关 `--from-image` 把位置参数当镜像名接到本包
 （`moon run --target native cmd/main -- nginx:latest --from-image`），
-本地没有就 `--pull` 先拉一次（`moon run --target native cmd/main -- nginx:latest --from-image --pull`），
+本地缺镜像时默认先拉一次（对齐原版 dive），想纯离线就
+`moon run --target native cmd/main -- nginx:latest --from-image --no-pull`；
 取到归档后走既有的 `ImageSource::from_tar_bytes`；`--verbose` 打 `describe_backends`
 的探测记录（`[ok]/[no]` 一行一条，走 stderr）。
 端到端（fake docker，不依赖真实 daemon）见 `cmd/main/from_image_wbtest.mbt`，
