@@ -195,3 +195,37 @@ async test "cli backend save_to_file rejects empty output" {
   @fs.rmdir(dir, recursive=true)
   remove_fake_cli(program)
 }
+
+///|
+/// 回归：spawn 重试必须用「新开的」管道，不能复用上一次尝试的写端。
+///
+/// `read_from_process` 造出来的是独占写端，传给子进程后由运行时自动关闭
+/// （`after_spawn`）。一次 spawn 失败（ETXTBSY 这类可重试错误）就会把写端关掉；
+/// 若重试沿用同一对写端，子进程拿到的是死 fd —— 退出码 0、输出为空，
+/// 表现成「docker save 安静地吐了空归档」。CNB 构建机上就是这样翻的车。
+///
+/// 这里拿 `save_to_file`（stdout 走 `redirect_to_file`，不经过测试进程的 stdout）
+/// 做验证：修复前它复用被关掉的重定向，归档根本写不出来。
+async test "spawn retry uses a fresh pipe pair and keeps the output" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit\n"),
+  ])
+  let archive = build_docker_archive([("beef", layer)])
+  let archive_path = write_temp_bytes("retry.tar", archive)
+  let program = write_fake_cli(
+    fake_inspect_and_save(archive_path, "[{\"Id\":\"sha256:beef\"}]"),
+  )
+  let source = @docker_cli.DockerCliSource::new(program)
+  let dir = @fs.tmpdir(prefix="dive-retry-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let output = "\{dir}/out.tar"
+  let written = source.save_to_file("example:latest", output) catch {
+    err => fail("save_to_file should succeed: \{err}")
+  }
+  assert_eq(written, archive.length())
+  assert_eq(@fs.read_file(output).binary(), archive)
+  @fs.rmdir(dir, recursive=true)
+  remove_fake_cli(program)
+  remove_temp_bytes(archive_path)
+}
