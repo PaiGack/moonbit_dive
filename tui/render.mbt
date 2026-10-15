@@ -1,7 +1,15 @@
 ///|
-/// 一帧要画的内容：布局 + 视图状态 + 数据源。
+/// L2 画一帧。
 ///
-/// 把「画什么」和「数据从哪来」分开：视图状态（光标、折叠、层号）来自交互层，
+/// 几何全部来自 `Layout`（分栏 + 边框 + 内容区），一块面板交给 `components.mbt`
+/// 里的一个组件画；这一层只负责「按什么顺序画、画什么内容」。
+///
+/// 全屏形态下多了两件路径 A 没有的事：
+///
+/// - **焦点高亮**：谁聚焦，谁的框标题带 `>`（`paint_pane` 的 `focused`）
+/// - **帮助浮层**：`frame.help_visible` 打开时盖在主体上，最后画（压在别的面板之上）
+///
+/// 「画什么」和「数据从哪来」仍然分开：视图状态（光标、折叠、层号）来自交互层，
 /// 详情面板的数字来自 `image_analysis`。渲染函数只读这两份，不改动它们。
 pub(all) struct Frame {
   layout : Layout
@@ -10,6 +18,12 @@ pub(all) struct Frame {
   image : String
   /// 详情面板数据源；空表示没有分析结果
   details : DetailSource?
+  /// 当前聚焦的面板
+  mut focus : Focus
+  /// 详情面板的滚动位置
+  detail_scroll : Viewport
+  /// 帮助浮层是否展开（`layout.help_visible` 已经收了「放不下」的情况）
+  help_visible : Bool
 } derive(Debug)
 
 ///|
@@ -43,16 +57,35 @@ pub(all) struct DetailEntry {
 
 ///|
 /// 画一整帧。
+///
+/// 顺序：标题行 → 两个主面板的框 → 主体内容 → 状态行 → 帮助浮层。
+/// 框先画是因为内容只写内容区，不会盖住框；状态行最后保证它压在所有东西之上
+/// （窄屏时主体可能与它重叠）。
 pub fn draw(screen : Screen, frame : Frame) -> Unit {
   let layout = frame.layout
   draw_header(screen, layout, frame)
-  draw_tree_pane(screen, layout, frame.view)
+  // 框先立起来，内容区随后只动内部格子
+  for pane in layout.panes {
+    paint_pane(screen, pane, is_focused_pane(frame, pane.id))
+  }
+  draw_tree_pane(screen, layout, frame)
   draw_detail_pane(screen, layout, frame)
   draw_status_bar(screen, layout, frame)
+  if frame.help_visible {
+    draw_help(screen, layout, frame)
+  }
+}
+
+///|
+/// 该面板是不是当前焦点所在。
+fn is_focused_pane(frame : Frame, id : PaneId) -> Bool {
+  id == focus_pane_id(frame.focus)
 }
 
 ///|
 /// 标题行：左对齐镜像名，右对齐 `LAYER x/y`。
+///
+/// 全屏下标题行不画框（它只有一行），保持与状态行的对称。
 fn draw_header(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   screen.clear_row(layout.header_row)
   let mark = "LAYER \{frame.view.layer + 1}/\{frame.view.total_layers}"
@@ -75,28 +108,34 @@ fn draw_header(screen : Screen, layout : Layout, frame : Frame) -> Unit {
 ///|
 /// 左栏：缩进的文件树。光标行左侧 `>`，目录行前带 `-`/`+`（展开/收起），
 /// 右侧对齐大小（人类可读）与层号。
-fn draw_tree_pane(screen : Screen, layout : Layout, view : TreeView) -> Unit {
-  let width = layout.left_width()
-  let height = layout.body_height()
+///
+/// 光标行在**未聚焦**时不画 `>`（焦点在详情面板上时，树的高亮只是「上次停在哪」），
+/// 用 `:` 顶替：既不丢掉位置感，也不装作还能操作。
+fn draw_tree_pane(screen : Screen, layout : Layout, frame : Frame) -> Unit {
+  let pane = match layout.pane(PaneId::Tree) {
+    Some(pane) => pane
+    None => return
+  }
+  clear_pane(screen, pane)
+  let view = frame.view
+  let width = pane.inner_width()
+  let height = pane.inner_height()
+  let (origin_col, origin_row) = (pane.inner_left(), pane.inner_top())
+  let focused = frame.focus == Focus::Tree
   for row = 0; row < height; row = row + 1 {
-    let screen_row = layout.body_top + row
-    screen.clear_row(screen_row)
     let index = view.offset + row
     if index < 0 || index >= view.visible.length() {
       continue
     }
     let item = view.visible[index]
     let selected = index == view.cursor
-    screen.write_text(0, screen_row, format_row(item, view, width, selected))
+    screen.write_text(
+      origin_col,
+      origin_row + row,
+      format_row(item, view, width, selected, focused),
+    )
   }
-  // 可视区放不下时在右下角提示还有多少行
-  if view.visible.length() > height && height > 0 {
-    let hint = "\{view.offset + height}/\{view.visible.length()}"
-    let hint_width = display_width(hint)
-    if hint_width < width {
-      screen.write_text(width - hint_width, layout.body_top + height - 1, hint)
-    }
-  }
+  paint_overflow_hint(screen, pane, view.offset + height, view.visible.length())
 }
 
 ///|
@@ -106,8 +145,16 @@ fn format_row(
   view : TreeView,
   width : Int32,
   selected : Bool,
+  focused : Bool,
 ) -> String {
-  let cursor = if selected { ">" } else { " " }
+  let cursor = if !selected {
+    " "
+  } else if focused {
+    ">"
+  } else {
+    // 焦点不在树上：光标行仍在，但不再宣称「按下去就动它」
+    ":"
+  }
   let tail = row_tail(item)
   let tail_width = display_width(tail)
   // 缩进按 path 的层级减一（根下第一层不缩进），每级两格
@@ -143,46 +190,60 @@ fn row_tail(item : Row) -> String {
 }
 
 ///|
-/// 右栏：光标行的详情。没有数据源时给一行提示，不画半截面板。
+/// 右栏：光标行的详情，按 `frame.detail_scroll` 滚动。
+///
+/// 没有数据源时给一行提示，不画半截面板；窄屏下这块面板不存在，直接跳过。
 fn draw_detail_pane(screen : Screen, layout : Layout, frame : Frame) -> Unit {
-  if layout.right_start < 0 {
-    return
+  let pane = match layout.pane(PaneId::Detail) {
+    Some(pane) => pane
+    None => return
   }
-  let top = layout.body_top
-  let height = layout.body_height()
-  let width = layout.right_width()
-  // 只清右栏那几列：`clear_row` 会把左栏的树一起擦掉
-  for row = 0; row < height; row = row + 1 {
-    for col = layout.right_start; col <= layout.right_end; col = col + 1 {
-      screen.set(col, top + row, ' ')
-    }
-  }
+  clear_pane(screen, pane)
   let source = match frame.details {
     Some(source) => source
-    None => return
+    None => {
+      screen.write_text(
+        pane.inner_left(),
+        pane.inner_top(),
+        truncate_to_width(
+          "(details unavailable: the analysis step failed)",
+          pane.inner_width(),
+        ),
+      )
+      return
+    }
   }
   let path = frame.view.cursor_path_from_visible()
   let lines = match path {
     Some(path) => detail_lines(source, path)
     None => ["(no selection)"]
   }
-  for index, line in lines {
-    if index >= height {
-      break
+  // 内容长度每帧会变（跟随光标），先把视口的计数对齐再取窗口
+  frame.detail_scroll.set_content(lines.length())
+  let height = pane.inner_height()
+  let (origin_col, origin_row) = (pane.inner_left(), pane.inner_top())
+  for row = 0; row < height; row = row + 1 {
+    match frame.detail_scroll.line_at(row) {
+      Some(index) => {
+        let line = truncate_to_width(lines[index], pane.inner_width())
+        screen.write_text(origin_col, origin_row + row, line)
+      }
+      None => ()
     }
-    screen.write_text(
-      layout.right_start,
-      top + index,
-      truncate_to_width(line, width),
-    )
   }
+  paint_overflow_hint(
+    screen,
+    pane,
+    frame.detail_scroll.offset + height,
+    lines.length(),
+  )
 }
 
 ///|
 /// 详情面板的文本行。
 fn detail_lines(source : DetailSource, path : String) -> Array[String] {
   let lines = [
-    truncate_to_width(path, 200),
+    truncate_keep_tail(path, 200),
     "",
     "efficiency  \{percent_text(source.efficiency)}",
     "wasted      \{human_size(source.wasted)}",
@@ -208,10 +269,17 @@ fn detail_lines(source : DetailSource, path : String) -> Array[String] {
 }
 
 ///|
-/// 状态行：按键提示 + 光标位置。
+/// 状态行：按键提示 + 焦点 + 光标位置。
+///
+/// 提示随焦点变：焦点在详情面板时，↑↓ 滚的是详情，不是树。状态行**不画框**
+/// （只有一行，画了就没内容了），所以这里直接 `clear_row`。
 fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   screen.clear_row(layout.status_row)
-  let hint = "↑↓ move  ←→ fold  [ ] layer  q quit"
+  let hint = match frame.focus {
+    Focus::Tree =>
+      "↑↓ move  ←→ fold  [ ] layer  Tab focus  ? help  q quit"
+    Focus::Detail => "↑↓ scroll  Tab focus  ? help  q quit"
+  }
   let position = if frame.view.visible.length() == 0 {
     "0/0"
   } else {
@@ -226,6 +294,37 @@ fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   if position_width < layout.cols {
     screen.write_text(layout.cols - position_width, layout.status_row, position)
   }
+}
+
+///|
+/// 帮助浮层：一段固定说明，按面板高度截断。
+///
+/// 内容刻意短：浮层是「想不起来才看一眼」的东西，塞满一屏反而不想读。
+/// 真正的键位表在 `tui/README.mbt.md`。
+fn draw_help(screen : Screen, layout : Layout, frame : Frame) -> Unit {
+  let pane = match layout.pane(PaneId::Help) {
+    Some(pane) => pane
+    None => return
+  }
+  clear_pane(screen, pane)
+  let lines = [
+    "↑↓ / j k       move or scroll", "←→ / h l       fold / unfold the tree",
+    "PgUp / PgDn    page", "[ ]            previous / next layer", "Tab            switch focus (tree ↔ detail)",
+    "?              toggle this panel", "q / Esc        quit",
+  ]
+  let height = pane.inner_height()
+  let (origin_col, origin_row) = (pane.inner_left(), pane.inner_top())
+  for index, line in lines {
+    if index >= height {
+      break
+    }
+    screen.write_text(
+      origin_col,
+      origin_row + index,
+      truncate_to_width(line, pane.inner_width()),
+    )
+  }
+  let _ = frame
 }
 
 ///|

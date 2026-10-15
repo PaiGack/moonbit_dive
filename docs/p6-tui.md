@@ -7,10 +7,14 @@
 
 [#27](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/27) 曾把「不做全屏 TUI」定为结论，
 但留了活口：真要做全屏交互，另开实现 issue。[#46](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/46)
-承接了这条活口，实测排掉三个前置阻塞项后，按**路径 A（非全屏交互式看树）**落地：
+承接了这条活口，实测排掉三个前置阻塞项后，先按**路径 A（非全屏交互式看树）**落地
+（#48：占主屏、底部一行状态条）；路径 A 跑通后按 [#49](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/49)
+补上**路径 B（全屏 TUI）**：
 
-- 占主屏、底部一行状态条，不切 alternate screen、不做分栏布局引擎
-- 底层用 `moonbit-community/tty` 做终端原语（raw mode / 尺寸 / 输入解码 / 光标与擦除）
+- 进 alternate screen，带边框的分栏（树 / 详情），`Tab` 切焦点，`?` 出帮助浮层，
+  退出时还原终端（含异常路径）
+- 底层用 `moonbit-community/tty` 做终端原语（raw mode / alternate screen / 尺寸 /
+  输入解码 / 光标与擦除）
 - 数据全部来自既有链路（`layer_tree::browse_layers` + `image_analysis`），TUI 只是再包一层视图
 
 ## 阻塞项结论（#46 评论区实测）
@@ -28,16 +32,30 @@ tui/
 ├── screen.mbt       L0 字符画布（列×行），写入即标脏
 ├── width.mbt        L0 显示宽度与按列截断/补齐
 ├── terminal.mbt     L0 画布 → 终端字节流（首帧全量、之后只吐脏格）
-├── layout.mbt       L1 分栏（标题 / 左右主体 / 状态行），窄屏退化单栏
+├── alt_screen.mbt   L0 alternate screen 的进/出序列（幂等，异常也还原）
+├── layout.mbt       L1 分栏布局引擎：面板矩形 + 边框 + 内容区 + 帮助让位
+├── viewport.mbt     L1 滚动视口（详情面板用）
+├── components.mbt   L2 面板组件：画框 / 标题高亮 / 清内容区 / 溢出提示
 ├── tree_view.mbt    L2 树拍平成行 + 展开/折叠 + 滚动 + 光标
 ├── render.mbt       L2 画一帧
 ├── keys.mbt         L3 按键 → 动作 → 视图状态
+├── focus.mbt        L3 焦点顺序与循环
 ├── model.mbt        L4 分析结果 → 详情数据源
-└── app.mbt          L4 主循环
+└── app.mbt          L4 主循环（进全屏 → 组帧 → 等事件 → 还原）
 ```
 
-分层与 #46 的倒排（L0–L4）对应。每层可独立验收：L0/L1 是纯计算与纯布局，
-L2 是纯状态机，L3 是按键映射，L4 才有副作用（终端 IO）。
+分层与 #46 的倒排（L0–L4）对应。路径 B 是在 L0–L4 各补一层，而不是换一套架构：
+
+| 层 | 路径 A（#48） | 路径 B（#49） |
+|---|---|---|
+| L0 | 无 | `alt_screen.mbt`：进出序列、退出幂等 |
+| L1 | 固定的「左树右详情」数字 | `layout.mbt` 面板矩形 + 边框 + 内容区；`viewport.mbt` |
+| L2 | `render.mbt` 直接画 | `components.mbt` 抽成可复用组件 |
+| L3 | 按键 → 视图 | `focus.mbt` 焦点显式化 + 切焦点 / 帮助键 |
+| L4 | 主屏主循环 | 同一主循环 + 全屏进出与还原 |
+
+每层可独立验收：L0/L1 是纯计算与纯布局，L2 是纯状态机，L3 是按键与焦点映射，
+L4 才有副作用（终端 IO）。
 
 ## 关键取舍
 
@@ -54,7 +72,27 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 ### 不做样式
 
 前景/背景/加粗本轮用不到，带上它会让「缓冲 diff」和「SGR 序列拼接」两件事缠在一起。
-`Screen` 只存字符，配色留到需要时再加一层。
+`Screen` 只存字符，焦点靠边框标题的 `>` 标记表达（不用反白），配色留到需要时再加一层。
+
+### 退出还原
+
+全屏占的是 alternate screen，正常退出回到主屏、滚上去的 shell 输出原封不动；
+中途 panic / Ctrl+C / 任务取消才是问题现场。两条保护叠起来：
+
+1. `with_raw_mode`（全屏同样要 raw mode）
+2. `AltScreen::leave` 的 `defer @async.protect_from_cancel`，且幂等
+
+`teardown_commands()` 把「退出发什么」抽成纯函数并钉死顺序：
+复位样式 → 显示光标 → 离开 alternate screen。顺序不能换——
+切换缓冲区会清屏并作用到主屏上。
+
+### 焦点
+
+路径 A 只有一个能动的东西（树的光标），全屏下有两块会滚的面板，
+键盘得先知道「这一下给谁」。焦点是 `Focus::{Tree, Detail}`，
+顺序与循环在 `focus.mbt` 里纯函数化。状态行与帮助浮层不接焦点：
+把 `Tab` 停在没有交互的面板上只会让人以为按键失灵。
+窄屏下详情栏没有位置，但焦点留在它身上不算错——拉宽后面板会回来。
 
 ### 增量重画
 
@@ -72,11 +110,20 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 `--tui` 是 `cmd/main` 的一个开关，不是新的子命令。退出码只有 `0` / `2`：
 它不是门禁判定，是一张可上下走的视图。给了 `--layer` 就作为 TUI 的起始层，
 不给则默认看最后一层（与原 `--layer` 缺省一致）。
+全屏的进出由 `@tui.run_app` 自己管，`cmd/main` 只提供 raw mode 那一层保护。
 
 ## 非目标
 
-- 全屏 TUI（alternate screen / 分栏布局引擎 / 组件库）——路径 B，另议
-- 样式与配色
+- 样式与配色（前景/背景/加粗）
 - 鼠标事件（tty 已解出，但本轮不接）
 - grapheme cluster 级别的文本测量
 - 边看边改（TUI 是只读视图，不产生镜像变更）
+
+## 全屏形态的验收（#49）
+
+- 树 / 详情两块面板可 `Tab` 切换焦点，聚焦的那块边框标题带 `>`
+- 帮助浮层 `?` 开关，铺在主体下半部分，挤不下时自动不显示
+- 窄屏退化单栏，详情栏没有位置但不影响焦点状态
+- 异常退出（panic / Ctrl+C）后终端还原：`teardown_commands()` 有单测钉住三件事与顺序
+- `moon test --target native` 全绿；关键交互（布局、视口、焦点、按键、组件、退出序列）
+  都有测试覆盖，真终端行为靠 CLI 冒烟

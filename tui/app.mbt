@@ -1,13 +1,15 @@
 ///|
-/// 交互式看树的主循环。
+/// L4 主循环。
 ///
-/// 这一层只做三件事：拿终端尺寸 → 组装 `Frame` → 等一次事件。
+/// 这一层只做四件事：拿终端尺寸 → 组装 `Frame` → 等一次事件 → 把动作施加回状态。
 /// 「事件怎么变成新的视图状态」在 `keys.mbt`，「画面怎么拼」在 `render.mbt`，
-/// 都从数据源解耦，方便单测。
+/// 「终端生命周期」在 `alt_screen.mbt`，都从数据源解耦，方便单测。
 ///
-/// 形态是**非全屏**（路径 A）：直接占主屏，底部一行状态条，
-/// 不切 alternate screen、不做分栏布局引擎。退出后终端恢复到进入前的样子
-/// （raw mode 由 `with_raw_mode` 兜住）。
+/// 形态是**全屏**（路径 B）：进 alternate screen，画带边框的分栏，退出时还原。
+/// 还原走两层保护：
+///
+/// 1. tty 的 `with_raw_mode` / 我们自己的 `defer` 管「异常也要还原」
+/// 2. `AltScreen::leave` 是幂等的，`enter` 抛了错也能安全 `leave`
 ///
 /// 每帧在 `with_synchronized_update` 里下发：终端会把这一批字节当一次原子刷新，
 /// 避免逐字节下发时的撕裂。
@@ -20,6 +22,12 @@ pub(all) struct AppState {
   image : String
   /// 当前视图
   mut view : TreeView
+  /// 当前焦点
+  mut focus : Focus
+  /// 详情面板的滚动位置
+  detail_scroll : Viewport
+  /// 帮助浮层是否展开
+  mut help_visible : Bool
 } derive(Debug)
 
 ///|
@@ -37,7 +45,15 @@ pub fn AppState::new(
     @layer_tree.FileTree::new()
   }
   let view = TreeView::from_tree(tree, layer, views.length())
-  { views, details, image, view, }
+  {
+    views,
+    details,
+    image,
+    view,
+    focus: Focus::Tree,
+    detail_scroll: Viewport::new(0, 1),
+    help_visible: false,
+  }
 }
 
 ///|
@@ -61,6 +77,8 @@ pub fn AppState::switch_layer(self : AppState, layer : Int32) -> Unit {
     None => ()
   }
   self.view = view
+  // 换层后详情内容是新的，滚动位置归零，不然会停在一个没有意义的偏移上
+  self.detail_scroll.to_top()
 }
 
 ///|
@@ -68,11 +86,16 @@ pub fn AppState::switch_layer(self : AppState, layer : Int32) -> Unit {
 ///
 /// `esc_timeout_ms` 是 ESC 与后续字节拼帧的等待窗口（tty 层的 `read_event` 参数）。
 /// 给 50ms：够终端把 `\\x1b[A`（方向键）拼完，又不会让单按 ESC 明显卡顿。
+///
+/// 全屏的进出都在这里：进之前先 `enter`（进不去就抛，让调用方报错而不是
+/// 把画面画到主屏上），退出走 `defer`，因此 panic / 取消 / 正常读到 `q`
+/// 三条路都会还原终端。
 pub async fn run_app(tty : @tty.Tty, state : AppState) -> Unit {
   let painter = Painter::new()
-  tty.hide_cursor()
-  defer @async.protect_from_cancel(() => cleanup(tty))
-  loop_draw(tty, painter, state)
+  let alt = AltScreen::new()
+  alt.enter(tty)
+  defer @async.protect_from_cancel(() => alt.leave(tty))
+  draw_frame(tty, painter, state)
   while true {
     let event = tty.read_event(esc_timeout_ms~) catch {
       @async/io.ReaderClosed => break
@@ -82,9 +105,7 @@ pub async fn run_app(tty : @tty.Tty, state : AppState) -> Unit {
     match event {
       @tty.Event::Input(@input.InputEvent::Key(key)) => {
         let action = action_of_key(key)
-        quit = apply_action(action, state.view, layer => {
-          state.switch_layer(layer)
-        })
+        quit = apply_action(action, state)
       }
       @tty.Event::Input(_) => ()
       @tty.Event::Resize(_) => ()
@@ -92,33 +113,39 @@ pub async fn run_app(tty : @tty.Tty, state : AppState) -> Unit {
     if quit {
       break
     }
-    loop_draw(tty, painter, state)
+    draw_frame(tty, painter, state)
   }
 }
 
 ///|
 /// 画一帧：按当前终端尺寸重算布局，回填翻页步长，然后交给 painter。
-async fn loop_draw(tty : @tty.Tty, painter : Painter, state : AppState) -> Unit {
+async fn draw_frame(
+  tty : @tty.Tty,
+  painter : Painter,
+  state : AppState,
+) -> Unit {
   let size = window_size(tty)
-  let layout = Layout::compute(size.cols, size.rows)
+  let layout = Layout::compute(
+    size.cols,
+    size.rows,
+    help_visible=state.help_visible,
+  )
   // 翻页步长 = 主体可视行数 - 1，留一行重叠，翻页时不会漏行
   state.view.page_height = max(layout.body_height() - 1, 1)
   state.view.clamp_offset()
+  state.detail_scroll.window = layout.body_height()
+  state.detail_scroll.clamp()
   let screen = Screen::new(layout.cols, layout.rows)
   draw(screen, {
     layout,
     view: state.view,
     image: state.image,
     details: state.details,
+    focus: state.focus,
+    detail_scroll: state.detail_scroll,
+    help_visible: layout.help_visible,
   })
   tty.with_synchronized_update(() => painter.paint(tty, screen))
-}
-
-///|
-/// 退出时恢复光标，并把状态行留在最后一行。
-async fn cleanup(tty : @tty.Tty) -> Unit {
-  tty.show_cursor()
-  tty.write_string("\r\n")
 }
 
 ///|
