@@ -60,6 +60,12 @@ run git status
 
 # --------------------------------------------------------- 2. 测试与覆盖率 --
 section "测试"
+# 覆盖率产物落在 `<repo>/_build/moonbit_coverage_<ts>_<id>.txt`，每个测试可执行
+# 文件一份，`moon test` 只清理它自己认得的那批。反复跑会越攒越多（实测一轮
+# 5 次就攒到 49 份），`moon coverage report` 把新旧数据混在一起解析时，
+# 有相当概率撞上 JSON 解析失败（本地复现 3/25）。每次跑之前先清干净，
+# 保证「测试 + 报告」是自洽的一轮。
+rm -f _build/moonbit_coverage_*.txt
 run moon test --target native --deny-warn --enable-coverage
 run moon coverage report -f summary
 
