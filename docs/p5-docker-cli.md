@@ -75,26 +75,44 @@ pub(open) trait ImageSource {
 | 验收项 | 状态 | 落点 |
 |---|---|---|
 | CLI 后端对 docker / podman / nerdctl 三者，`inspect` + `save` 均有测试（可 fake） | ✅ | `cli_source_test.mbt`：fake 脚本 + 三者参数形态 |
-| Engine 后端对 fake 服务端完成 inspect / save 测试，跑在 CI 里 | ⚠️ 部分 | 见「遗留」 |
+| Engine 后端对 fake 服务端完成 inspect / save 测试，跑在 CI 里 | ✅ | `transport_test.mbt`：真起 unix socket 服务端，端到端跑通 |
 | 无 daemon 环境下探测失败有明确错误与提示，不 panic | ✅ | `probe_test.mbt` 的 `NoBackend` 用例 |
 | `docker save` 出来的 tar 能被 P2 的 `apply_layers_with_diffs` 直接吃下，端到端一个用例 | ✅ | `pipeline_test.mbt` |
-| 大镜像走流式路径，不把整层读进内存 | ⚠️ 部分 | 见「遗留」 |
+| 大镜像走流式路径，不把整层读进内存 | ✅ | `save_to_file_memory_test.mbt`：100MB fixture + `/proc/self/status` |
 | README 给出「后端探测 → inspect → save → 分析」的完整命令与预期输出 | ✅ | `docker_cli/README.mbt.md`（示例被测试跑一遍） |
-| `moon check` / `moon test` 全绿 | ✅ | 210 个用例 |
+| `moon check` / `moon test` 全绿 | ✅ | 268 个用例（native） |
 
 ## 遗留
 
-三件事明确留给后续，不在本次 PR 里假装做完：
+原三件遗留里，前两件已在本轮落地（见 issue #25）：
 
-1. **fake unix socket 服务端**：生态里还没有 unix socket 服务端绑定
-   （`moonbitlang/async/socket` 只有 TCP/UDP），因此 Engine 后端的**传输层**
-   没有端到端测试。当前覆盖的是 Engine 的请求组装、响应解析、版本前缀、
-   引用编码、错误体提取——传输层之上的每一层都测了，传输层本身没有。
-   等生态补上 unix socket server 或引入 FFI stub 后补。
-2. **`save_to_file` 的流式语义**：落地了，但测试里的 fake 归档只有几百字节，
-   没有真正验证「500MB 层不爆内存」。需要一个大 fixture。
+1. ~~**fake unix socket 服务端**~~ → 用一层薄 FFI 补齐。
+   `unix_socket_test_stub.c` 提供 listen / accept，
+   `unix_test_support.mbt` 的 `UnixSocketServer` 起 fake daemon，
+   `transport_test.mbt` 真发 HTTP、真读 chunked、真跑版本协商与 404 错误体。
+   **顺带发现并修掉一个真实 bug**：`http_over_unix` 原先走
+   `@socket.Tcp::connect_to_host`，它内部先做 `getaddrinfo`，
+   永远连不上 `/var/run/docker.sock` 这种路径。现在换成
+   `connect_unix_socket`（`socket(AF_UNIX)` + `connect(2)`）。
+   本包因此只支持 native：`supported_targets = "-all+native"`。
+2. ~~**`save_to_file` 的流式语义**~~ → `large_fixture.mbt` 的
+   `write_large_archive` 流式现造 100MB 归档，
+   `save_to_file_memory_test.mbt` 用 `/proc/self/status` 的 `VmRSS`
+   断言写入后内存不随归档体积涨（对照实验：缓冲路径会涨 ~127MB，用例会失败）。
 3. **Engine 后端的 `pull`**：实现了 `POST /images/create`，但没有流式进度解析，
-   也没有「本地缺失时自动 pull」的接线。
+   也没有「本地缺失时自动 pull」的接线（范围外，另议）。
+
+## 测试基础设施
+
+| 文件 | 作用 | target |
+|---|---|---|
+| `unix_socket_stub.c` | 生产侧 `connect(2)` 建连 | native |
+| `unix_socket_test_stub.c` | 测试侧 `listen` / `accept` | native |
+| `unix_test_support.mbt` | `UnixSocketServer`：起监听、等连接、收发字节 | native |
+| `large_fixture.mbt` | 流式生成 100MB 量级 docker-archive | native |
+
+两个 stub 都只在 `#cfg(not(platform="windows"))` 下编译；
+`listen` / `accept` 只为测试服务，不进成品包的公开 API。
 
 ## 参考
 

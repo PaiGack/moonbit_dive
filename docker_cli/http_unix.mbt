@@ -7,6 +7,8 @@
 ///
 /// 之所以不用 `moonbitlang/async/http`：它面向 `http(s)://` URL，
 /// 走 DNS + TCP + TLS，没有 unix socket 的入口。
+/// 连接由 `connect_unix_socket` 提供（native 上是 `@raw_fd.RawFdStream`），
+/// 这里只做 HTTP/1.1 报文层的组装与解析。
 pub(all) struct HttpResponse {
   status : Int32
   headers : Array[(String, String)]
@@ -57,7 +59,7 @@ pub async fn http_over_unix(
   timeout_ms : Int32,
 ) -> HttpResponse raise DockerCliError {
   let work = () => {
-    let connection = @socket.Tcp::connect_to_host(socket_path, port=0) catch {
+    let connection = connect_unix_socket(socket_path) catch {
       err => raise connect_error(socket_path, err)
     }
     defer connection.close()
@@ -88,10 +90,13 @@ pub async fn http_over_unix(
 }
 
 ///|
-/// 把 `connect_to_host` 的失败收成 `Backend`：unix socket 上「连不上」
+/// 把建连失败收成 `Backend`：unix socket 上「连不上」
 /// 通常意味着 daemon 没起，错误信息要能让用户看懂。
-fn connect_error(path : String, err : Error) -> DockerCliError {
-  Backend(path, -1, "connect failed: \{err}")
+fn connect_error(path : String, err : DockerCliError) -> DockerCliError {
+  match err {
+    Backend(_, _, detail) => Backend(path, -1, detail)
+    _ => Backend(path, -1, err.to_string())
+  }
 }
 
 ///|
@@ -118,7 +123,7 @@ fn build_head(request : HttpRequest) -> String {
 ///|
 /// 读状态行 + 头部；head 与 body 的边界由 `read_until` 找到。
 async fn read_response(
-  connection : @socket.Tcp,
+  connection : @raw_fd.RawFdStream,
   context_ : String,
 ) -> HttpResponse raise DockerCliError {
   let status_line = connection.read_until("\r\n") catch {
@@ -175,7 +180,7 @@ fn split_header(line : String) -> (String, String) {
 /// 收 body。`Transfer-Encoding: chunked` 优先于 `Content-Length`
 /// （RFC 7230：chunked 在场时忽略 Content-Length），两个都没有就当空 body。
 async fn read_body(
-  connection : @socket.Tcp,
+  connection : @raw_fd.RawFdStream,
   headers : Array[(String, String)],
   context_ : String,
 ) -> Bytes raise DockerCliError {
@@ -202,7 +207,7 @@ async fn read_body(
 
 ///|
 async fn read_exact(
-  connection : @socket.Tcp,
+  connection : @raw_fd.RawFdStream,
   size : Int32,
   context_ : String,
 ) -> Bytes raise DockerCliError {
@@ -220,7 +225,7 @@ async fn read_exact(
 /// `docker save` 的归档就是这个形式，也是「大镜像不落内存」要盯的地方：
 /// 这里的实现仍然把整段拼进内存，流式版本与 Engine 后端的完整能力一并留给后续。
 async fn read_chunked(
-  connection : @socket.Tcp,
+  connection : @raw_fd.RawFdStream,
   context_ : String,
 ) -> Bytes raise DockerCliError {
   let buffer = @buffer.Buffer()
