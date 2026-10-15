@@ -207,6 +207,9 @@ async test "a socket that never answers _ping is not healthy" {
     )
     assert_true(probed.candidate is None)
     assert_true(probed.attempts[0].reason.contains("does not answer"))
+    // 理由里路径只该出现一次：`Backend` 的 Show 已经带了 `<path> failed: `，
+    // 外层再拼一次就成了「路径念两遍」，看日志的人要猜哪层才是真的
+    assert_eq(count_occurrences(probed.attempts[0].reason, server.path), 1)
   })
   server.close()
 }
@@ -241,4 +244,21 @@ async test "a socket that answers _ping is healthy" {
 /// 与 `--verbose` 都打不出任何东西的表现完全一致。
 test "the default timeout is finite" {
   assert_true(@docker_cli.default_timeout_ms > 0)
+}
+
+///|
+/// 子串出现次数，用来断言「路径只被念一遍」。
+fn count_occurrences(text : String, needle : String) -> Int32 {
+  let mut count = 0
+  let mut rest = text
+  while true {
+    match rest.find(needle) {
+      None => break
+      Some(index) => {
+        count = count + 1
+        rest = rest[index + needle.length():].to_owned()
+      }
+    }
+  }
+  count
 }
