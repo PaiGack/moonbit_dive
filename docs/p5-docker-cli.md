@@ -76,7 +76,7 @@ pub(open) trait ImageSource {
   ```bash
   # 显式声明「这是镜像名」，走本包取归档后再进 P2/P3/P4
   moon run --target native cmd/main -- nginx:latest --from-image
-  # 后端与探测过程可见（[ok]/[no] 一行一条，走 stderr）
+  # 后端与探测过程可见（选择 / 试哪条 / 拉 / 存 / [ok]|[no] 逐行，走 stderr）
   moon run --target native cmd/main -- nginx:latest --from-image --verbose
   # 本地缺镜像时默认先拉一次（对齐原版 dive）；--no-pull 关掉，纯离线绝不发网络请求
   moon run --target native cmd/main -- nginx:latest --from-image
