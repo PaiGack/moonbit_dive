@@ -78,3 +78,16 @@ test "image positional is kept as-is without from-image" {
   assert_false(options.from_image)
   assert_eq(options.format, "json")
 }
+
+///|
+/// `--tui` 默认关；打开后不影响其它开关的语义。
+test "tui flag defaults to off and is independent" {
+  let options = parse_options(["demo.tar"])
+  assert_false(options.tui)
+  let with_tui = parse_options(["demo.tar", "--tui"])
+  assert_true(with_tui.tui)
+  // 顺手开 `--tui` 不该改掉门禁/视图的开关
+  assert_false(with_tui.efficiency)
+  assert_eq(with_tui.layer, None)
+  assert_eq(with_tui.format, "text")
+}

@@ -1,0 +1,197 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "PaiGack/dive/tui"
+
+import {
+  "PaiGack/dive/image_analysis",
+  "PaiGack/dive/layer_tree",
+  "moonbit-community/tty",
+  "moonbit-community/tty/input",
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn action_of_key(@input.KeyEvent) -> Action
+
+pub fn analysis_of_layers(Array[BytesView]) -> (@image_analysis.Analysis, @image_analysis.Report)?
+
+pub fn apply_action(Action, TreeView, (Int) -> Unit) -> Bool
+
+pub fn char_width(Char) -> Int
+
+pub fn clamp(Int, Int, Int) -> Int
+
+pub fn detail_source_of(@image_analysis.Analysis, @image_analysis.Report) -> DetailSource
+
+pub fn display_width(StringView) -> Int
+
+pub fn draw(Screen, Frame) -> Unit
+
+pub fn human_size(Int) -> String
+
+pub fn max(Int, Int) -> Int
+
+pub fn min(Int, Int) -> Int
+
+pub fn pad_to_width(StringView, Int) -> String
+
+pub async fn run_app(@tty.Tty, AppState) -> Unit
+
+pub fn spaces(Int) -> String
+
+pub fn truncate_keep_tail(String, Int) -> String
+
+pub fn truncate_to_width(StringView, Int) -> String
+
+pub fn window_size(@tty.Tty) -> WindowSize
+
+// Errors
+
+// Types and methods
+pub(all) enum Action {
+  MoveUp
+  MoveDown
+  PageUp
+  PageDown
+  Home
+  End
+  Expand
+  Collapse
+  Toggle
+  PrevLayer
+  NextLayer
+  Quit
+  None
+} derive(Eq, @debug.Debug)
+pub fn Action::equal(Self, Self) -> Bool
+pub fn Action::not_equal(Self, Self) -> Bool
+pub fn Action::to_repr(Self) -> @debug.Repr
+
+pub(all) struct AppState {
+  views : Array[@layer_tree.LayerView]
+  details : DetailSource?
+  image : String
+  mut view : TreeView
+} derive(@debug.Debug)
+pub fn AppState::new(Array[@layer_tree.LayerView], DetailSource?, String, initial_layer? : Int) -> Self
+pub fn AppState::switch_layer(Self, Int) -> Unit
+pub fn AppState::to_repr(Self) -> @debug.Repr
+
+pub(all) struct DetailEntry {
+  versions : Int
+  cumulative : Int
+  min_bytes : Int
+} derive(Eq, @debug.Debug)
+pub fn DetailEntry::equal(Self, Self) -> Bool
+pub fn DetailEntry::not_equal(Self, Self) -> Bool
+pub fn DetailEntry::to_repr(Self) -> @debug.Repr
+
+pub(all) struct DetailSource {
+  entries : Map[String, DetailEntry]
+  wasted : Int
+  total : Int
+  efficiency : Double
+} derive(@debug.Debug)
+pub fn DetailSource::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Frame {
+  layout : Layout
+  view : TreeView
+  image : String
+  details : DetailSource?
+} derive(@debug.Debug)
+pub fn Frame::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Layout {
+  cols : Int
+  rows : Int
+  header_row : Int
+  body_top : Int
+  body_bottom : Int
+  left_start : Int
+  left_end : Int
+  right_start : Int
+  right_end : Int
+  status_row : Int
+} derive(Eq, @debug.Debug)
+pub fn Layout::body_height(Self) -> Int
+pub fn Layout::compute(Int, Int) -> Self
+pub fn Layout::equal(Self, Self) -> Bool
+pub fn Layout::left_width(Self) -> Int
+pub fn Layout::not_equal(Self, Self) -> Bool
+pub fn Layout::right_width(Self) -> Int
+pub fn Layout::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Painter {
+  mut previous : Screen?
+  mut painted : Bool
+} derive(@debug.Debug)
+pub fn Painter::new() -> Self
+pub async fn Painter::paint(Self, @tty.Tty, Screen) -> Unit
+pub fn Painter::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Row {
+  path : String
+  depth : Int
+  is_dir : Bool
+  size : Int
+  layer : Int
+} derive(Eq, @debug.Debug)
+pub fn Row::equal(Self, Self) -> Bool
+pub fn Row::not_equal(Self, Self) -> Bool
+pub fn Row::to_repr(Self) -> @debug.Repr
+
+pub(all) struct Screen {
+  cols : Int
+  rows : Int
+  cells : Array[Char]
+  dirty : Array[Bool]
+} derive(@debug.Debug)
+pub fn Screen::clear(Self) -> Unit
+pub fn Screen::clear_row(Self, Int) -> Unit
+pub fn Screen::get(Self, Int, Int) -> Char
+pub fn Screen::new(Int, Int) -> Self
+pub fn Screen::resize(Self, Int, Int) -> Self
+pub fn Screen::row_string(Self, Int) -> String
+pub fn Screen::set(Self, Int, Int, Char) -> Unit
+pub fn Screen::to_repr(Self) -> @debug.Repr
+pub fn Screen::write_text(Self, Int, Int, StringView) -> Unit
+
+pub(all) struct TreeView {
+  mut layer : Int
+  total_layers : Int
+  all_rows : Array[Row]
+  mut collapsed : Map[String, Unit]
+  mut visible : Array[Row]
+  mut cursor : Int
+  mut offset : Int
+  mut page_height : Int
+} derive(@debug.Debug)
+pub fn TreeView::clamp_offset(Self) -> Unit
+pub fn TreeView::collapse(Self) -> Unit
+pub fn TreeView::cursor_path_from_visible(Self) -> String?
+pub fn TreeView::expand(Self) -> Unit
+pub fn TreeView::from_tree(@layer_tree.FileTree, Int, Int) -> Self
+pub fn TreeView::index_of_path(Self, String) -> Int?
+pub fn TreeView::move_down(Self) -> Unit
+pub fn TreeView::move_to(Self, Int) -> Unit
+pub fn TreeView::move_to_end(Self) -> Unit
+pub fn TreeView::move_to_home(Self) -> Unit
+pub fn TreeView::move_up(Self) -> Unit
+pub fn TreeView::page_down(Self, Int) -> Unit
+pub fn TreeView::page_size(Self) -> Int
+pub fn TreeView::page_up(Self, Int) -> Unit
+pub fn TreeView::refresh(Self) -> Unit
+pub fn TreeView::to_repr(Self) -> @debug.Repr
+pub fn TreeView::toggle(Self) -> Unit
+
+pub(all) struct WindowSize {
+  cols : Int
+  rows : Int
+} derive(Eq, @debug.Debug)
+pub fn WindowSize::equal(Self, Self) -> Bool
+pub fn WindowSize::not_equal(Self, Self) -> Bool
+pub fn WindowSize::to_repr(Self) -> @debug.Repr
+
+// Type aliases
+
+// Traits
