@@ -230,6 +230,17 @@ fn draw_tree_pane(screen : Screen, layout : Layout, frame : Frame) -> Unit {
       row_style(item, selected),
     )
   }
+  // 过滤后一行不剩时明说一句：空白的面板与「镜像本来就是空的」长得一模一样，
+  // 不说清楚会让人以为按键把树清掉了
+  if view.visible.length() == 0 {
+    if view.only_group() is Some(_) {
+      screen.write_text(
+        origin_col,
+        origin_row,
+        truncate_to_width("(filtered: nothing in this view)", width),
+      )
+    }
+  }
   paint_overflow_hint(screen, pane, view.offset + height, view.visible.length())
 }
 
@@ -328,9 +339,15 @@ fn draw_detail_pane(screen : Screen, layout : Layout, frame : Frame) -> Unit {
       return
     }
   }
-  let path = frame.view.cursor_path_from_visible()
+  // 属性行（`Ctrl+B` 在 dive 里切换的那批）取自**行**而不只是路径：
+  // 权限与 mtime 是 `Row` 上本来就带的字段，不看光标行拿不到
+  let cursor_row = frame.view.cursor_row()
+  let path = match cursor_row {
+    Some(row) => Some(row.path)
+    None => frame.view.cursor_path_from_visible()
+  }
   let lines = match path {
-    Some(path) => detail_lines(source, path)
+    Some(path) => detail_lines(source, path, cursor_row)
     None => ["(no selection)"]
   }
   // 内容长度每帧会变（跟随光标），先把视口的计数对齐再取窗口
@@ -357,17 +374,32 @@ fn draw_detail_pane(screen : Screen, layout : Layout, frame : Frame) -> Unit {
 ///|
 /// 详情面板的文本行。
 ///
-/// 面板分两段：上面是选中路径的账，下面是整镜像的 inefficient files 表
+/// 面板分两段：上面是选中路径的账（+ 属性行），下面是整镜像的 inefficient files 表
 /// （dive 面板那三行概览 + 一张表的布局）。
-fn detail_lines(source : DetailSource, path : String) -> Array[String] {
-  let lines = [
-    truncate_keep_tail(path, 200),
-    "",
-    "efficiency  \{percent_text(source.efficiency)}",
-    "wasted      \{human_size(source.wasted)}",
-    "total       \{human_size(source.total)}",
-    "",
-  ]
+///
+/// `row` 是光标那一行（拿不到时只有路径）。**权限与 mtime 只从 `row` 出**：
+/// 它们随光标所在行变化，而 `DetailSource` 是按路径索引的体积统计，
+/// 本来就不该知道权限这件事（`docs/p6-tui.md` 的差异说明写了为什么不做 `Ctrl+B` 开关）。
+fn detail_lines(
+  source : DetailSource,
+  path : String,
+  row : Row?,
+) -> Array[String] {
+  let lines = [truncate_keep_tail(path, 200), ""]
+  match row {
+    Some(row) => {
+      lines.push(
+        "permissions \{@layer_tree.permission_string(row.mode, row_kind(row))}",
+      )
+      lines.push("mtime       \{mtime_text(row.mtime)}")
+      lines.push("layer       L\{row.layer}")
+    }
+    None => ()
+  }
+  lines.push("efficiency  \{percent_text(source.efficiency)}")
+  lines.push("wasted      \{human_size(source.wasted)}")
+  lines.push("total       \{human_size(source.total)}")
+  lines.push("")
   match source.entries.get(path) {
     Some(entry) => {
       lines.push("versions    \{entry.versions}")
@@ -387,6 +419,102 @@ fn detail_lines(source : DetailSource, path : String) -> Array[String] {
     lines.push(line)
   }
   lines
+}
+
+///|
+/// 行 → 权限串的首字符要的那一档类型。
+///
+/// `Row` 只带 `is_dir`（渲染缩进与折叠用它），链/硬链的区别没有带出来：
+/// 本仓的行不是从 `NodeKind` 直接渲染的，多带一个枚举只为首字符不划算。
+/// 所以这里给出的是「目录 / 非目录」，链接会显示成 `-`——口径写在
+/// `docs/p6-tui.md` 的差异说明里，不是忘了。
+fn row_kind(row : Row) -> @layer_tree.NodeKind {
+  if row.is_dir {
+    @layer_tree.NodeKind::Directory
+  } else {
+    @layer_tree.NodeKind::File
+  }
+}
+
+///|
+/// tar 里的 mtime（Unix 秒）→ `1970-01-01 00:00`。
+///
+/// 只做 UTC，不查时区、不做「几分钟前」的相对时间：详情面板是个显微镜，
+/// 给人比对的是**两个路径的写入时间谁更晚**，这不需要本地时区。
+/// `mtime == 0`（数据源没记）直接说明缺数据，不假装是 1970。
+fn mtime_text(seconds : Int32) -> String {
+  if seconds <= 0 {
+    return "-"
+  }
+  // 民用历的换算：把「距 1970-01-01 的天数」拆成年/月/日，
+  // 月的边界用闰年规则现算，不引表——一年最多查 12 次，开销可忽略
+  let mut days = seconds / 86400
+  let second_of_day = seconds % 86400
+  let mut year = 1970
+  while true {
+    let length = if is_leap_year(year) { 366 } else { 365 }
+    if days < length {
+      break
+    }
+    days = days - length
+    year = year + 1
+  }
+  let month_lengths = month_lengths_of(year)
+  let mut month = 0
+  while month < 12 && days >= month_lengths[month] {
+    days = days - month_lengths[month]
+    month = month + 1
+  }
+  let hour = second_of_day / 3600
+  let minute = second_of_day % 3600 / 60
+  let date = pad2(year) +
+    "-" +
+    pad2(month + 1) +
+    "-" +
+    pad2(days + 1) +
+    " " +
+    pad2(hour) +
+    ":" +
+    pad2(minute)
+  date
+}
+
+///|
+fn is_leap_year(year : Int32) -> Bool {
+  (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+///|
+/// 某一年每个月的天数，下标 0 是 1 月。
+fn month_lengths_of(year : Int32) -> Array[Int32] {
+  [
+    31,
+    if is_leap_year(year) {
+      29
+    } else {
+      28
+    },
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ]
+}
+
+///|
+/// 两位补零：`7` → `07`。
+fn pad2(value : Int32) -> String {
+  if value < 10 {
+    "0\{value}"
+  } else {
+    "\{value}"
+  }
 }
 
 ///|
@@ -444,9 +572,12 @@ fn draw_status_bar(screen : Screen, layout : Layout, frame : Frame) -> Unit {
   screen.clear_row(layout.status_row)
   let hint = match frame.focus {
     // 提示要短到能塞进 80 列的窄屏：`q quit` 被截掉时，
-    // 用户最容易以为「退不出去」（鼠标提示在 `?` 的浮层里，见 `draw_help`）
+    // 用户最容易以为「退不出去」（鼠标提示在 `?` 的浮层里，见 `draw_help`）。
+    // 键位对齐 dive 后，树上那一行的提示也跟着换：`space` 从「翻页」变回「折叠」，
+    // 翻页只剩 `pgup`/`pgdn`（`u` 是 pgup 的别名，`d` 给了删除列表）。
+    // 这一行按显示宽度卡在 80 列里（`↑↓` 各占两列）
     Focus::Tree =>
-      "↑↓ move  ^A/^L diff  d removed  [ ] layer  s sort  ?  q quit"
+      "↑↓ move  space fold  ^A/^L diff  d removed  Tab focus  ?  q quit"
     Focus::Detail => "↑↓ / wheel scroll  Tab focus  ?  q quit"
   }
   let order = if frame.view.sort_by_size { "size" } else { "name" }
@@ -533,13 +664,13 @@ fn draw_help(screen : Screen, layout : Layout, frame : Frame) -> Unit {
     None => return
   }
   clear_pane(screen, pane)
+  // 键位按 dive 的分域排（global / navigation / layer / filetree），
+  // 每个域一行，一行放不下由窄屏截断兜底——比按单个键逐行列省出小屏高度
   let lines = [
-    "↑↓ / j k       move or scroll", "←→ / h l       fold / unfold the tree",
-    "PgUp / PgDn    page", "[ ]            previous / next layer", "Tab            switch focus (tree ↔ detail)",
-    "?              toggle this panel", "q / Esc        quit", "click          select; on a folder also fold / unfold",
-    "wheel          scroll the pane under the pointer", "right click    fold / unfold the row under the pointer",
-    "s              sort by size (again: by name)", "Ctrl+A         diff vs. everything since L0 (aggregate)",
-    "Ctrl+L         diff vs. the previous layer only", "d              list the paths removed in this range",
+    "global     tab focus  ctrl+c quit  ? keys  q/esc quit", "navigation ↑↓/jk  ←→/hl  pgup/pgdn  u pageup  g/G",
+    "layer      [ ] previous / next", "layer      ctrl+a aggregate  ctrl+l single layer",
+    "filetree   space fold  ctrl+space all  ctrl+u modified only", "filetree   s sort by size  d removed list  ctrl+b attrs always on",
+    "mouse      click select  right click fold  wheel scroll", "mouse      ctrl+click cycle focus",
   ]
   let height = pane.inner_height()
   let (origin_col, origin_row) = (pane.inner_left(), pane.inner_top())

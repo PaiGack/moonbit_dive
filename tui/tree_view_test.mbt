@@ -305,3 +305,87 @@ test "tree view sorts rows by size on demand" {
   assert_eq(by_size.visible[2].path, "/mid")
   assert_eq(by_size.visible[3].path, "/small/tiny")
 }
+
+///|
+/// 行带上了权限与 mtime：`Ctrl+B` 的属性要读它们，之前 `Row` 没带出来。
+test "tree view carries mode and mtime onto rows" {
+  let tree = @layer_tree.FileTree::new()
+  let tar = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+  ])
+  @layer_tree.apply_layer(tree, tar, 0) catch {
+    err => fail(err.to_string())
+  }
+  let view = TreeView::from_tree(tree, 0, 1)
+  let dir = find_row(view, "/etc")
+  let file = find_row(view, "/etc/hosts")
+  // 目录 0o755，文件 0o644（fixture 的默认值）
+  assert_eq(dir.mode, 0o755)
+  assert_eq(file.mode, 0o644)
+  // mtime 由 fixture 写在 header 里，缺省是 0（这里只要求字段被带出来，不做时间换算）
+  assert_eq(file.mtime, 0)
+}
+
+///|
+/// 过滤：只看某一档时可见行被裁到只剩那一档，撤销后原样回来。
+test "tree view filters rows by diff group" {
+  let view = layered_view()
+  let total = view.visible.length()
+  assert_eq(view.only_group(), None)
+  assert_true(view.has_in_group(RowGroup::AddedOnly))
+  assert_true(view.has_in_group(RowGroup::ModifiedOnly))
+  // 过滤与折叠互不干扰：过滤只看 status，不看 collapsed
+  view.set_filter(Some(RowGroup::ModifiedOnly))
+  assert_eq(view.only_group(), Some(RowGroup::ModifiedOnly))
+  assert_eq(view.visible.length(), 1)
+  assert_eq(view.visible[0].path, "/etc/hosts")
+  view.set_filter(None)
+  assert_eq(view.only_group(), None)
+  assert_eq(view.visible.length(), total)
+}
+
+///|
+/// 同一档连按两次 = 撤销（与 dive 的「反转过滤」同效），不会卡在过滤态里。
+test "setting the same filter twice clears it" {
+  let view = layered_view()
+  view.set_filter(Some(RowGroup::AddedOnly))
+  assert_eq(view.only_group(), Some(RowGroup::AddedOnly))
+  view.set_filter(Some(RowGroup::AddedOnly))
+  assert_eq(view.only_group(), None)
+}
+
+///|
+/// 全折叠 / 全展开：按一次全折、再按一次全展，且光标不跳到顶。
+///
+/// 「现在算不算全折」看的是**效果**不是 `collapsed` 的大小：
+/// 光标落在被折掉的子行上时，全折一次之后只剩祖先行可见，
+/// 若拿 `collapsed` 的大小去比，第二次就会误判成「已经全折好了」而不再展开。
+test "collapse all folds every directory and expands back" {
+  let tree = sample_tree()
+  let view = TreeView::from_tree(tree, 0, 1)
+  view.move_to(view.index_of_path("/usr/bin/sh").unwrap())
+  assert_eq(view.cursor, view.visible.length() - 1)
+  view.toggle_collapse_all()
+  // `/etc` 与 `/usr` 都折上，子树的行不再可见
+  assert_true(view.collapsed.contains("/etc"))
+  assert_true(view.collapsed.contains("/usr"))
+  assert_eq(view.visible.length(), 2)
+  // 光标落在被折掉的子行上时，落到最近的可见祖先
+  assert_eq(view.visible[view.cursor].path, "/usr")
+  view.toggle_collapse_all()
+  assert_true(view.collapsed.is_empty())
+  assert_eq(view.visible.length(), tree.size())
+}
+
+///|
+/// 全折叠幂等：连按两次回到全展，中间不因为可见行变化而误判。
+test "collapse all is idempotent across two presses" {
+  let tree = sample_tree()
+  let view = TreeView::from_tree(tree, 0, 1)
+  view.toggle_collapse_all()
+  let folded = view.visible.length()
+  view.toggle_collapse_all()
+  view.toggle_collapse_all()
+  assert_eq(view.visible.length(), folded)
+}

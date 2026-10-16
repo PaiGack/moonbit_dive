@@ -78,14 +78,22 @@ moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
 docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image` 给镜像名）。
 
-`--tui` 打开全屏交互式看树：`↑↓`/`jk` 走行，`←→`/`hl` 收起展开，`Enter` 切展开态，
-`[`/`]` 换层，`s` 切排序（按名字 ↔ 按体积），`Tab` 在树与详情之间切焦点，
-`?` 开关帮助浮层，`q`/`Esc` 退出。
-鼠标同样可用：点击选行、滚轮滚鼠标停着的那块面板、右键切目录展开态。
-详情面板跟着光标走：上面是选中路径的账（efficiency / wasted / total +
-versions / cumulative / min / overhead），下面是整镜像的 inefficient files 表
-（`count / total space / path`，与 `--efficiency` 同一批数字）。
-
+`--tui` 打开全屏交互式看树，**键位逐条对齐原版 dive**
+（`cmd/dive/cli/internal/ui/v1/key/config.go` 的 `DefaultBindings()`）：
+`↑↓`/`jk` 走行，`←→`/`hl` 收起展开，`Space` 折叠展开（`Ctrl+Space` 全折全展），
+`PgUp`/`PgDn` 翻页（`u` 是 `pgup` 别名，`d` 给了删除列表），
+`Tab` 换视图（树 ↔ 详情），`Ctrl+A`/`Ctrl+L` 切「聚合 / 当前层」diff 档位，
+`Ctrl+U` 只看被改写的行，`Ctrl+C` 退出；本仓另有 `[`/`]` 换层、`s` 切排序
+（名字 ↔ 体积）、`?` 开关帮助浮层、`q`/`Esc` 退出。
+文件属性（权限 / mtime / 层号）常显在详情面板里。
+鼠标同样可用：点击选行（点目录顺带开合）、滚轮滚鼠标停着的那块面板、
+右键切目录展开态；`Ctrl` + 左右键切焦点。
+详情面板跟着光标走：选中路径的账（permissions / mtime / layer +
+efficiency / wasted / total + versions / cumulative / min / overhead），
+下面是整镜像的 inefficient files 表（`count / total space / path`，
+与 `--efficiency` 同一批数字）。
+原版里**不做**的是 `Ctrl+F` 过滤与 `Ctrl+E` 抽文件，理由见
+[`docs/p6-tui.md`](docs/p6-tui.md) 的「与 dive 键位表的差异说明」。
 它进 alternate screen（退出还原终端，异常退出也还原），只支持 native，
 且需要一个真终端（stdin/stdout 都不是 tty 时退 exit 2）。
 详见 [`tui/README.mbt.md`](tui/README.mbt.md) 与 [`docs/p6-tui.md`](docs/p6-tui.md)。

@@ -89,9 +89,13 @@ pub fn TarBuilder::add_file(
 
 ///|
 /// 追加一条目录 entry。
-pub fn TarBuilder::add_directory(self : TarBuilder, path : String) -> Unit {
+pub fn TarBuilder::add_directory(
+  self : TarBuilder,
+  path : String,
+  mode~ : Int32 = 0o755,
+) -> Unit {
   let name = if path.has_suffix("/") { path } else { path + "/" }
-  self.add_header(name, 0, entry_type=b'5', mode=0o755)
+  self.add_header(name, 0, entry_type=b'5', mode~)
 }
 
 ///|
@@ -100,8 +104,9 @@ pub fn TarBuilder::add_symlink(
   self : TarBuilder,
   path : String,
   target : String,
+  mode~ : Int32 = 0o777,
 ) -> Unit {
-  self.add_header(path, 0, entry_type=b'2', mode=0o777, link_target=target)
+  self.add_header(path, 0, entry_type=b'2', mode~, link_target=target)
 }
 
 ///|
@@ -110,8 +115,9 @@ pub fn TarBuilder::add_hardlink(
   self : TarBuilder,
   path : String,
   target : String,
+  mode~ : Int32 = 0o644,
 ) -> Unit {
-  self.add_header(path, 0, entry_type=b'1', link_target=target)
+  self.add_header(path, 0, entry_type=b'1', mode~, link_target=target)
 }
 
 ///|
