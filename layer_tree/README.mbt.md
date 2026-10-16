@@ -57,7 +57,6 @@ test "README example" {
 | 层应用 | `apply_layer`、`apply_layer_with_media_type`、`apply_layers_with_diffs` |
 | whiteout | `whiteout_kind`、`WhiteoutKind`、`remove_subtree`、`make_opaque` |
 | 层间 diff | `diff_snapshots`、`diff_against_empty`、`diff_aggregate`、`Diff` |
-| 内容摘要 | `content_scan`、`ContentScan`、`content_changes`、`FileTree::scan_content`、`Node::digest`、`Node::files` |
 | 逐层浏览 | `browse_layers`、`browse_decompressed`、`LayerView`、`LayerView::subtree`、`LayerView::changed_paths`、`LayerView::aggregate_changed_paths` |
 | 解压一次多路复用 | `decompress_layers`、`DecompressedLayers` |
 | 树渲染 | `render_tree`、`render_tree_between`、`render_diff` |
@@ -132,6 +131,8 @@ test "README content hashes" {
 
 `browse_decompressed` 的 `content_hashes = false` 可以关掉这一步，
 代价是逐层档退回「只比元数据 + `size`」，「同大小不同内容」认不出来。
+
+## whiteout 语义
 
 OCI / AUFS 用特殊文件名表达「删除」，它们本身不会出现在最终文件树里：
 
@@ -225,8 +226,9 @@ test "README decompress once" {
 
 **换的是比较区间，不是数据源**：树只有一棵（`LayerView.tree`），切档位只换给行上色的那份 diff。
 
-聚合档不是「拿两棵树做一次 `diff_snapshots`」——那样「第 0 层写过、第 2 层又改回原样」
-的路径在两个端点上完全一样，会被判成没动过。它按区间**累积**：
+判等口径对齐后，聚合档多了一层要求：区间端点上字节一样不算「没动过」，
+**这段区间里被碰过**才算数。所以它不是「拿两棵树做一次 `diff_snapshots`」，
+而是按区间**累积**：
 
 - 取区间内各层 diff 里被碰过的全部路径
 - 按两端的树归类：只在终点 -> `added`，两头都在 -> `modified`，只在起点 -> `removed`
@@ -237,7 +239,8 @@ test "README decompress once" {
 **「碰过即算」是刻意的，不改。** 聚合档回答的是「这层树上有哪些行是这段区间里
 动过的」，不是「两端字节差了几处」——后者直接比两个端点就行，不需要聚合。
 所以「第 0 层写过、第 1 层改成别的、第 2 层又改回原样」的路径在聚合档里仍是
-`modified`，与原版 dive 的 `CompareAllLayers` 一致。
+`modified`，与原版 dive 的 `CompareAllLayers` 一致；
+上面那条内容指纹只服务逐层档，不参与聚合。
 
 被删的路径不在终点的树上，所以 `aggregate.removed` 是「删除」唯一的出口：
 CLI 的 `--aggregate` 单列一段，TUI 用 `d` 打开一张可滚动的列表。
@@ -253,7 +256,6 @@ test "README aggregate compare" {
   // 逐层档：第 2 层相对第 1 层动了这条路径
   assert_eq(views[2].diff.modified, ["/app/main"])
   // 聚合档：与第 0 层比字节一样，但这段区间里碰过，仍算 modified
-  // （dive 的 CompareAllLayers 同理：它也不回看内容）
   assert_eq(views[2].aggregate.modified, ["/app", "/app/main"])
   assert_eq(views[2].aggregate.removed, [])
   // 区间起点是第 0 层的树，体积差就是「从第 0 层到现在涨了多少」
@@ -261,9 +263,9 @@ test "README aggregate compare" {
 }
 ```
 
-`aggregate_size_delta(base)` 是**端点差**（终点的树减去起点的树）。注意它与聚合 diff
-不是同一把尺子：被改回原样的路径在上面那个例子里 diff 里没有、体积差也贡献 0；
-但改成**别的大小**再改回来时，diff 里始终有它，体积差仍是 0。两个数各有各的用处。
+`aggregate_size_delta(base)` 是**端点差**（终点的树减去起点的树），
+与聚合 diff 的「碰过即算」不是同一把尺子：被改回原样的路径在 diff 里是 `modified`，
+在体积差里贡献 0。两个数各有各的用处，别互相印证。
 
 ## 设计要点
 

@@ -158,11 +158,111 @@ CJK 占两列、组合字符零宽。只按 `String::length` 排版，中文目�
 `Ctrl+A` 在这里是「layer 面板切聚合」（原版语义），filetree 面板那组
 `Ctrl+A/R/M/U`（按状态过滤）属于 #64 的盘子，两边别各绑一个。
 
+## 与 dive 键位表的差异说明（#70）
+
+原版 dive 的键位集中在 `cmd/dive/cli/internal/ui/v1/key/config.go` 的
+`DefaultBindings()`，每个动作是一个 `Config{Input: "up,k"}` 形态的字符串。
+本轮把本仓 `keys.mbt` 的 `action_of_key` **逐条对齐**那张表：
+
+| 作用域 | 动作 | 原版键 | 本仓 |
+|---|---|---|---|
+| Global | Quit | `ctrl+c` | 同（另保留 `q` / `Esc`） |
+| Global | ToggleView | `tab` | 同（本仓只有树与详情两块，即切焦点） |
+| Global | FilterFiles / CloseFilterFiles | `ctrl+f` / `esc` | **不做**，见下 |
+| Navigation | Up/Down/Left/Right | `up,k` / `down,j` / `left,h` / `right,l` | 同 |
+| Navigation | PageUp/PageDown | `pgup,u` / `pgdn,d` | 只做 `pgup`/`pgdn`/`u`；`d` 让给删除列表（#77），见下 |
+| Layer | CompareAll | `ctrl+a` | 同（切聚合 diff 档位，与 #69 合流） |
+| Layer | CompareLayer | `ctrl+l` | 同（切回当前层档） |
+| Filetree | ToggleCollapseDir | `space` | 同（从原来的 `pgdn` 归位） |
+| Filetree | ToggleAllCollapseDir | `ctrl+space` | 同 |
+| Filetree | 过滤 added/removed/modified/unmodified | `ctrl+a/r/m/u` | 只做 `ctrl+u`（只看改写 ↔ 全都要），见下 |
+| Filetree | ToggleShowAttributes | `ctrl+b` | **常显**，无开关 |
+| Filetree | ToggleSortOrder | `ctrl+o` | 本仓用 `s`，`ctrl+o` 留空 |
+| Filetree | 删除路径列表 | 原版无 | 本仓 `d`（#77） |
+
+本仓原有的补充键（原版没有，按「只增不改」保留）：`q` / `Esc` 退出、
+`[` `]` 换层、`g` `G` 到顶到底、`?` 帮助、`Enter` 折叠、`s` 排序。
+
+### 三处必须说清楚的口径
+
+**一、`Ctrl` 组合只认列出来的那几颗。** `Ctrl+M` 与 `Enter` 同码位（`0x0d`）、
+`Ctrl+J` 与换行同码位——原版的 `ctrl+a/r/m/u` 里，`ctrl+m` 绑上就等于偷偷改了
+`Enter`。本仓因此不认 `ctrl+m` / `ctrl+r` / `ctrl+j`，动作表里 `ctrl` 分支是一张
+短白名单（`c` / `space` / `a` / `l` / `u`），其余一律 `None`。
+
+**二、`Ctrl+Space` 在终端里是 NUL，tty 把它解成 `Char(' ')` + `ctrl`。**
+这条**在真伪终端上实测过**（不是「按 `Char('\u{0}')` 推导」）：
+`0x00` → `Char(' ') ctrl=true`、`0x20` → `Char(' ')` + 无修饰。
+两个事件可区分，所以「`Space` 折叠一行、`Ctrl+Space` 全折叠」能共存。
+`Ctrl+A/L/U` 同理落在 `0x01` / `0x0c` / `0x15` 上，tty 都归到小写字母 + `ctrl`。
+
+顺带一个 **tty 上游的缺陷**（本仓不改，只记着）：把 `ESC` 单独先写、隔
+`> esc_timeout_ms`（默认 50ms）再写 `[ B` 时，tty 的 `read_escape` 只回退
+**一个**字节，开头那个 ESC 已被消费掉，于是解成「一个 `Escape` + 裸字符 `[` `B`」，
+后面那颗真键丢了。三个字节同一次写入时正常解成 `Down`；普通终端的方向键
+就是逐个原子写、帧间隔远大于 50ms，实测连按 `j j` / `↓↓` 都正常累积。
+
+**三、`Ctrl+A` / `Ctrl+L` 与 #69 的比较档位合流。** 原版 `Ctrl+A` 是 Layer 作用域的
+`CompareAll`（切「聚合」）、`Ctrl+L` 是 `CompareLayer`（切「当前层」）；本仓
+[#69](#两个比较档位69) 已经把这两颗键绑成同一个语义（切 diff 档位），
+因此本轮不再另立「以详情面板为承载面」的解释——**一颗键只有一个动作**。
+
+**四、`d` 归删除列表，`u` 才是 `pgup` 的别名。** 原版导航里 `pgup,u` / `pgdn,d`
+是两颗键各带一个字母别名。#77 先把 `d` 给了「被删除的路径」列表（它有独立浮层、
+状态行计数与渲染），两个语义不可能同时挂在一颗键上——保留 #77 的 `d`，
+翻页别名只留 `u`，`pgdn` 仍可用。
+
+### 过滤只做一档，其余不绑
+
+原版 `ctrl+a/r/m/u` 是把 added / removed / modified / unmodified 四棵拼起来的表
+做过滤。本仓的树只有一棵（删除的路径**不在树上**，没有行可以给它上色，
+`RowStatus` 也没有 `Removed`），所以：
+
+- `Ctrl+U`（只看改写 ↔ 全都要）落地：**过滤态做成 `TreeView` 上的一个布尔**，
+  而不是「另生成一棵只含某档的树」——错按了再按一次就复原，
+  不会在状态里留下半棵拼出来的树。`set_filter` 自带「设成当前档 = 撤销」，
+  与 dive 的 `InvertFilter` 同效，所以一颗键就能兼顾「只看改写」与「撤销」；
+- `Ctrl+A`（只看新增）与 `Ctrl+R`（只看删除）**不绑**：前者与 Layer 作用域的
+  `ctrl+a`（CompareAll）**同一个码位**，两者不可能同时绑在一颗键上；
+  后者连数据都没有（没有行是「被删除」的）。少了两档之后，`TreeView::RowGroup`
+  仍然留了三档枚举（added / modified / unchanged），`Row::in_group` 是它的唯一入口，
+  将来真要补 `ctrl+r` 只需接上键盘那一格，不用改数据结构。
+
+### `Ctrl+B` 常显，不做开关
+
+原版 `Ctrl+B` 是开着/关掉「文件属性」这一栏。本仓把**权限 / mtime / 层号**
+直接常显在详情面板里，理由有四条：
+
+1. 详情面板本来就跟着光标走，属性是同一批「这一行是什么」的信息，
+   再挂一个开关等于让同一块面板有两种内容；
+2. 要多一层状态（面板高度、帮助文案、切换时的重排）才换得来「少看两行」；
+3. 宽度够的地方本来就有位置，不够的地方（窄屏）详情栏整个不在，
+   开关也救不回来；
+4. `Ctrl+B` 这颗键因此空着——本仓不为了「把所有键都占满」而造动作。
+
+`Row` 为此多带了 `mode` 与 `mtime`（数据源里本来就有，之前没带出来），
+权限串由 `layer_tree::permission_string` 出，形态与 dive 的 `MetadataString` 一致
+（`-rw-r--r--` / `drwxr-xr-x`）。**两处有意的偏差**：权限串的首字符只分
+「目录 / 普通文件」（`Row` 只带 `is_dir`，链与硬链会显示成 `-`）；
+`mtime` 按 **UTC** 换算成 `2023-11-14 22:13`，不查时区也不做相对时间——
+详情面板要回答的是「两个路径谁写得更晚」，不需要本地时区。mtime 为 0
+（数据源没记）时显示 `-`，不假装是 1970。
+
+### 不做的两条
+
+- **`Ctrl+F` 过滤 + `Esc` 关闭**：这是一整套 UI 状态（输入框 + 过滤态 + 焦点让位），
+  不是一颗键。本仓的替代品是 `cmd/main --path`（前缀过滤子树）。
+  真要做得单独立项，本轮不硬塞。
+- **`Ctrl+E` 抽取文件到本地**：写文件系统，TUI 就不再是只读视图
+  （与本文上面的非目标直接冲突）。
+
 ## 非目标
 
 - 样式与配色（前景/背景/加粗）
 - 鼠标拖拽 / 框选（点击与滚轮已接，见下）
 - 边看边改（TUI 是只读视图，不产生镜像变更）
+- 四档过滤里的「只看新增」「只看删除」（理由见上一节）
+- `Ctrl+B` 的属性开关（属性常显，理由见上一节）
 
 ## 鼠标与坐标反查（#51）
 

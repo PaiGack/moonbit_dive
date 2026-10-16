@@ -108,23 +108,39 @@ moon run --target native cmd/main -- demo-image.tar --layer 2 --aggregate
 moon run --target native cmd/main -- demo-image.tar --layer 2 --aggregate -f json
 ```
 
-按键（`?` 里也有一份）：
+按键（`?` 里也有一份）——**逐条对齐原版 dive 的 `DefaultBindings()`**，
+并保留本仓原有的补充键（原版没有对应键，属超集）：
 
-| 键 | 动作 |
-|---|---|
-| `↑` `↓` / `k` `j` | 走行（焦点在详情时：滚动） |
-| `PgUp` `PgDn` / `b` `Space` | 翻页 |
-| `Home` `End` / `g` `G` | 跳到顶 / 底 |
-| `←` / `h` | 收起目录；已收起则回到父目录 |
-| `→` / `l` | 展开目录；已展开则下到第一个子项 |
-| `Enter` | 切换光标所在目录的展开状态 |
-| `[` `]` | 上一层 / 下一层 |
-| `Ctrl+A` | diff 切到**聚合档**（相对第 0 层之前的整段累积） |
-| `Ctrl+L` | diff 切回**当前层档**（相对上一层） |
-| `d` | 开关「被删除的路径」列表（可滚动） |
-| `Tab` / `Shift+Tab` | 焦点在树与详情之间循环 |
-| `?` | 开关帮助浮层 |
-| `q` / `Esc` / `Ctrl+C` | 退出（还原终端） |
+| 作用域 | 键 | 动作 |
+|---|---|---|
+| Global | `Tab` / `Shift+Tab` | 换视图（原版 `ToggleView`；本仓只有树与详情两块，因此就是切焦点） |
+| Global | `Ctrl+C` | 退出（还原终端） |
+| Global | `q` / `Esc` | 退出（原版没有，本仓保留） |
+| Global | `?` | 开关帮助浮层（原版没有，本仓保留） |
+| Navigation | `↑` `↓` / `k` `j` | 走行（焦点在详情时：滚动） |
+| Navigation | `←` `→` / `h` `l` | 收起 / 展开目录（已收起则回父目录、已展开则下到第一个子项） |
+| Navigation | `PgUp` `PgDn` / `u` | 翻页（`u` 是原版 `pgup` 的别名；原版另一颗别名 `d` 被下面的删除列表占了） |
+| Navigation | `Home` `End` / `g` `G` | 跳到顶 / 底（原版没有，本仓保留） |
+| Layer | `Ctrl+A` | diff 切到**聚合档**（相对第 0 层之前的整段累积，原版 `CompareAll`） |
+| Layer | `Ctrl+L` | diff 切回**当前层档**（相对上一层，原版 `CompareLayer`） |
+| Layer | `[` `]` | 上一层 / 下一层（原版没有，本仓保留） |
+| Filetree | `Space` | 折叠 / 展开光标所在目录（原版 `ToggleCollapseDir`） |
+| Filetree | `Ctrl+Space` | 全折叠 / 全展开（原版 `ToggleAllCollapseDir`） |
+| Filetree | `Enter` | 折叠 / 展开（与 `Space` 同效，本仓保留） |
+| Filetree | `Ctrl+U` | 只看被改写的行 ↔ 全都要（原版 `IgnoreUnmodified`，来回切） |
+| Filetree | `d` | 开关「被删除的路径」列表（可滚动） |
+| Filetree | `Ctrl+B` | 文件属性：权限 / mtime / 层号**常显**在详情面板，无开关（原版是切换） |
+| Filetree | `s` | 按体积排序（再按一次回名字序；原版是 `Ctrl+O`，`Ctrl+O` 留空） |
+| Mouse | 左键 | 选中；点目录行顺带折叠 / 展开（与 `Enter` 对称） |
+| Mouse | 右键 | 折叠 / 展开光标行 |
+| Mouse | 滚轮 | 滚鼠标停着的那块面板 |
+| Mouse | `Ctrl` + 左键 / 右键 | 焦点正 / 反向循环（与 `Tab` / `Shift+Tab` 对称） |
+
+原版里**明确不做**的两条：`Ctrl+F` 过滤（一整套输入框 + 过滤态 + 焦点让位，
+本仓的替代品是 `cmd/main --path`）与 `Ctrl+E` 抽文件到本地（会写文件系统，
+与本包「只读视图」的非目标冲突）。两条的理由都写在
+[`docs/p6-tui.md`](../docs/p6-tui.md) 的「与 dive 键位表的差异说明」一节里。
+
 
 树里每行按当前档位的 diff 上色：新增绿、改写黄、没动过的暗一档；
 光标行不上色（位置已经由行首的 `>` / `:` 标出）。颜色含义见状态行右侧的图例。

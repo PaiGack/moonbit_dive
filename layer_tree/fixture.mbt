@@ -71,8 +71,19 @@ pub fn TarBuilder::add_raw_file(
   path : String,
   content : BytesView,
   mode~ : Int32 = 0o644,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
-  self.add_header(path, content.length(), entry_type=b'0', mode~)
+  self.add_header(
+    path,
+    content.length(),
+    entry_type=b'0',
+    mode~,
+    mtime~,
+    uid~,
+    gid~,
+  )
   self.push_data_bytes(content)
 }
 
@@ -102,9 +113,16 @@ pub fn TarBuilder::add_file(
 
 ///|
 /// 追加一条目录 entry。
-pub fn TarBuilder::add_directory(self : TarBuilder, path : String) -> Unit {
+pub fn TarBuilder::add_directory(
+  self : TarBuilder,
+  path : String,
+  mode~ : Int32 = 0o755,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
+) -> Unit {
   let name = if path.has_suffix("/") { path } else { path + "/" }
-  self.add_header(name, 0, entry_type=b'5', mode=0o755)
+  self.add_header(name, 0, entry_type=b'5', mode~, mtime~, uid~, gid~)
 }
 
 ///|
@@ -113,8 +131,21 @@ pub fn TarBuilder::add_symlink(
   self : TarBuilder,
   path : String,
   target : String,
+  mode~ : Int32 = 0o777,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
-  self.add_header(path, 0, entry_type=b'2', mode=0o777, link_target=target)
+  self.add_header(
+    path,
+    0,
+    entry_type=b'2',
+    mode~,
+    link_target=target,
+    mtime~,
+    uid~,
+    gid~,
+  )
 }
 
 ///|
@@ -123,8 +154,21 @@ pub fn TarBuilder::add_hardlink(
   self : TarBuilder,
   path : String,
   target : String,
+  mode~ : Int32 = 0o644,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
-  self.add_header(path, 0, entry_type=b'1', link_target=target)
+  self.add_header(
+    path,
+    0,
+    entry_type=b'1',
+    mode~,
+    link_target=target,
+    mtime~,
+    uid~,
+    gid~,
+  )
 }
 
 ///|

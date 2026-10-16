@@ -68,6 +68,8 @@ pub fn path_is_under(String, String) -> Bool
 
 pub fn path_order(String, String) -> Int
 
+pub fn permission_string(Int, NodeKind) -> String
+
 pub let plnk_marker : String
 
 pub fn read_file_from_tar(BytesView, String) -> BytesView? raise TarError
@@ -328,13 +330,13 @@ pub fn RenderOptions::to_repr(Self) -> @debug.Repr
 pub struct TarBuilder {
   blocks : Array[Byte]
 } derive(@debug.Debug)
-pub fn TarBuilder::add_directory(Self, String) -> Unit
+pub fn TarBuilder::add_directory(Self, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
 pub fn TarBuilder::add_file(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
-pub fn TarBuilder::add_hardlink(Self, String, String) -> Unit
+pub fn TarBuilder::add_hardlink(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
 pub fn TarBuilder::add_header(Self, String, Int, entry_type? : Byte, mode? : Int, link_target? : String, mtime? : Int, uid? : Int, gid? : Int) -> Unit
 pub fn TarBuilder::add_opaque(Self, String) -> Unit
-pub fn TarBuilder::add_raw_file(Self, String, BytesView, mode? : Int) -> Unit
-pub fn TarBuilder::add_symlink(Self, String, String) -> Unit
+pub fn TarBuilder::add_raw_file(Self, String, BytesView, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
+pub fn TarBuilder::add_symlink(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
 pub fn TarBuilder::add_whiteout(Self, String, String) -> Unit
 pub fn TarBuilder::finish(Self) -> Bytes
 pub fn TarBuilder::new() -> Self

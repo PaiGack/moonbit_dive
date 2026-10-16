@@ -19,6 +19,10 @@ pub(all) enum Action {
   /// 收起 / 回到父目录
   Collapse
   Toggle
+  /// 全折叠 / 全展开（`Ctrl+Space`）
+  ToggleCollapseAll
+  /// 只看「被改写」的行 ↔ 全都要（`Ctrl+U`，原版 `IgnoreUnmodified`）
+  FilterModified
   /// 上一张层级视图（看上一层）
   PrevLayer
   /// 下一张层级视图（看下一层）
@@ -43,40 +47,72 @@ pub(all) enum Action {
 } derive(Eq, Debug)
 
 ///|
-/// 把一次按键翻成动作。
+/// 把一次按键翻成动作。**这一张表逐条对齐原版 dive 的 `DefaultBindings()`**
+/// （`cmd/dive/cli/internal/ui/v1/key/config.go`），差异逐条列出、不留暗坑：
 ///
-/// 绑定对齐 `less` / `dive` 的直觉：
-/// `q`/`Esc`/`Ctrl+C` 退出，`↑↓`/`jk` 走行，`PgUp/PgDn`/`Space`/`b` 翻页，
-/// `←`/`h` 收起、`→`/`l` 展开，`Tab` 切展开态，
-/// `[`/`]` 换层，全屏形态另加 `Tab`/`Shift+Tab` 切焦点、`?` 开关帮助、
-/// `s` 切换「按名字 / 按大小」排序（鼠标那侧是右键，见 `./mouse.mbt`），
-/// `d` 开关删除路径列表，`Ctrl+A` / `Ctrl+L` 切「聚合 / 当前层」的 diff 档位。
+/// | 作用域 | 动作 | 默认键 |
+/// |---|---|---|
+/// | Global | Quit | `ctrl+c` |
+/// | Global | ToggleView | `tab` |
+/// | Navigation | Up/Down/Left/Right | `up,k` / `down,j` / `left,h` / `right,l` |
+/// | Navigation | PageUp/PageDown | `pgup,u` / `pgdn,d` |
+/// | Layer | CompareAll / CompareLayer | `ctrl+a` / `ctrl+l` |
+/// | Filetree | ToggleCollapseDir / AllDir | `space` / `ctrl+space` |
+/// | Filetree | 过滤 unmodified | `ctrl+u` |
+/// | Filetree | ToggleShowAttributes | `ctrl+b` |
+/// | Filetree | 排序（ToggleSortOrder） | `ctrl+o` |
 ///
-/// `Tab` 在路径 A 里是「切展开态」，这里改成「切焦点」——全屏下多面板
-/// 必须有切焦点的键，而切展开态有 `Enter` 与 `←→` 两条路，不差这一个。
+/// 本仓的**差异**（都写在 `docs/p6-tui.md` 的「与 dive 键位表的差异说明」里）：
+/// `ctrl+a` / `ctrl+l` 在本仓切的是**比较档位**（聚合 / 当前层）而不是面板；
+/// `ctrl+u` 落成「只看被改写的行 ↔ 全都要」的一颗键来回切（原版
+/// `IgnoreUnmodified`）；`ctrl+b` 空着（文件属性常显）；排序在 `s` 而不是 `ctrl+o`。
+///
+/// 本仓原来的绑定（`q`/`Esc` 退出、`[`/`]` 换层、`s` 排序、`g`/`G` 到顶到底、
+/// `?` 帮助）原版没有对应键，按「只增不改」保留，所以这张表是**原版键位的超集**。
+/// 原版里本仓**明确不做**的两条（`Ctrl+F` 过滤、`Ctrl+E` 抽文件）
+/// 不是「忘了对齐」，原因写在 `docs/p6-tui.md` 的差异说明里。
+///
+/// 还有一处必须记一笔：原版 filetree 那组按状态过滤（`ctrl+a/r/m/u`）与
+/// **Layer 作用域的 `ctrl+a` 同一个码位**，一颗键不可能同时干两件事——
+/// 本仓只留了 `ctrl+u` 这一颗（`IgnoreUnmodified`，见上），其余三档不绑，
+/// 枚举仍留着，将来要补只接键盘那一格。
+///
+/// 三条容易踩的地方：
+///
+/// - **`Ctrl` 要先判，且只认列出来的那几颗**：`Ctrl+M` 与 `Enter` 同码位（`0x0d`）、
+///   `Ctrl+J` 与换行同码位，绑上它们等于偷偷改了 `Enter` / `j`
+/// - **`Ctrl+Space` 是 `Char(' ')` + ctrl**（NUL，实测确认），
+///   与不带修饰的 `Space` 是两个不同事件，因此「空格折叠、Ctrl+空格全折叠」可以共存
+/// - **`Enter` 与 `Tab` 在往上判之前处理**：kitty 键盘协议下 `Shift+Tab` 会落在
+///   `code == Tab` + shift 上，不能让它掉进 `Char` 分支
 pub fn action_of_key(event : @input.KeyEvent) -> Action {
   // 只在按下 / 重复时响应：松开（Release）会重复触发，键盘收紧的模式下尤甚
   match event.kind {
     @input.KeyEventKind::Press | @input.KeyEventKind::Repeat => ()
     @input.KeyEventKind::Release => return Action::None
   }
-  if event.modifiers.ctrl() {
-    // `Ctrl+A` / `Ctrl+L` 与原版 dive 的 layer 面板同义：切「聚合 / 当前层」档位。
-    // 它们在本仓未被占用；filetree 面板那组 `Ctrl+A/R/M/U`（按状态过滤）是 #64 的盘子，
-    // 两边别各绑一个。
-    return match event.code {
-      @input.KeyCode::Char('c') => Action::Quit
-      @input.KeyCode::Char('a') => Action::CompareAggregate
-      @input.KeyCode::Char('l') => Action::CompareSingle
-      _ => Action::None
-    }
-  }
-  // Tab 切焦点；Shift+Tab 反向。终端把两种都送到 `Tab` 上，靠修饰键区分
+  // Tab 换视图（原版 ToggleView），Shift+Tab 反向。终端把两种都送到 `Tab` 上
   if event.code == @input.KeyCode::Tab {
     if event.modifiers.shift() {
       return Action::PrevFocus
     }
     return Action::NextFocus
+  }
+  if event.modifiers.ctrl() {
+    return match event.code {
+      @input.KeyCode::Char('c') => Action::Quit
+      // `ctrl+space`：NUL 在 tty 里解成 `Char(' ') + ctrl`（实测），不是 `Char('\u{0}')`
+      @input.KeyCode::Char(' ') => Action::ToggleCollapseAll
+      // Layer 作用域：`ctrl+a` 聚合档 / `ctrl+l` 当前层档（原版 dive 的 CompareAll
+      // / CompareLayer）。filetree 那组按状态过滤（`ctrl+a/r/m/u`）让位——
+      // `ctrl+a` 是同一个码位，两者不可能同时绑一颗键上（理由见 docs/p6-tui.md）
+      @input.KeyCode::Char('a') => Action::CompareAggregate
+      @input.KeyCode::Char('l') => Action::CompareSingle
+      // Filetree 作用域：原版 `ctrl+u` 是 `IgnoreUnmodified`，本仓落成
+      // 「只看被改写的行 ↔ 全都要」的一颗键来回切（`set_filter` 自带反转）
+      @input.KeyCode::Char('u') => Action::FilterModified
+      _ => Action::None
+    }
   }
   match event.code {
     @input.KeyCode::Up => Action::MoveUp
@@ -94,8 +130,14 @@ pub fn action_of_key(event : @input.KeyEvent) -> Action {
     @input.KeyCode::Char('k') => Action::MoveUp
     @input.KeyCode::Char('h') => Action::Collapse
     @input.KeyCode::Char('l') => Action::Expand
-    @input.KeyCode::Char(' ') => Action::PageDown
-    @input.KeyCode::Char('b') => Action::PageUp
+    // 原版：`space` 折叠目录，`pgdn` 翻页。本仓原来把 `space` 绑成 `pgdn`，
+    // 那是最初「翻页键不够用」时的临时口径（`b` 也是当时补的），
+    // 现在按原版归位：翻页有 `pgup/pgdn` 两颗键，折叠有 `space`
+    @input.KeyCode::Char(' ') => Action::Toggle
+    // 原版导航里的 `u` 是 pgup 的别名；`d` 那颗被下面的删除列表占了
+    // （`d` 在原版是 `pgdn` 的别名，本仓 #77 先把它给了「被删除的路径」列表，
+    // 两个语义不可能同时挂在一颗键上，翻页因此只剩 `pgup`/`pgdn` 两颗）。
+    @input.KeyCode::Char('u') => Action::PageUp
     @input.KeyCode::Char('g') => Action::Home
     @input.KeyCode::Char('G') => Action::End
     @input.KeyCode::Char('[') => Action::PrevLayer
@@ -191,6 +233,13 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
         layer => state.switch_layer(layer),
         state.view.layer + 1,
       )
+    // `Ctrl+U`（原版 `IgnoreUnmodified`）：只看「相比上一层被改写过」的行，
+    // 再按一次回全都要——`set_filter` 自带「设成当前档 = 撤销」，与 dive 的
+    // `InvertFilter` 同效。过滤放在 `TreeView` 上，加了新键也不会把状态忘在别处。
+    Action::FilterModified => {
+      state.view.set_filter(Some(RowGroup::ModifiedOnly))
+      return false
+    }
     _ => ()
   }
   if state.focus == Focus::Detail {
@@ -220,6 +269,7 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     Action::Expand => view.expand()
     Action::Collapse => view.collapse()
     Action::Toggle => view.toggle()
+    Action::ToggleCollapseAll => view.toggle_collapse_all()
     Action::None => ()
     // 上面已处理：这里再列一遍是为了让 `match` 穷尽，编译器会盯住新增动作
     Action::PrevLayer
@@ -228,6 +278,7 @@ pub fn apply_action(action : Action, state : AppState) -> Bool {
     | Action::PrevFocus
     | Action::ToggleHelp
     | Action::ToggleSort
+    | Action::FilterModified
     | Action::CompareAggregate
     | Action::CompareSingle
     | Action::ToggleRemoved
