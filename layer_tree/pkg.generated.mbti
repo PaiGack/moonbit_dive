@@ -14,7 +14,7 @@ pub fn apply_layers_with_diffs(Array[BytesView], media_types? : Array[String]) -
 
 pub fn base_name(String) -> String
 
-pub fn browse_decompressed(DecompressedLayers) -> Array[LayerView]
+pub fn browse_decompressed(DecompressedLayers, content_hashes? : Bool) -> Array[LayerView]
 
 pub fn browse_layers(Array[BytesView], media_types? : Array[String]) -> Array[LayerView] raise LayerError
 
@@ -23,6 +23,10 @@ pub fn build_tar(Array[TarEntrySpec]) -> Bytes
 pub fn compare_ascii(String, String) -> Int
 
 pub fn compression_of(String) -> String
+
+pub fn content_changes(ContentScan, ContentScan) -> Array[String]
+
+pub fn content_scan(BytesView) -> ContentScan
 
 pub fn crc32(BytesView) -> UInt
 
@@ -141,6 +145,11 @@ pub struct BitReader {
 } derive(@debug.Debug)
 pub fn BitReader::to_repr(Self) -> @debug.Repr
 
+pub struct ContentScan {
+  hashes : Map[String, String?]
+} derive(@debug.Debug)
+pub fn ContentScan::to_repr(Self) -> @debug.Repr
+
 pub(all) struct DecompressedLayers {
   raws : Array[Bytes]
   decompressed : Int
@@ -169,6 +178,17 @@ pub fn Diff::to_string(Self) -> String
 pub fn Diff::total(Self) -> Int
 pub impl Show for Diff
 
+pub(all) struct Digest {
+  changes : Int
+  hash : String?
+} derive(Eq, @debug.Debug)
+pub fn Digest::equal(Self, Self) -> Bool
+pub fn Digest::not_equal(Self, Self) -> Bool
+pub fn Digest::output(Self, &Logger) -> Unit
+pub fn Digest::to_repr(Self) -> @debug.Repr
+pub fn Digest::to_string(Self) -> String
+pub impl Show for Digest
+
 pub(all) struct FileTree {
   root : Node
   mut layers : Int
@@ -185,6 +205,7 @@ pub fn FileTree::output(Self, &Logger) -> Unit
 pub fn FileTree::paths(Self) -> Array[String]
 pub fn FileTree::require(Self, String) -> Node raise
 pub fn FileTree::root(Self) -> Node
+pub fn FileTree::scan_content(Self, Array[Bytes]) -> Unit
 pub fn FileTree::size(Self) -> Int
 pub fn FileTree::snapshot(Self) -> Self
 pub fn FileTree::stat(Self, Int) -> LayerStat?
@@ -251,8 +272,12 @@ pub(all) struct Node {
   mut kind : NodeKind
   mut size : Int
   mut mode : Int
+  mut uid : Int
+  mut gid : Int
   mut layer : Int
   mut mtime : Int
+  mut digest : Digest?
+  mut files : Array[NodeFile]
   mut children : Array[Node]
 } derive(@debug.Debug)
 pub fn Node::find_child(Self, String) -> Self?
@@ -261,12 +286,24 @@ pub fn Node::is_dir(Self) -> Bool
 pub fn Node::is_file(Self) -> Bool
 pub fn Node::is_link(Self) -> Bool
 pub fn Node::link_target(Self) -> String?
-pub fn Node::new(String, NodeKind, size? : Int, mode? : Int, layer? : Int, mtime? : Int) -> Self
+pub fn Node::new(String, NodeKind, size? : Int, mode? : Int, uid? : Int, gid? : Int, layer? : Int, mtime? : Int) -> Self
 pub fn Node::output(Self, &Logger) -> Unit
 pub fn Node::remove_child(Self, String) -> Bool
 pub fn Node::to_repr(Self) -> @debug.Repr
 pub fn Node::to_string(Self) -> String
 pub impl Show for Node
+
+pub(all) struct NodeFile {
+  layer : Int
+  size : Int
+  hash : String?
+} derive(Eq, @debug.Debug)
+pub fn NodeFile::equal(Self, Self) -> Bool
+pub fn NodeFile::not_equal(Self, Self) -> Bool
+pub fn NodeFile::output(Self, &Logger) -> Unit
+pub fn NodeFile::to_repr(Self) -> @debug.Repr
+pub fn NodeFile::to_string(Self) -> String
+pub impl Show for NodeFile
 
 pub(all) enum NodeKind {
   File
@@ -293,13 +330,13 @@ pub fn RenderOptions::to_repr(Self) -> @debug.Repr
 pub struct TarBuilder {
   blocks : Array[Byte]
 } derive(@debug.Debug)
-pub fn TarBuilder::add_directory(Self, String, mode? : Int) -> Unit
-pub fn TarBuilder::add_file(Self, String, String, mode? : Int) -> Unit
-pub fn TarBuilder::add_hardlink(Self, String, String, mode? : Int) -> Unit
-pub fn TarBuilder::add_header(Self, String, Int, entry_type? : Byte, mode? : Int, link_target? : String, mtime? : Int) -> Unit
+pub fn TarBuilder::add_directory(Self, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
+pub fn TarBuilder::add_file(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
+pub fn TarBuilder::add_hardlink(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
+pub fn TarBuilder::add_header(Self, String, Int, entry_type? : Byte, mode? : Int, link_target? : String, mtime? : Int, uid? : Int, gid? : Int) -> Unit
 pub fn TarBuilder::add_opaque(Self, String) -> Unit
-pub fn TarBuilder::add_raw_file(Self, String, BytesView, mode? : Int) -> Unit
-pub fn TarBuilder::add_symlink(Self, String, String, mode? : Int) -> Unit
+pub fn TarBuilder::add_raw_file(Self, String, BytesView, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
+pub fn TarBuilder::add_symlink(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
 pub fn TarBuilder::add_whiteout(Self, String, String) -> Unit
 pub fn TarBuilder::finish(Self) -> Bytes
 pub fn TarBuilder::new() -> Self
@@ -310,6 +347,8 @@ pub(all) struct TarEntry {
   entry_type : TarEntryType
   size : Int
   mode : Int
+  uid : Int
+  gid : Int
   mtime : Int
   link_target : String
   data_offset : Int

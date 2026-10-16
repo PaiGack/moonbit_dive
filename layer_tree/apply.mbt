@@ -143,11 +143,22 @@ fn apply_entry(
       node.kind = kind
       node.size = size
       node.mode = mode
+      node.uid = entry.uid
+      node.gid = entry.gid
       node.layer = layer
       node.mtime = entry.mtime
     }
     None => {
-      let node = Node::new(path, kind, size~, mode~, layer~, mtime=entry.mtime)
+      let node = Node::new(
+        path,
+        kind,
+        size~,
+        mode~,
+        uid=entry.uid,
+        gid=entry.gid,
+        layer~,
+        mtime=entry.mtime,
+      )
       tree.nodes.set(path, node)
       tree.attach(node)
     }

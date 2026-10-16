@@ -28,6 +28,8 @@ pub fn TarBuilder::add_header(
   mode~ : Int32 = 0o644,
   link_target~ : String = "",
   mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
   let header = FixedArray::make(tar_block_size, b'\x00')
   let name = path
@@ -42,8 +44,8 @@ pub fn TarBuilder::add_header(
   }
   // 八进制字段都以上一个 NUL 收尾：这里补足到字段边界
   write_into(header, 100, utf8_bytes(octal(mode, 7) + "\u{0}"))
-  write_into(header, 108, utf8_bytes(octal(0, 7) + "\u{0}"))
-  write_into(header, 116, utf8_bytes(octal(0, 7) + "\u{0}"))
+  write_into(header, 108, utf8_bytes(octal(uid, 7) + "\u{0}"))
+  write_into(header, 116, utf8_bytes(octal(gid, 7) + "\u{0}"))
   write_into(header, 124, utf8_bytes(octal(size, 11) + "\u{0}"))
   write_into(header, 136, utf8_bytes(octal(mtime, 11) + "\u{0}"))
   // 校验和字段先填空格，算完再回填
@@ -69,8 +71,19 @@ pub fn TarBuilder::add_raw_file(
   path : String,
   content : BytesView,
   mode~ : Int32 = 0o644,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
-  self.add_header(path, content.length(), entry_type=b'0', mode~)
+  self.add_header(
+    path,
+    content.length(),
+    entry_type=b'0',
+    mode~,
+    mtime~,
+    uid~,
+    gid~,
+  )
   self.push_data_bytes(content)
 }
 
@@ -81,9 +94,20 @@ pub fn TarBuilder::add_file(
   path : String,
   content : String,
   mode~ : Int32 = 0o644,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
   let bytes = utf8_bytes(content)
-  self.add_header(path, bytes.length(), entry_type=b'0', mode~)
+  self.add_header(
+    path,
+    bytes.length(),
+    entry_type=b'0',
+    mode~,
+    mtime~,
+    uid~,
+    gid~,
+  )
   self.push_data(bytes)
 }
 
@@ -93,9 +117,12 @@ pub fn TarBuilder::add_directory(
   self : TarBuilder,
   path : String,
   mode~ : Int32 = 0o755,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
   let name = if path.has_suffix("/") { path } else { path + "/" }
-  self.add_header(name, 0, entry_type=b'5', mode~)
+  self.add_header(name, 0, entry_type=b'5', mode~, mtime~, uid~, gid~)
 }
 
 ///|
@@ -105,8 +132,20 @@ pub fn TarBuilder::add_symlink(
   path : String,
   target : String,
   mode~ : Int32 = 0o777,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
-  self.add_header(path, 0, entry_type=b'2', mode~, link_target=target)
+  self.add_header(
+    path,
+    0,
+    entry_type=b'2',
+    mode~,
+    link_target=target,
+    mtime~,
+    uid~,
+    gid~,
+  )
 }
 
 ///|
@@ -116,8 +155,20 @@ pub fn TarBuilder::add_hardlink(
   path : String,
   target : String,
   mode~ : Int32 = 0o644,
+  mtime~ : Int32 = 0,
+  uid~ : Int32 = 0,
+  gid~ : Int32 = 0,
 ) -> Unit {
-  self.add_header(path, 0, entry_type=b'1', mode~, link_target=target)
+  self.add_header(
+    path,
+    0,
+    entry_type=b'1',
+    mode~,
+    link_target=target,
+    mtime~,
+    uid~,
+    gid~,
+  )
 }
 
 ///|

@@ -40,7 +40,7 @@ pub(all) struct LayerView {
   diff : Diff
   /// 聚合 diff：第 `layer` 层的树相对**第 0 层之前**（空树）的整体差异。
   ///
-  /// 原版 dive 的 `CompareAllLayers` 档位就是它，且口径是「这期间被碰过」：
+  /// 原版 dive 的 `CompareAllLayers` 档位就是它，口径是「这期间被碰过」：
   /// 第 0 层写过、第 2 层又改回原样的路径仍算 `modified`（见 `diff_aggregate`）。
   aggregate : Diff
   /// 聚合档下每一层的体积（该层树上所有文件字节合计），下标即层号。
@@ -103,16 +103,27 @@ pub fn browse_layers(
 /// 从已解压的层建逐层视图：语义与 `browse_layers` 完全一致，
 /// 只是不再吃掉原始（可能带压缩的）字节，因此调用方可以把同一批解压结果
 /// 也交给分析层，避免解压两遍（issue #52）。
+///
+/// 逐层 diff 的判等口径与 dive 的 `FileInfo::Compare` 一致：
+/// `(kind, mode, uid, gid)` 全等才算没动过（`size` 也看，`mtime` 不看）。
+/// 光靠这些认不出「同大小、同 mtime、内容不同」，所以这一档顺带按 tar
+/// 算一遍每条 entry 的 sha256：大镜像上这是实打实的一遍读取，
+/// `content_hashes = false` 可以关掉，换回「只比元数据 + size」的省法。
 pub fn browse_decompressed(
   decompressed : DecompressedLayers,
+  content_hashes~ : Bool = true,
 ) -> Array[LayerView] {
   let tree = FileTree::new()
   let views : Array[LayerView] = []
   let diffs : Array[Diff] = []
   let layer_sizes : Array[Int32] = []
-  // 聚合档的比较起点：第 0 层之前的空树；第 0 层应用完之后换成它的快照。
+  // 每层只扫一遍内容摘要：这一层的用来标 `snapshot`，上一层的用来标 `before`
+  let mut previous_scan : ContentScan? = None
+  // 聚合档的起点：第 0 层之前的空树（第 0 层与它比）
   let empty = FileTree::new()
   for index, raw in decompressed.raws {
+    // 这一层的字节还没叠上去：`before` 与 `snapshot` 只差这一层。
+    // 两份快照都要带内容摘要，`diff_snapshots` 才比得了「同大小不同内容」
     let before = tree.snapshot()
     // 已经解压过的层不该再出 tar 错：真出了就是「解压产物」这一契约被破坏，
     // 属于程序缺陷，就地炸出来，别把错误吞成一次静默的空视图
@@ -121,19 +132,53 @@ pub fn browse_decompressed(
       Err(err) => abort("applying decompressed layer \{index} failed: \{err}")
     }
     let snapshot = tree.snapshot()
+    // 摘要按两条线标：这一层的写入盖在 `snapshot` 上，上一层的写入盖在 `before` 上
+    if content_hashes {
+      // 摘要是「按需」的：读不出来（残缺 tar）就当这一层没摘要，不打断浏览
+      let scan = content_scan(raw)
+      stamp_digests(snapshot, scan, index)
+      match previous_scan {
+        Some(previous) => stamp_digests(before, previous, index - 1)
+        None => ()
+      }
+      previous_scan = Some(scan)
+    }
     let diff = diff_snapshots(before, snapshot, index - 1, index)
     // 逐层 diff 先入账：聚合档吃的就是「区间内各层的 diff」，含当前这一层
     diffs.push(diff)
-    // 聚合档复用同一次快照与已经算好的逐层 diff，不回 tar 重新叠层
+    // 聚合档复用同一次快照与已经算好的逐层 diff，不回 tar 重新叠层；
+    // 起点是第 0 层的形状，`.snapshot()` 出一份独立的拷贝，
+    // 免得与 `views[0].tree` 共用节点、被后面的层原地改写
     let aggregate = if index == 0 {
       diff_aggregate(empty, snapshot, diffs, -1, 0)
     } else {
-      diff_aggregate(views[0].tree, snapshot, diffs, 0, index)
+      diff_aggregate(views[0].tree.snapshot(), snapshot, diffs, 0, index)
     }
     layer_sizes.push(total_file_bytes(snapshot))
     views.push({ layer: index, tree: snapshot, diff, aggregate, layer_sizes, })
   }
   views
+}
+
+///|
+/// 把这一层的内容摘要标到快照上：只标「当前内容就是这一层写的」那些路径。
+///
+/// 快照里的节点是各自独立的拷贝，所以这里只会动到这一份快照自己的副本，
+/// 不会顺着共享的节点对象改到别的视图。
+fn stamp_digests(tree : FileTree, scan : ContentScan, layer : Int32) -> Unit {
+  for path, hash in scan.hashes {
+    match tree.nodes.get(path) {
+      Some(node) =>
+        if node.layer == layer {
+          let changes = match node.digest {
+            Some(previous) => previous.changes + 1
+            None => 1
+          }
+          node.digest = Some({ changes, hash, })
+        }
+      None => ()
+    }
+  }
 }
 
 ///|
@@ -250,9 +295,13 @@ pub fn LayerView::subtree(self : LayerView, prefix : String) -> FileTree {
           node.kind,
           size=node.size,
           mode=node.mode,
+          uid=node.uid,
+          gid=node.gid,
           layer=node.layer,
           mtime=node.mtime,
         )
+        cloned.digest = node.digest
+        cloned.files = node.files.copy()
         result.nodes.set(path, cloned)
         result.attach(cloned)
       }

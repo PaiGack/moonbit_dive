@@ -1,6 +1,7 @@
 import {
   "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
+  "moonbitlang/x/crypto",
   "moonbitlang/x/encoding",
 }
 
