@@ -23,7 +23,7 @@ pub let docker_manifest_list_media_type : String
 
 pub let docker_manifest_media_type : String
 
-pub fn hex_value(Char) -> Int?
+pub fn hex_value(Char) -> Int32?
 
 pub fn is_compressed_layer_media_type(String) -> Bool
 
@@ -35,7 +35,7 @@ pub fn is_layer_media_type(String) -> Bool
 
 pub fn is_manifest_media_type(String) -> Bool
 
-pub fn json_loc_index(JsonLoc, Int) -> JsonLoc
+pub fn json_loc_index(JsonLoc, Int32) -> JsonLoc
 
 pub fn json_loc_key(JsonLoc, String) -> JsonLoc
 
@@ -81,7 +81,7 @@ pub fn[T : @json.FromJson] parse_nested(Map[String, Json], String, JsonLoc) -> T
 
 pub fn[T : @json.FromJson] parse_optional(Map[String, Json], String, JsonLoc) -> T? raise @json.JsonDecodeError
 
-pub fn required_int_field(Map[String, Json], String, JsonLoc) -> Int raise @json.JsonDecodeError
+pub fn required_int_field(Map[String, Json], String, JsonLoc) -> Int32 raise @json.JsonDecodeError
 
 pub fn required_object_field(Map[String, Json], String, JsonLoc) -> Map[String, Json] raise @json.JsonDecodeError
 
@@ -100,8 +100,8 @@ pub(all) suberror DigestError {
   MissingAlgorithm(String)
   EmptyEncoded(String)
   UnsupportedAlgorithm(String, Array[String])
-  InvalidLength(String, Int, Int)
-  InvalidHexChar(String, Char, Int)
+  InvalidLength(String, Int32, Int32)
+  InvalidHexChar(String, Char, Int32)
   NotLowercase(String)
 } derive(Eq, @debug.Debug)
 pub fn DigestError::equal(Self, Self) -> Bool
@@ -146,7 +146,7 @@ pub impl @json.FromJson for ContainerConfig
 pub(all) struct Descriptor {
   media_type : String
   digest : String
-  size : Int
+  size : Int32
   urls : Array[String]?
   annotations : Map[String, String]?
   platform : Platform?
@@ -202,7 +202,7 @@ pub impl ToJson for History
 pub impl @json.FromJson for History
 
 pub(all) struct ImageConfig {
-  schema_version : Int
+  schema_version : Int32
   media_type : String?
   artifact_type : String?
   created : String?
@@ -230,7 +230,7 @@ pub impl ToJson for ImageConfig
 pub impl @json.FromJson for ImageConfig
 
 pub(all) struct Index {
-  schema_version : Int
+  schema_version : Int32
   media_type : String?
   artifact_type : String?
   manifests : Array[Descriptor]
@@ -264,7 +264,7 @@ pub fn JsonLoc::to_string(Self) -> String
 pub impl Show for JsonLoc
 
 pub(all) struct LayerHistoryEntry {
-  index : Int
+  index : Int32
   diff_id : String
   created_by : String?
 } derive(Eq, @debug.Debug)
@@ -276,7 +276,7 @@ pub fn LayerHistoryEntry::to_string(Self) -> String
 pub impl Show for LayerHistoryEntry
 
 pub(all) struct Manifest {
-  schema_version : Int
+  schema_version : Int32
   media_type : String?
   artifact_type : String?
   config : Descriptor
@@ -294,7 +294,7 @@ pub fn Manifest::output(Self, &Logger) -> Unit
 pub fn Manifest::to_json(Self) -> Json
 pub fn Manifest::to_repr(Self) -> @debug.Repr
 pub fn Manifest::to_string(Self) -> String
-pub fn Manifest::total_layer_size(Self) -> Int
+pub fn Manifest::total_layer_size(Self) -> Int32
 pub impl Show for Manifest
 pub impl ToJson for Manifest
 pub impl @json.FromJson for Manifest

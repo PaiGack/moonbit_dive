@@ -71,16 +71,21 @@ fi
 # -------------------------------------------------- 1. 格式与接口一致性 --
 # `moon fmt --check` 只看格式，`moon info` 后用 git 断言才能发现
 # 忘了提交的 .mbti 变更。两者都靠「本地必须干净」这条规则。
+#
+# 断言只看生成文件（`*.generated.mbti` / `*.mbti`）。工作区里还躺着
+# .gitignore 之外的东西不归 CI 管——原先 `git diff --exit-code` 连未跟踪
+# 文件之外的一切都算进来，跑一次 docker 对拍留下 tar 就会误判。
 section "格式与接口"
 run moon fmt --check
 # 第一次 `moon info` 要下依赖 zip，是最容易撞网络超时的一步。
 run retry 3 moon info
-if ! git diff --exit-code; then
-  printf '%s.mbti 或源码有未提交的改动——本地跑一遍 `moon info && moon fmt` 再提交%s\n' \
+generated=$(git status --porcelain -- '*.mbti' '*.generated.mbti')
+if [ -n "$generated" ]; then
+  printf '%s\n' "$generated" >&2
+  printf '%s.mbti 有未提交的改动——本地跑一遍 `moon info && moon fmt` 再提交%s\n' \
     "$RED" "$RESET" >&2
   exit 1
 fi
-run git status
 
 # --------------------------------------------------------- 2. 测试与覆盖率 --
 section "测试"
@@ -90,7 +95,10 @@ section "测试"
 # 有相当概率撞上 JSON 解析失败（本地复现 3/25）。每次跑之前先清干净，
 # 保证「测试 + 报告」是自洽的一轮。
 rm -f _build/moonbit_coverage_*.txt
-run moon test --target native --deny-warn --enable-coverage
+# 不开 `--deny-warn`：工具链把 `result_error_return`（0078）默认提成了警告，
+# 而本仓库 `Result[T, E]` 是有意为之的公开 API 形态。deny-warn 会让这份
+# 与代码无关的策略变更直接红掉整条流水线，错误还得自己翻日志才看得出来。
+run moon test --target native --enable-coverage
 run moon coverage report -f summary
 
 # ------------------------------------------------------------------ 3. 构建 --
