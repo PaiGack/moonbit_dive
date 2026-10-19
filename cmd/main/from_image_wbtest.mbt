@@ -5,6 +5,7 @@ fn describe_error(error : CommandError) -> String {
     Image(message) => "image: \{message}"
     Analysis(message) => "analysis: \{message}"
     Docker(message) => "docker: \{message}"
+    Registry(message) => "registry: \{message}"
   }
 }
 
@@ -88,6 +89,7 @@ async test "from-image without any backend reports a docker error" {
     Docker(message) => Docker(message)
     Image(message) => Image(message)
     Analysis(message) => Analysis(message)
+    Registry(message) => Registry(message)
   }
   assert_true(error is Docker(_))
   let message = describe_error(error)
@@ -116,6 +118,7 @@ async test "without from-image the input is treated as a file path" {
     Image(message) => Image(message)
     Docker(message) => Docker(message)
     Analysis(message) => Analysis(message)
+    Registry(message) => Registry(message)
   }
   assert_true(error is Image(_))
 }

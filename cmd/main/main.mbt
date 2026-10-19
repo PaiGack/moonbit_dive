@@ -31,6 +31,17 @@ async fn main {
     }
   }
   let options = Options::from_matches(matches)
+  // `--save` 是「只拉不分析」：拿远端 registry 的镜像落成 tar / OCI layout 就结束，
+  // 不走进分析链路。它会先于 `load_source` 判定，免得为了保存去解一遍镜像
+  if options.save {
+    save_only(options) catch {
+      err => {
+        report_error(err)
+        exit_process(@image_ci.exit_config_error)
+      }
+    }
+    exit_process(@image_ci.exit_ok)
+  }
   // `--from-image` 要先连 daemon / 起子进程取归档，这一步是 async；
   // 其余（读文件、分析）都是同步的，取到字节后走进既有链路。
   let source = load_source(options) catch {
@@ -159,6 +170,19 @@ fn cli() -> @argparse.Command {
         "timeout",
         about="seconds to allow a single docker call with --from-image (default: 30)",
       ),
+      @argparse.OptionArg(
+        "archive-format",
+        about="--from-registry output format: docker-archive (default) or oci",
+        default_values=["docker-archive"],
+      ),
+      @argparse.OptionArg(
+        "platform",
+        about="--from-registry target platform, os/arch[/variant] (default: linux + this machine's arch)",
+      ),
+      @argparse.OptionArg(
+        "registry-token",
+        about="--from-registry bearer token (default: $DIVE_REGISTRY_TOKEN)",
+      ),
     ],
     flags=[
       @argparse.FlagArg(
@@ -168,6 +192,14 @@ fn cli() -> @argparse.Command {
       @argparse.FlagArg(
         "from-image",
         about="treat the positional as an image reference (docker/podman/nerdctl or docker socket)",
+      ),
+      @argparse.FlagArg(
+        "from-registry",
+        about="treat the positional as a remote image reference and pull it straight from the registry (no docker daemon)",
+      ),
+      @argparse.FlagArg(
+        "save",
+        about="with --from-registry: only save the image to --output, do not analyze it",
       ),
       @argparse.FlagArg(
         "no-pull",
@@ -184,6 +216,10 @@ fn cli() -> @argparse.Command {
       @argparse.FlagArg(
         "aggregate",
         about="with --layer, compare that layer against the start of the image instead of its parent",
+      ),
+      @argparse.FlagArg(
+        "insecure-registry",
+        about="--from-registry against a plain-http registry (also skips TLS verification)",
       ),
     ],
     positionals=[
@@ -217,6 +253,19 @@ struct Options {
   /// （对齐原版 dive 的 `Ctrl+A` / 聚合档）。只影响 `--layer` 分支，
   /// 不给这个开关时输出与从前逐字节一致
   aggregate : Bool
+  /// `--from-registry`：把位置参数当远端镜像引用，自己连 registry 拉归档。
+  /// 与 `--from-image` 的区别是**完全不碰 docker daemon**（issue #65）
+  from_registry : Bool
+  /// `--save`：拉完就落盘，不做分析
+  save : Bool
+  /// 落盘格式：`docker-archive`（默认）或 `oci`
+  archive_format : @registry_cli.ArchiveFormat
+  /// 目标平台 `os/arch[/variant]`
+  platform : String?
+  /// `--insecure-registry`：走 `http://` 并跳过证书校验（自建 registry）
+  registry_insecure : Bool
+  /// `--registry-token`：显式 token，缺省读 `DIVE_REGISTRY_TOKEN`
+  registry_token : String?
   top : Int32
   /// 单次 docker 调用的超时（毫秒）。刻意**不接受 0**：
   /// 无超时正是「半死 socket → 静默挂住」的老问题，不给用户留这个坑
@@ -245,6 +294,12 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     verbose: flag_of(matches, "verbose"),
     tui: flag_of(matches, "tui"),
     aggregate: flag_of(matches, "aggregate"),
+    from_registry: flag_of(matches, "from-registry"),
+    save: flag_of(matches, "save"),
+    archive_format: archive_format_of(matches),
+    platform: optional_value(matches, "platform"),
+    registry_insecure: flag_of(matches, "insecure-registry"),
+    registry_token: optional_value(matches, "registry-token"),
     top: top_of(matches),
     docker_timeout_ms: docker_timeout_of(matches),
   }
@@ -316,6 +371,56 @@ fn docker_timeout_of(matches : @argparse.Matches) -> Int32 {
 }
 
 ///|
+/// 解析 `--archive-format`：只认 docker-archive / oci，别的直接报错退出。
+fn archive_format_of(
+  matches : @argparse.Matches,
+) -> @registry_cli.ArchiveFormat {
+  let text = first_value(matches, "archive-format")
+  if text.is_empty() {
+    return @registry_cli.DockerArchive
+  }
+  match @registry_cli.parse_format(text) {
+    Some(format) => format
+    None => {
+      eprintln(
+        "invalid --archive-format: expect docker-archive or oci, got \{text}",
+      )
+      exit_process(@image_ci.exit_config_error)
+      @registry_cli.DockerArchive
+    }
+  }
+}
+
+///|
+/// 把命令行的 registry 相关选项摊成一份 `RegistryOptions`。
+fn registry_options(options : Options) -> RegistryOptions {
+  {
+    reference: options.image,
+    output: options.output.unwrap_or(""),
+    format: options.archive_format,
+    platform: options.platform,
+    insecure: options.registry_insecure,
+    token: options.registry_token,
+    verbose: options.verbose,
+  }
+}
+
+///|
+/// `--save`：只拉不分析。
+///
+/// 没给 `-o` 就直接报参数错：`--save` 不落盘的唯一理由是想看网络能不能通，
+/// 那用 `--from-registry` 更直接。悄悄写进一个会被删掉的临时目录最糟。
+async fn save_only(options : Options) -> Unit raise CommandError {
+  if options.output is None {
+    raise CommandError::Registry(
+      "--save needs -o/--output: give the file (docker-archive) or directory (oci) to write",
+    )
+  }
+  let result = save_remote(registry_options(options))
+  report_saved(result.0)
+}
+
+///|
 /// 非负整数，否则报错到 stderr 并按 exit 2 退出。
 fn non_negative_int_or_exit(text : String, option : String) -> Int32 {
   match parse_non_negative_int(text) {
@@ -352,6 +457,8 @@ suberror CommandError {
   Analysis(String)
   /// `--from-image` 取归档失败：探测不到后端、子进程失败、镜像名不合法等
   Docker(String)
+  /// `--from-registry` / `--save` 失败：认证、404、digest 不符、落盘失败等
+  Registry(String)
 } derive(Eq, Debug)
 
 ///|
@@ -362,6 +469,7 @@ fn report_error(error : CommandError) -> Unit {
     Analysis(message) => eprintln("analysis error: \{message}")
     // `DockerCliError` 的 `Show` 已经带了安装提示，这里只补一句「怎么绕过」
     Docker(message) => eprintln("docker error: \{message}")
+    Registry(message) => eprintln("registry error: \{message}")
   }
 }
 
@@ -383,6 +491,23 @@ async fn load_source(
   env~ : Map[String, String] = @docker_cli.process_env(),
   candidates? : Array[@docker_cli.BackendCandidate],
 ) -> @image_ci.ImageSource raise CommandError {
+  if options.from_registry {
+    // 远端 registry → 临时目录里的 tar / layout → 既有 `ImageSource::load`。
+    // 落成文件再读回来是**故意的**：三种输入格式（docker-archive / OCI layout /
+    // 单层 tar）的识别逻辑只有一份，不该为「内存里的镜像」再写一套。
+    let registry_options = registry_options(options)
+    let (result, _) = save_remote(registry_options)
+    if options.verbose {
+      eprintln("[registry] parsing \{result.path}...")
+    }
+    // 临时产物无论成败都要收掉：失败时留着只会攒垃圾
+    errdefer cleanup_remote(registry_options, result)
+    let source = @image_ci.ImageSource::load(result.path) catch {
+      err => raise CommandError::Image(err.to_string())
+    }
+    cleanup_remote(registry_options, result)
+    return source
+  }
   if !options.from_image {
     return @image_ci.ImageSource::load(options.image) catch {
       err => raise CommandError::Image(err.to_string())

@@ -1,0 +1,23 @@
+import {
+  "PaiGack/dive/layer_tree",
+  "PaiGack/dive/oci_spec",
+  "moonbitlang/async/fs",
+  "moonbitlang/async/http",
+  "moonbitlang/async/tls",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/env",
+  "moonbitlang/core/json",
+  "moonbitlang/x/encoding",
+}
+
+warnings = "-test_unqualified_package"
+
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/socket",
+} for "test"
+
+// registry 走 TCP + TLS，wasm / js 后端没有 socket；与 docker_cli 同理只支持 native，
+// 让默认的 wasm 构建不必解析这些依赖。
+
+supported_targets = "-all+native"
