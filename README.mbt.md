@@ -11,6 +11,8 @@ MoonBit 重写 [wagoodman/dive](https://github.com/wagoodman/dive)（Go，MIT）
 - `image_analysis`：镜像体积分析、跨层重复文件、efficiency score，输出报告
 - `image_ci`：镜像体积门禁规则 DSL 与 CLI（exit code / CI 注解）——**已落地**，见 [`image_ci/README.mbt.md`](image_ci/README.mbt.md)
 - `docker_cli`：Docker Engine 封装（docker/podman/nerdctl CLI 后端 + unix socket Engine 后端），把镜像名变成 tar/layout（独立包，不被前四包依赖）
+- `registry_cli`：直接连 registry 拉镜像（OCI Distribution Pull），落成本地 tar / OCI layout，
+  **不依赖本地 docker**（`--from-registry` / `--save`，native only）
 - `tui`：全屏交互式看树（基于 `moonbit-community/tty`，native only），alternate screen + 带边框分栏，
   树与详情可 `Tab` 切焦点、`?` 出帮助，把逐层视图接成可上下走、可折叠、可切层的画面；
   键鼠都能用（点击选行 / 滚轮滚面板 / 右键切展开）
@@ -45,6 +47,15 @@ moon run --target native cmd/main -- nginx:latest --from-image --verbose
 moon run --target native cmd/main -- nginx:latest --from-image --no-pull
 # 单次 docker 调用最多等多久（秒，默认 30），拉大镜像时调大
 moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
+
+# 直接连 registry 拉镜像（不碰本地 docker）：存成 tar 或 OCI layout
+moon run --target native cmd/main -- --save --from-registry -o nginx.tar library/nginx:1.27
+moon run --target native cmd/main -- --save --from-registry --archive-format oci -o ./nginx-oci library/nginx:1.27
+# 拉下来直接分析，一条命令出报告
+moon run --target native cmd/main -- --from-registry library/nginx:1.27
+# 多架构选平台 / 自建 http registry / 私有仓库
+moon run --target native cmd/main -- --save --from-registry --platform linux/arm64 -o x.tar ghcr.io/owner/repo:tag
+moon run --target native cmd/main -- --save --from-registry --insecure-registry -o x.tar localhost:5000/team/app:dev
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
@@ -60,6 +71,18 @@ moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
 `inefficientBytes`），所以它与 `wasted.overwritten + deleted` 对不上；JSON 里
 两个都给（`image.wastedBytes` 与 `image.wasted.{overwritten,deleted}`），
 外加 dive 的 `image.userWastedPercent`（分母剔掉 base image）。
+
+`--from-registry` 走的是**另一条数据源**：自己当 registry 客户端，
+`token → manifest(index 按平台选) → blobs` 三段 HTTP，把镜像直接拉下来落成 tar 或 OCI layout，
+全程不碰 daemon。`--save` 表示「只拉不分析」，`-o` 是落盘位置
+（docker-archive 写文件，`--archive-format oci` 写目录）；不给 `--save` 就落临时目录、
+分析完即删。细节见 [`docs/p7-registry-cli.md`](docs/p7-registry-cli.md)。
+
+`--from-registry` 走的是**另一条数据源**：自己当 registry 客户端，
+`token → manifest(index 按平台选) → blobs` 三段 HTTP，把镜像直接拉下来落成 tar 或 OCI layout，
+全程不碰 daemon。`--save` 表示「只拉不分析」，`-o` 是落盘位置
+（docker-archive 写文件，`--archive-format oci` 写目录）；不给 `--save` 就落临时目录、
+分析完即删。细节见 [`docs/p7-registry-cli.md`](docs/p7-registry-cli.md)。
 
 `--from-image` 把位置参数当镜像名：本地缺这个镜像时**默认先拉一次**再取，
 对齐原版 dive（Go）——那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就

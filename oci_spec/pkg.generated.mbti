@@ -91,6 +91,8 @@ pub fn required_string_field(Map[String, Json], String, JsonLoc) -> String raise
 
 pub let supported_digest_algorithms : Array[String]
 
+pub fn verify_digest(BytesView, String) -> Bool
+
 // Errors
 pub(all) suberror DigestError {
   EmptyDigest
@@ -167,6 +169,7 @@ pub(all) struct Digest {
   encoded : String
 } derive(Eq, @debug.Debug)
 pub fn Digest::equal(Self, Self) -> Bool
+pub fn Digest::from_bytes(String, BytesView) -> Self raise DigestError
 pub fn Digest::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
 pub fn Digest::from_sha256(BytesView) -> Self
 pub fn Digest::not_equal(Self, Self) -> Bool

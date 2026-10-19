@@ -203,3 +203,35 @@ pub fn Digest::from_sha256(data : BytesView) -> Digest {
 pub fn Digest::verify_sha256(data : BytesView, expected : String) -> Bool {
   digest_matches_hex(expected, Digest::from_sha256(data).encoded)
 }
+
+///|
+/// 计算任意支持算法的 digest；算法不受支持时抛 `UnsupportedAlgorithm`。
+///
+/// 现在实际用得上的是 sha256（OCI 生态的事实标准），sha512 单独走
+/// 会缺一个 `@crypto` 入口，所以显式拒绝而不是悄悄退回 sha256。
+pub fn Digest::from_bytes(
+  algorithm : String,
+  data : BytesView,
+) -> Digest raise DigestError {
+  match algorithm {
+    "sha256" => Digest::from_sha256(data)
+    _ => raise UnsupportedAlgorithm(algorithm, ["sha256"])
+  }
+}
+
+///|
+/// 按 digest 字符串（`algorithm:hex`）校验一段字节。
+///
+/// 与 `verify_sha256` 的区别：算法从 digest 里取，不必调用方先约定。
+/// 算法不受支持、digest 格式不对都算「校验不通过」——调用方要的是
+/// 「这段字节是不是这个 digest」这一个答案。
+pub fn verify_digest(data : BytesView, digest : String) -> Bool {
+  let parsed = match Digest::parse(digest) {
+    Ok(parsed) => parsed
+    Err(_) => return false
+  }
+  if parsed.algorithm != "sha256" {
+    return false
+  }
+  Digest::from_sha256(data).encoded == parsed.encoded
+}

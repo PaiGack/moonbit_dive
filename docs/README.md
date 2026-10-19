@@ -17,4 +17,5 @@
 | [issue-62-mouse-click-fold-survey.md](issue-62-mouse-click-fold-survey.md) | #62 鼠标点击展开/折叠的调研与候选方案 |
 | [issue-71-compare-rule.md](issue-71-compare-rule.md) | #71 `modified` 的判等口径对齐 dive：拍板结论与影响面 |
 | [registry-to-tar-survey.md](registry-to-tar-survey.md) | #65 远端 registry → 本地 tar（不依赖 docker）的方案调研：OCI Distribution Pull、打包格式与包设计 |
+| [p7-registry-cli.md](p7-registry-cli.md) | P7 `registry_cli`：直接连 registry 拉镜像并存成本地 tar / OCI layout（`--from-registry` / `--save`） |
 | [repo-layout.md](repo-layout.md) | 仓库结构、开发工作流、提交与发布约定 |

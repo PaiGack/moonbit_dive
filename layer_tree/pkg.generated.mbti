@@ -2,6 +2,7 @@
 package "PaiGack/dive/layer_tree"
 
 import {
+  "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
 }
 
@@ -83,6 +84,10 @@ pub fn render_tree(FileTree, options? : RenderOptions) -> String
 pub fn render_tree_between(FileTree, Int, Int, options? : RenderOptions) -> String
 
 pub let tar_block_size : Int
+
+pub fn tar_directory_entry(String, mode? : Int, mtime? : Int) -> TarWriteEntry
+
+pub fn tar_file_entry(String, Int, mode? : Int, mtime? : Int) -> TarWriteEntry
 
 pub fn whiteout_kind(String) -> WhiteoutKind?
 
@@ -398,6 +403,28 @@ pub fn TarReader::new(BytesView) -> Self
 pub fn TarReader::next(Self) -> TarEntry? raise TarError
 pub fn TarReader::to_repr(Self) -> @debug.Repr
 pub fn TarReader::with_base(BytesView, Int) -> Self
+
+pub(all) struct TarWriteEntry {
+  path : String
+  entry_type : TarEntryType
+  size : Int
+  mode : Int
+  mtime : Int
+} derive(Eq, @debug.Debug)
+pub fn TarWriteEntry::equal(Self, Self) -> Bool
+pub fn TarWriteEntry::not_equal(Self, Self) -> Bool
+pub fn TarWriteEntry::to_repr(Self) -> @debug.Repr
+
+pub struct TarWriter {
+  output : @buffer.Buffer
+} derive(@debug.Debug)
+pub fn TarWriter::begin(Self, TarWriteEntry) -> Unit
+pub fn TarWriter::finish(Self) -> Bytes
+pub fn TarWriter::new() -> Self
+pub fn TarWriter::pad(Self, Int) -> Unit
+pub fn TarWriter::to_repr(Self) -> @debug.Repr
+pub fn TarWriter::write_data(Self, BytesView) -> Unit
+pub fn TarWriter::write_entry(Self, TarWriteEntry, BytesView) -> Unit
 
 pub(all) enum WhiteoutKind {
   Entry(String)
