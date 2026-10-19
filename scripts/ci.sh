@@ -30,6 +30,29 @@ section() {
   printf '\n%s== %s ==%s\n' "$BOLD" "$1" "$RESET"
 }
 
+# ---------------------------------------------------------------- 网络重试 --
+# `moon update` 拉 registry 索引，`moon info` / `moon test` 首次会现下依赖
+# zip（download.mooncakes.io）。这两步都是纯网络操作，偶发 `operation timed
+# out` 会直接红掉一整轮（实测白跑 3 分钟）。网络抖动不是代码问题，所以按次
+# 重试，重试完还失败才算真失败。用法：`retry <次数> <命令...>`。
+retry() {
+  local attempts=$1 i
+  shift
+  local delay=15
+  for ((i = 1; i <= attempts; i++)); do
+    if "$@"; then
+      return 0
+    fi
+    if ((i == attempts)); then
+      printf '%s连试 %d 次仍失败：%s%s\n' "$RED" "$attempts" "$*" "$RESET" >&2
+      return 1
+    fi
+    printf '%s第 %d/%d 次失败，%ds 后重试：%s%s\n' \
+      "$DIM" "$i" "$attempts" "$delay" "$*" "$RESET" >&2
+    sleep "$delay"
+  done
+}
+
 # ------------------------------------------------------------------ 依赖 --
 # 新 checkout 里没有 registry 索引，直接 `moon check` 会解析依赖失败。
 section "环境"
@@ -42,7 +65,7 @@ fi
 # CI 里想跳过网络更新时设 CI_SKIP_MOON_UPDATE=1；本地跑默认也更新，
 # 这样依赖漂移能在本地先暴露出来。
 if [ "${CI_SKIP_MOON_UPDATE:-0}" != "1" ]; then
-  run moon update
+  run retry 3 moon update
 fi
 
 # -------------------------------------------------- 1. 格式与接口一致性 --
@@ -50,7 +73,8 @@ fi
 # 忘了提交的 .mbti 变更。两者都靠「本地必须干净」这条规则。
 section "格式与接口"
 run moon fmt --check
-run moon info
+# 第一次 `moon info` 要下依赖 zip，是最容易撞网络超时的一步。
+run retry 3 moon info
 if ! git diff --exit-code; then
   printf '%s.mbti 或源码有未提交的改动——本地跑一遍 `moon info && moon fmt` 再提交%s\n' \
     "$RED" "$RESET" >&2
