@@ -110,7 +110,7 @@ dive <docker-archive.tar | oci-layout-dir | -> [--rules rules.json] [--json] [--
 
 | 后端 | 做法 | 说明 |
 |---|---|---|
-| CLI | 包装 `docker` / `podman` / `nerdctl` 可执行文件 | 无 socket 依赖，先交付；顺带吃 podman/nerdctl |
+| CLI | 包装 `docker` / `podman` / `nerdctl` 可执行文件 | 无 socket 依赖，先交付；顺带吃 podman/nerdctl（三家 CLI 的实际差异见 [p5](p5-docker-cli.md) 与 issue #86） |
 | Engine | HTTP over unix socket，`/images/{name}/json` + `/get` | 不依赖 docker binary，`_ping` 做版本协商 |
 
 边界保持不变的部分：

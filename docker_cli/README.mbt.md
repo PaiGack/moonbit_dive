@@ -66,8 +66,33 @@ async test "README example" {
 默认按这个顺序走，停在第一个可用的上：
 
 ```
-DOCKER_HOST（unix://） → /var/run/docker.sock → docker → podman → nerdctl
+DOCKER_HOST → CONTAINER_HOST → /var/run/docker.sock → /run/podman/podman.sock
+           → docker → podman → nerdctl
 ```
+
+两个 socket 变量都收：`DOCKER_HOST` 归 docker，`CONTAINER_HOST` 归 podman。
+两者都接受 `unix://` 前缀与**裸绝对路径**（`/run/podman/podman.sock`），
+指向同一条 socket 时只探一次。系统默认的两条 socket 一起排上——
+容器环境里常只跑其中一只 daemon。
+
+## 三个工具的差异
+
+docker / podman / nerdctl 的 CLI「看起来一样」，实际有三处会把链路带歪，
+都在 `cli_source.mbt` 里显式处理：
+
+| | docker | podman | nerdctl |
+|---|---|---|---|
+| `save` 默认格式 | docker-archive ✅ | **oci-archive** ❌ 要 `--format docker-archive` | docker-archive ✅ |
+| `inspect` 默认输出 | JSON ✅ | Go 模板表格 ❌ 要 `--format json` | JSON ✅ |
+| 「本地没有」怎么说 | `No such image` | `image not known` | `no such object` / `not found` |
+
+前两条是参数，第三条是**语义判定**：`ImageNotFound` 与 `Backend` 混了，
+要么该拉的镜像被判死，要么拿一次注定失败的拉取盖住真正的原因。
+三种原话都收（大小写不敏感），工具本身坏了（连不上 daemon、权限不够）
+仍然算 `Backend`。
+
+`pull` 三家参数一致，失败文案不一致——拉取失败一律报 `Backend` 带 stderr，
+不翻成 `ImageNotFound`：「本地有没有」这件事只由 `inspect` 回答。
 
 - `DOCKER_CLI=/opt/bin/docker` 显式指定时，把这个**文件**提到第一位。
   它是路径，不是「去 PATH 上找哪个名字」——PATH 上没有同名文件也照样能用

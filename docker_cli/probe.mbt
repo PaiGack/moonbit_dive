@@ -1,18 +1,21 @@
 ///|
-/// 默认探测顺序：`DOCKER_HOST` → `/var/run/docker.sock` → PATH 上的
-/// docker → podman → nerdctl。issue #17 要求「可配置」，因此这里返回候选列表
-/// 而不是直接探测，调用方可以删改顺序。
+/// 默认探测顺序：
+///
+/// `DOCKER_HOST` → `CONTAINER_HOST` → `/var/run/docker.sock` → podman socket
+/// → docker → podman → nerdctl
+///
+/// 前两个是显式声明的 socket，用户写死的东西不排在系统默认值后面；
+/// 两个系统 socket 一起上，是因为容器环境里常只跑其中一只 daemon。
+/// issue #17 要求「可配置」，因此这里返回候选列表而不是直接探测，
+/// 调用方可以删改顺序。
 pub fn default_candidates(env : Map[String, String]) -> Array[BackendCandidate] {
   let candidates = []
-  match env.get("DOCKER_HOST") {
-    Some(host) =>
-      match unix_socket_of(host) {
-        Some(path) => candidates.push(Socket(path))
-        None => ()
-      }
-    None => ()
-  }
-  candidates.push(Socket("/var/run/docker.sock"))
+  push_socket_candidates(candidates, env.get("DOCKER_HOST"))
+  push_socket_candidates(candidates, env.get("CONTAINER_HOST"))
+  candidates.push(Socket(DOCKER_SOCKET))
+  // podman 的 socket 路径不是猜的：这是 rootful 的官方默认值。装了 podman
+  // 却没开 docker daemon 的机器上，这一条能接住「只装了 podman」的情形。
+  candidates.push(Socket(PODMAN_ROOT_SOCKET))
   candidates.push(Cli(CliTool::Docker))
   candidates.push(Cli(CliTool::Podman))
   candidates.push(Cli(CliTool::Nerdctl))
@@ -20,8 +23,65 @@ pub fn default_candidates(env : Map[String, String]) -> Array[BackendCandidate] 
 }
 
 ///|
+pub const DOCKER_SOCKET : String = "/var/run/docker.sock"
+
+///|
+/// podman rootful 的默认 socket。rootless 的版本见 `podman_rootless_socket`——
+/// 它带用户名，只能运行时拼。
+pub const PODMAN_ROOT_SOCKET : String = "/run/podman/podman.sock"
+
+///|
+/// podman rootless 的默认 socket：`$XDG_RUNTIME_DIR/podman/podman.sock`，
+/// 没设时是 `/run/user/<uid>/podman/podman.sock`。
+///
+/// 只给出路径，不负责判断它在不在——那是探测的事。
+pub fn podman_rootless_socket(env : Map[String, String]) -> String? {
+  match env.get("XDG_RUNTIME_DIR") {
+    Some(dir) if !dir.trim().is_empty() => {
+      let base = dir.trim()
+      let base : String = if base.has_suffix("/") {
+        base[:base.length() - 1].to_owned()
+      } else {
+        base.to_owned()
+      }
+      Some("\{base}/podman/podman.sock")
+    }
+    _ =>
+      match env.get("UID") {
+        Some(uid) if !uid.trim().is_empty() =>
+          Some("/run/user/\{uid.trim()}/podman/podman.sock")
+        _ => None
+      }
+  }
+}
+
+///|
+/// 一个环境变量 → 一条 socket 候选。认不出的形态（`tcp://` / `ssh://` /
+/// `npipe://`）直接跳过，不塞半成品进候选表。
+fn push_socket_candidates(
+  candidates : Array[BackendCandidate],
+  host : String?,
+) -> Unit {
+  match host {
+    Some(value) =>
+      match unix_socket_of(value) {
+        Some(path) =>
+          // 同一个 socket 被 DOCKER_HOST 与 CONTAINER_HOST 重复指定时只留一条
+          if !has_socket(candidates, path) {
+            candidates.push(Socket(path))
+          }
+        None => ()
+      }
+    None => ()
+  }
+}
+
+///|
 /// `DOCKER_HOST=unix:///var/run/docker.sock` → `/var/run/docker.sock`。
 /// `tcp://` / `ssh://` 属于后续 issue，这里返回 `None`（跳过这项）。
+///
+/// podman 的 `CONTAINER_HOST` 既接受裸路径也接受 `unix://` 写法，
+/// 所以裸绝对路径同样收——只认一种写法等于让用户去猜我们支持哪个。
 pub fn unix_socket_of(host : String) -> String? {
   let trimmed = host.trim()
   if trimmed.has_prefix("unix://") {
@@ -31,6 +91,9 @@ pub fn unix_socket_of(host : String) -> String? {
     } else {
       Some(path)
     }
+  } else if trimmed.has_prefix("/") {
+    // 裸路径（podman / nerdctl 的写法）：`/run/podman/podman.sock`
+    Some(trimmed.to_owned())
   } else {
     None
   }
@@ -70,6 +133,16 @@ pub async fn probe_backends(
     }
   }
   { index: -1, candidate: None, attempts, }
+}
+
+///|
+fn has_socket(candidates : Array[BackendCandidate], path : String) -> Bool {
+  for candidate in candidates {
+    if candidate is Socket(existing) && existing == path {
+      return true
+    }
+  }
+  false
 }
 
 ///|

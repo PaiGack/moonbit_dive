@@ -34,7 +34,8 @@ pub(open) trait ImageSource {
 方法带 `async`：两条后端都要做阻塞 IO（起子进程 / 连 socket），
 同步签名会把调用方逼进 `@async` 之外的不可能状态。
 
-- 探测顺序可配置，默认：`DOCKER_HOST` → `/var/run/docker.sock` → PATH 上的 docker → podman → nerdctl
+- 探测顺序可配置，默认：`DOCKER_HOST` → `CONTAINER_HOST` → `/var/run/docker.sock`
+  → `/run/podman/podman.sock` → PATH 上的 docker → podman → nerdctl
 - 探测结果（用了哪个后端、为什么）通过 `describe_backends` 打印，一行一个候选
 - 两条后端都失败时给出 `NoBackend` 与安装提示，而不是「命令找不到」
 
@@ -54,6 +55,35 @@ pub(open) trait ImageSource {
   `/var/run/docker.sock` 由外层转发时，socket 在、`connect` 也成功，
   但对端不通——没有超时就会停在「等状态行」上永远不返回（见 issue #42）。
   `cmd/main --timeout <秒>` 可调大，只认正整数
+
+#### 三个工具的差异（issue #86）
+
+docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都必须显式处理：
+
+| 维度 | docker | podman | nerdctl |
+|---|---|---|---|
+| `save` 默认格式 | docker-archive | **oci-archive**（无 `manifest.json`） | docker-archive |
+| `inspect` 默认输出 | JSON | Go 模板表格 | JSON |
+| 「本地没有」的文案 | `No such image` | `image not known` | `no such object` / `not found` |
+
+- `save`：podman 必须 `--format docker-archive`。这条同时管住内存路径与
+  `save_to_file` 落盘路径——两者共用 `save_args`，改一处两条都对
+- `inspect`：podman 必须 `--format json`；三家的 JSON 字段同构
+  （`Id` / `Architecture` / `Os` / `Size` / `VirtualSize`），`parse_inspect` 不分工具
+- **错误判定**：`inspect` 的 stderr 决定「本地没有」还是「工具坏了」。
+  判成前者才走「缺了就拉」，判成后者该换路。三家的原话都要收
+  （`image not known` 是 podman 独有的），否则装了 podman 的机器上
+  `--from-image` 的默认拉取永远触发不了。反过来，连不上 daemon / 权限不够
+  仍是 `Backend`，不能因为文案里恰好有 `not found` 就被误判成「本地没有」
+- `pull`：参数三家一致；失败文案不一致但**一律报 `Backend`**（带 stderr），
+  不翻成 `ImageNotFound`——「本地有没有」只由 `inspect` 回答
+
+另外加了一条 podman socket 候选：`CONTAINER_HOST` 是 podman 自己的
+`DOCKER_HOST` 等价物，接受裸绝对路径（`/run/podman/podman.sock`）与
+`unix://` 两种写法。rootless 的默认路径（`$XDG_RUNTIME_DIR/podman/podman.sock`，
+兜底 `/run/user/<uid>/podman/podman.sock`）由 `podman_rootless_socket` 推导，
+不进默认候选表——默认表里只放与用户无关的 rootful 路径，免得每条候选都要
+先算一遍 uid。
 
 ### Engine 后端
 
@@ -138,6 +168,9 @@ pub(open) trait ImageSource {
 | 验收项 | 状态 | 落点 |
 |---|---|---|
 | CLI 后端对 docker / podman / nerdctl 三者，`inspect` + `save` 均有测试（可 fake） | ✅ | `cli_source_test.mbt`：fake 脚本 + 三者参数形态 |
+| 三家的「本地没有」文案都映射成 `ImageNotFound`，`工具坏了` 仍映射成 `Backend` | ✅ | `cli_source_test.mbt`：六条真实 stderr 文案 + 三条故障文案 |
+| podman 的 `save` 在内存与落盘两条路径都带 `--format docker-archive` | ✅ | `cli_source_test.mbt`：fake 记录调用参数 |
+| `CONTAINER_HOST`（含裸路径）进候选、`DOCKER_HOST` 同值去重、podman socket 就位 | ✅ | `probe_test.mbt` |
 | Engine 后端对 fake 服务端完成 inspect / save 测试，跑在 CI 里 | ✅ | `transport_test.mbt`：真起 unix socket 服务端，端到端跑通 |
 | 无 daemon 环境下探测失败有明确错误与提示，不 panic | ✅ | `probe_test.mbt` 的 `NoBackend` 用例 |
 | `docker save` 出来的 tar 能被 P2 的 `apply_layers_with_diffs` 直接吃下，端到端一个用例 | ✅ | `pipeline_test.mbt` |
@@ -150,7 +183,7 @@ pub(open) trait ImageSource {
 | `--from-image`（默认）本地缺失时先拉再取，已有则不动 | ✅ | `pipeline_test.mbt` + `cmd/main/from_image_wbtest.mbt` |
 | `--no-pull` 绝不在本地缺镜像时拉取（纯离线） | ✅ | `cmd/main/from_image_wbtest.mbt` |
 | socket 通 `_ping` 但取不到归档时换下一条候选；「没有镜像」与「后端坏了」分开 | ✅ | `transport_test.mbt` + `cli_source_test.mbt` |
-| `moon check` / `moon test` 全绿 | ✅ | 582 个用例（native），见 `scripts/ci.sh` |
+| `moon check` / `moon test` 全绿 | ✅ | 587 个用例（native），见 `scripts/ci.sh` |
 | CI 里有真实镜像 + 真实 CLI 后端的对拍 | ✅ | `scripts/docker-cli-probe.sh`：手搓最小 OCI layout → `docker load` → `inspect` / `save` / `--from-image` / `--from-registry` 四条通路 |
 
 ## CI 里的真实后端对拍
