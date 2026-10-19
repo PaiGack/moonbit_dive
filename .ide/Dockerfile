@@ -6,8 +6,11 @@
 FROM cnbcool/default-dev-env:latest
 
 # moonbit native 后端要 gcc/glibc；其余是裸环境里调试常用的小工具。
+# docker-cli + curl 给「真实后端对拍」用（scripts/docker-cli-probe.sh）：
+# 它在流水线里会 `docker inspect` / `save` / `pull`，镜像里没客户端就只能跳过。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       gcc libc6-dev libssl-dev strace python3 openssl ca-certificates \
+      curl docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # MoonBit 工具链（国内镜像），顺手验一次版本，装失败就直接让 build 挂掉。

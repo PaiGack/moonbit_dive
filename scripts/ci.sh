@@ -104,4 +104,25 @@ run moon build --target native --release
 section "CLI 冒烟"
 run moon run --target native cmd/main -- --help
 
+# ------------------------------------------------------- 5. 真实后端对拍 --
+# 上面所有 docker_cli 用例都用假 CLI：它们证明解析逻辑对，证明不了
+# 「`docker save` / `inspect` 的参数形态和真实输出对得上」。这一步拿真 daemon
+# 和一份手搓的最小镜像跑一遍四条通路（见 scripts/docker-cli-probe.sh）。
+# 环境里没有 daemon 时脚本退 77，这里跳过而不判红——「没装 docker」
+# 不是代码问题，但「装了 docker 却取不到镜像」必须是。
+section "真实后端对拍"
+if [ "${CI_SKIP_DOCKER_PROBE:-0}" = "1" ]; then
+  printf '%s跳过（CI_SKIP_DOCKER_PROBE=1）%s\n' "$DIM" "$RESET"
+else
+  probe_status=0
+  bash scripts/docker-cli-probe.sh || probe_status=$?
+  if [ "$probe_status" = "77" ]; then
+    printf '%s跳过：没有可用的 docker daemon（CNB 需要 services: docker）%s\n' \
+      "$DIM" "$RESET"
+  elif [ "$probe_status" != "0" ]; then
+    printf '%s真实后端对拍失败（exit %d）%s\n' "$RED" "$probe_status" "$RESET" >&2
+    exit 1
+  fi
+fi
+
 printf '\n%sCI 全绿%s\n' "$GREEN$BOLD" "$RESET"
