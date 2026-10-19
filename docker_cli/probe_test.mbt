@@ -1,11 +1,20 @@
 ///|
-/// 探测顺序：DOCKER_HOST → /var/run/docker.sock → docker → podman → nerdctl。
+/// 探测顺序：DOCKER_HOST → CONTAINER_HOST → /var/run/docker.sock →
+/// podman socket → docker → podman → nerdctl。
+///
+/// 显式声明的两个 socket 排在系统默认值前面，两个系统 socket 一起上——
+/// 容器环境里常只跑其中一只 daemon，少一条就多一次「明明装了却取不到」。
 test "default candidates follow the documented order" {
-  let env = { "DOCKER_HOST": "unix:///custom/docker.sock" }
+  let env = {
+    "DOCKER_HOST": "unix:///custom/docker.sock",
+    "CONTAINER_HOST": "unix:///custom/podman.sock",
+  }
   let candidates = @docker_cli.default_candidates(env)
   assert_eq(candidates, [
     @docker_cli.BackendCandidate::Socket("/custom/docker.sock"),
+    @docker_cli.BackendCandidate::Socket("/custom/podman.sock"),
     @docker_cli.BackendCandidate::Socket("/var/run/docker.sock"),
+    @docker_cli.BackendCandidate::Socket("/run/podman/podman.sock"),
     @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
     @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Podman),
     @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Nerdctl),
@@ -13,14 +22,62 @@ test "default candidates follow the documented order" {
 }
 
 ///|
-/// 没设 DOCKER_HOST 时不该凭空多一个候选。
-test "missing DOCKER_HOST skips the socket candidate" {
+/// 没设 DOCKER_HOST / CONTAINER_HOST 时不该凭空多一个 socket 候选，
+/// 但两个系统默认 socket 要在。
+test "missing DOCKER_HOST still yields both system sockets" {
   let candidates = @docker_cli.default_candidates({})
-  assert_eq(candidates.length(), 4)
+  assert_eq(candidates.length(), 5)
   assert_eq(
     candidates[0],
     @docker_cli.BackendCandidate::Socket("/var/run/docker.sock"),
   )
+  assert_eq(
+    candidates[1],
+    @docker_cli.BackendCandidate::Socket("/run/podman/podman.sock"),
+  )
+}
+
+///|
+/// podman 的 `CONTAINER_HOST` 是裸路径（不带 `unix://`），也要收。
+/// 同一条 socket 被两个变量重复指定时只留一条，别探两遍。
+test "CONTAINER_HOST accepts a bare path and dedupes" {
+  assert_eq(
+    @docker_cli.unix_socket_of("/run/podman/podman.sock"),
+    Some("/run/podman/podman.sock"),
+  )
+  // 两个变量指向同一条 socket：只该留一条
+  let candidates = @docker_cli.default_candidates({
+    "DOCKER_HOST": "unix:///tmp/shared.sock",
+    "CONTAINER_HOST": "/tmp/shared.sock",
+  })
+  let shared = candidates.fold(init=0, (acc, candidate) => {
+    match candidate {
+      @docker_cli.BackendCandidate::Socket(path) if path == "/tmp/shared.sock" =>
+        acc + 1
+      _ => acc
+    }
+  })
+  assert_eq(shared, 1)
+}
+
+///|
+/// podman rootless 的 socket 路径由 `XDG_RUNTIME_DIR` 推出来，
+/// 没设时退回 `/run/user/<uid>`。
+test "podman rootless socket path derives from XDG_RUNTIME_DIR or UID" {
+  assert_eq(
+    @docker_cli.podman_rootless_socket({ "XDG_RUNTIME_DIR": "/run/user/1000" }),
+    Some("/run/user/1000/podman/podman.sock"),
+  )
+  // 尾巴上的斜杠不该拼成双斜杠
+  assert_eq(
+    @docker_cli.podman_rootless_socket({ "XDG_RUNTIME_DIR": "/run/user/1000/" }),
+    Some("/run/user/1000/podman/podman.sock"),
+  )
+  assert_eq(
+    @docker_cli.podman_rootless_socket({ "UID": "1000" }),
+    Some("/run/user/1000/podman/podman.sock"),
+  )
+  assert_true(@docker_cli.podman_rootless_socket({}) is None)
 }
 
 ///|

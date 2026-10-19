@@ -334,3 +334,104 @@ async test "cli inspect separates missing from broken" {
   assert_true(error2 is @docker_cli.Backend(_, 1, _))
   remove_fake_cli(broken)
 }
+
+///|
+/// 三家 `inspect` 说「本地没有」的原话不一样，都要认成 `ImageNotFound`。
+///
+/// 漏一条的代价不是文案难听：把「本地没有」判成「后端坏了」，
+/// 该拉的镜像会直接判死（`--from-image` 默认先 inspect 判缺失再拉）。
+/// 这些字符串是从各家 CLI 的实际输出里抄的，不是编的。
+async test "inspect maps each tool's missing-image wording to ImageNotFound" {
+  let cases = [
+    ("docker", "Error response from daemon: No such image: nginx:latest"),
+    ("docker", "Error: No such image: nginx:latest"),
+    ("podman", "Error: nginx:latest: image not known"),
+    ("nerdctl", "FATA[0000] no such object: nginx:latest"),
+    ("nerdctl", "content digest sha256:deadbeef: not found"),
+    ("podman", "Error: unable to find 'nginx:latest'"),
+  ]
+  for case in cases {
+    let (name, message) = case
+    let tool = if name == "podman" {
+      @docker_cli.CliTool::Podman
+    } else if name == "nerdctl" {
+      @docker_cli.CliTool::Nerdctl
+    } else {
+      @docker_cli.CliTool::Docker
+    }
+    let program = write_fake_cli(fake_failing_cli(message, 1))
+    let source = @docker_cli.DockerCliSource::new(program, tool~)
+    let error = try {
+      source.inspect("nginx:latest") |> ignore
+      fail("\{name} inspect should fail")
+    } catch {
+      err => err
+    }
+    // `ImageNotFound` 而不是 `Backend`：文案里带 "no such image"
+    assert_true(error.to_string().contains("no such image locally"))
+    remove_fake_cli(program)
+  }
+}
+
+///|
+/// 反过来也要钉死：工具本身坏了（连不上 daemon、权限不够）**不能**
+/// 被当成「本地没有」。判错的代价是拿一次注定失败的拉取盖住真原因。
+async test "inspect keeps a broken backend a Backend error" {
+  for
+    message in [
+      "Cannot connect to the Docker daemon at unix:///var/run/docker.sock", "permission denied while trying to connect to the Docker daemon socket",
+      "Error: unable to connect to Podman socket",
+    ] {
+    let program = write_fake_cli(fake_failing_cli(message, 125))
+    let source = @docker_cli.DockerCliSource::new(
+      program,
+      tool=@docker_cli.CliTool::Podman,
+    )
+    let error = try {
+      source.inspect("nginx:latest") |> ignore
+      fail("inspect should fail")
+    } catch {
+      err => err
+    }
+    let text = error.to_string()
+    assert_true(text.contains("125"))
+    assert_true(text.contains(message))
+    assert_false(text.contains("no such image locally"))
+    remove_fake_cli(program)
+  }
+}
+
+///|
+/// podman 的 `save` 默认吐 oci-archive（没有 `manifest.json`），
+/// 必须显式要 docker-archive；`save_to_file` 走同一个 `save_args`，
+/// 于是两条路径都不会漏掉这个 `--format`。
+async test "podman save pins docker-archive on both memory and file paths" {
+  let dir = @fs.tmpdir(prefix="dive-podman-save-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  let source_bytes = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit\n"),
+  ])
+  let archive = build_docker_archive([("beef", source_bytes)])
+  let archive_path = write_temp_bytes("podman.tar", archive)
+  let program = write_fake_cli(
+    fake_recording_cli(log, archive_path, "[{\"Id\":\"sha256:beef\"}]"),
+  )
+  let source = @docker_cli.DockerCliSource::new(
+    program,
+    tool=@docker_cli.CliTool::Podman,
+  )
+  let output = "\{dir}/out.tar"
+  let written = source.save_to_file("example:latest", output) catch {
+    err => fail("save_to_file should succeed: \{err}")
+  }
+  assert_eq(written, archive.length())
+  let logged = @fs.read_file(log).text()
+  assert_true(logged.contains("save --format docker-archive example:latest"))
+  assert_eq(@fs.read_file(output).text(), @docker_cli.bytes_to_string(archive))
+
+  remove_fake_cli(program)
+  remove_temp_bytes(archive_path)
+  @fs.rmdir(dir, recursive=true)
+}
