@@ -6,6 +6,10 @@ import {
 }
 
 // Values
+pub const DOCKER_SOCKET : String = "/var/run/docker.sock"
+
+pub const PODMAN_ROOT_SOCKET : String = "/run/podman/podman.sock"
+
 pub fn build_docker_archive(Array[(String, Bytes)], repoTags? : Array[String], config? : String) -> Bytes
 
 pub fn build_head_for_test(HttpRequest) -> String
@@ -49,6 +53,8 @@ pub fn parse_docker_archive(BytesView) -> DockerArchive raise DockerCliError
 pub fn parse_inspect(CliTool, Bytes, String) -> ImageInfo raise DockerCliError
 
 pub fn parse_status_for_test(String) -> Int raise DockerCliError
+
+pub fn podman_rootless_socket(Map[String, String]) -> String?
 
 pub fn parse_unix_uri(String) -> UnixUri?
 
