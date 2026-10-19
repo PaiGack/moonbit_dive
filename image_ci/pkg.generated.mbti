@@ -16,13 +16,13 @@ pub fn covered_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise
 
 pub fn covered_pair() -> (@image_analysis.Report, @layer_tree.FileTree) raise
 
-pub fn exit_code_of(CheckResult) -> Int
+pub fn exit_code_of(CheckResult) -> Int32
 
-pub let exit_config_error : Int
+pub let exit_config_error : Int32
 
-pub let exit_ok : Int
+pub let exit_ok : Int32
 
-pub let exit_rule_failed : Int
+pub let exit_rule_failed : Int32
 
 pub fn fat_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise
 
@@ -37,13 +37,13 @@ pub(all) suberror ConfigError {
   Parse(String)
   NotAnObject
   MissingRules
-  RuleNotObject(Int)
-  UnknownRuleType(Int, String)
-  BadNumber(Int, String)
-  OutOfRange(Int, String)
-  BadEfficiency(Int, Double)
-  BadPatterns(Int, String)
-  BadScope(Int, String)
+  RuleNotObject(Int32)
+  UnknownRuleType(Int32, String)
+  BadNumber(Int32, String)
+  OutOfRange(Int32, String)
+  BadEfficiency(Int32, Double)
+  BadPatterns(Int32, String)
+  BadScope(Int32, String)
 } derive(Eq, @debug.Debug)
 pub fn ConfigError::equal(Self, Self) -> Bool
 pub fn ConfigError::not_equal(Self, Self) -> Bool
@@ -73,10 +73,10 @@ pub(all) struct CheckResult {
 } derive(Eq, @debug.Debug)
 pub fn CheckResult::all_passed(Self) -> Bool
 pub fn CheckResult::equal(Self, Self) -> Bool
-pub fn CheckResult::failed_count(Self) -> Int
+pub fn CheckResult::failed_count(Self) -> Int32
 pub fn CheckResult::not_equal(Self, Self) -> Bool
 pub fn CheckResult::output(Self, &Logger) -> Unit
-pub fn CheckResult::passed_count(Self) -> Int
+pub fn CheckResult::passed_count(Self) -> Int32
 pub fn CheckResult::to_annotations(Self) -> String
 pub fn CheckResult::to_json(Self) -> Json
 pub fn CheckResult::to_json_string(Self) -> String
@@ -158,13 +158,13 @@ pub fn Rule::to_string(Self) -> String
 pub impl Show for Rule
 
 pub(all) enum RuleKind {
-  MaxImageSize(Int)
-  MaxLayerSize(Int)
-  MaxWastedSize(Int)
+  MaxImageSize(Int32)
+  MaxLayerSize(Int32)
+  MaxWastedSize(Int32)
   MinEfficiency(Double)
   DenyPaths(Array[String])
   AllowPaths(Array[String])
-  MaxFileSize(Int, PathFilter?)
+  MaxFileSize(Int32, PathFilter?)
 } derive(Eq, @debug.Debug)
 pub fn RuleKind::equal(Self, Self) -> Bool
 pub fn RuleKind::not_equal(Self, Self) -> Bool

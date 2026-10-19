@@ -13,23 +13,23 @@ pub fn analyze_layers(@layer_tree.FileTree, Array[BytesView], media_types? : Arr
 
 pub fn build_report(Analysis, @layer_tree.FileTree) -> Report
 
-pub fn efficiency_of_versions(Map[String, Array[Int]]) -> EfficiencyReport
+pub fn efficiency_of_versions(Map[String, Array[Int32]]) -> EfficiencyReport
 
 pub fn efficiency_view_rows(EfficiencyReport, EfficiencyViewOptions) -> Array[PathEfficiencyRow]
 
-pub let efficiency_view_schema_version : Int
+pub let efficiency_view_schema_version : Int32
 
 pub fn efficiency_view_to_json(EfficiencyReport, EfficiencyViewOptions) -> Json
 
 pub fn efficiency_view_to_json_string(EfficiencyReport, EfficiencyViewOptions) -> String
 
-pub fn file_sizes(@layer_tree.FileTree) -> Map[String, Int]
+pub fn file_sizes(@layer_tree.FileTree) -> Map[String, Int32]
 
-pub fn hotspots(@layer_tree.FileTree, depth? : Int, limit? : Int) -> Array[Hotspot]
+pub fn hotspots(@layer_tree.FileTree, depth? : Int32, limit? : Int32) -> Array[Hotspot]
 
 pub fn html_escape(String) -> String
 
-pub let json_report_schema_version : Int
+pub let json_report_schema_version : Int32
 
 pub fn percent(Double) -> String
 
@@ -45,7 +45,7 @@ pub fn report_to_json_string(Report) -> String
 
 pub fn user_wasted_percent(Report) -> Double
 
-pub fn wasted_bytes(Report) -> Int
+pub fn wasted_bytes(Report) -> Int32
 
 pub fn wasted_ratio(Report) -> Double
 
@@ -53,13 +53,13 @@ pub fn wasted_ratio(Report) -> Double
 
 // Types and methods
 pub(all) struct Analysis {
-  mut layers : Int
+  mut layers : Int32
   sizes : Map[String, PathSize]
   usages : Array[LayerUsage]
-  mut final_file_bytes : Int
-  mut final_paths : Int
-  mut overwritten_wasted : Int
-  mut deleted_wasted : Int
+  mut final_file_bytes : Int32
+  mut final_paths : Int32
+  mut overwritten_wasted : Int32
+  mut deleted_wasted : Int32
   mut versions : VersionTable?
 } derive(Eq, @debug.Debug)
 pub fn Analysis::efficiency(Self) -> EfficiencyReport
@@ -69,15 +69,15 @@ pub fn Analysis::output(Self, &Logger) -> Unit
 pub fn Analysis::path_size(Self, String) -> PathSize?
 pub fn Analysis::to_repr(Self) -> @debug.Repr
 pub fn Analysis::to_string(Self) -> String
-pub fn Analysis::total_bytes(Self) -> Int
-pub fn Analysis::user_bytes(Self) -> Int
-pub fn Analysis::waste_ranking(Self, limit? : Int) -> Array[PathSize]
-pub fn Analysis::wasted_bytes(Self) -> Int
+pub fn Analysis::total_bytes(Self) -> Int32
+pub fn Analysis::user_bytes(Self) -> Int32
+pub fn Analysis::waste_ranking(Self, limit? : Int32) -> Array[PathSize]
+pub fn Analysis::wasted_bytes(Self) -> Int32
 pub impl Show for Analysis
 
 pub(all) struct Efficiency {
-  min_bytes : Int
-  cumulative_bytes : Int
+  min_bytes : Int32
+  cumulative_bytes : Int32
 } derive(Eq, @debug.Debug)
 pub fn Efficiency::equal(Self, Self) -> Bool
 pub fn Efficiency::not_equal(Self, Self) -> Bool
@@ -101,18 +101,18 @@ pub impl Show for EfficiencyReport
 
 pub(all) struct EfficiencyViewOptions {
   path : String?
-  top : Int
+  top : Int32
 } derive(Eq, @debug.Debug)
 pub fn EfficiencyViewOptions::equal(Self, Self) -> Bool
-pub fn EfficiencyViewOptions::new(path? : String?, top? : Int) -> Self
+pub fn EfficiencyViewOptions::new(path? : String?, top? : Int32) -> Self
 pub fn EfficiencyViewOptions::not_equal(Self, Self) -> Bool
 pub fn EfficiencyViewOptions::to_repr(Self) -> @debug.Repr
 
 pub(all) struct Hotspot {
   path : String
-  cumulative_bytes : Int
-  files : Int
-  mut wasted_bytes : Int
+  cumulative_bytes : Int32
+  files : Int32
+  mut wasted_bytes : Int32
 } derive(Eq, @debug.Debug)
 pub fn Hotspot::equal(Self, Self) -> Bool
 pub fn Hotspot::not_equal(Self, Self) -> Bool
@@ -122,16 +122,16 @@ pub fn Hotspot::to_string(Self) -> String
 pub impl Show for Hotspot
 
 pub(all) struct LayerUsage {
-  layer : Int
-  mut added_paths : Int
-  mut overwritten_paths : Int
-  mut written_bytes : Int
-  mut wasted_bytes : Int
-  mut erased_bytes : Int
-  mut deleted_paths : Int
+  layer : Int32
+  mut added_paths : Int32
+  mut overwritten_paths : Int32
+  mut written_bytes : Int32
+  mut wasted_bytes : Int32
+  mut erased_bytes : Int32
+  mut deleted_paths : Int32
 } derive(Eq, @debug.Debug)
 pub fn LayerUsage::equal(Self, Self) -> Bool
-pub fn LayerUsage::new(Int) -> Self
+pub fn LayerUsage::new(Int32) -> Self
 pub fn LayerUsage::not_equal(Self, Self) -> Bool
 pub fn LayerUsage::output(Self, &Logger) -> Unit
 pub fn LayerUsage::to_repr(Self) -> @debug.Repr
@@ -140,9 +140,9 @@ pub impl Show for LayerUsage
 
 pub(all) struct PathEfficiency {
   path : String
-  cumulative_bytes : Int
-  min_bytes : Int
-  versions : Int
+  cumulative_bytes : Int32
+  min_bytes : Int32
+  versions : Int32
 } derive(Eq, @debug.Debug)
 pub fn PathEfficiency::equal(Self, Self) -> Bool
 pub fn PathEfficiency::not_equal(Self, Self) -> Bool
@@ -153,10 +153,10 @@ pub impl Show for PathEfficiency
 
 pub(all) struct PathEfficiencyRow {
   path : String
-  versions : Int
-  cumulative_bytes : Int
-  min_bytes : Int
-  size : Int
+  versions : Int32
+  cumulative_bytes : Int32
+  min_bytes : Int32
+  size : Int32
 } derive(Eq, @debug.Debug)
 pub fn PathEfficiencyRow::equal(Self, Self) -> Bool
 pub fn PathEfficiencyRow::not_equal(Self, Self) -> Bool
@@ -167,11 +167,11 @@ pub impl Show for PathEfficiencyRow
 
 pub(all) struct PathSize {
   path : String
-  mut size : Int
-  mut wasted_bytes : Int
-  mut writes : Int
+  mut size : Int32
+  mut wasted_bytes : Int32
+  mut writes : Int32
   mut deleted : Bool
-  mut current_layer : Int?
+  mut current_layer : Int32?
 } derive(Eq, @debug.Debug)
 pub fn PathSize::equal(Self, Self) -> Bool
 pub fn PathSize::new(String) -> Self
@@ -182,13 +182,13 @@ pub fn PathSize::to_string(Self) -> String
 pub impl Show for PathSize
 
 pub(all) struct Report {
-  layers : Int
-  final_file_bytes : Int
-  final_paths : Int
-  total_bytes : Int
-  user_bytes : Int
-  overwritten_wasted : Int
-  deleted_wasted : Int
+  layers : Int32
+  final_file_bytes : Int32
+  final_paths : Int32
+  total_bytes : Int32
+  user_bytes : Int32
+  overwritten_wasted : Int32
+  deleted_wasted : Int32
   efficiency : Efficiency
   inefficient_paths : Array[PathEfficiencyRow]
   usages : Array[LayerUsage]
@@ -203,7 +203,7 @@ pub fn Report::to_string(Self) -> String
 pub impl Show for Report
 
 pub(all) struct VersionTable {
-  versions : Map[String, Array[Int]]
+  versions : Map[String, Array[Int32]]
 } derive(Eq, @debug.Debug)
 pub fn VersionTable::equal(Self, Self) -> Bool
 pub fn VersionTable::new() -> Self

@@ -1,6 +1,12 @@
 # CNB 流水线按 GitHub Actions（.github/workflows/ci.yml）的 job 逐步对齐。
 # 两边都只负责「装工具链 + 调 scripts/ci.sh」，步骤内容不在两处重复，
 # 所以不会出现「GitHub 绿、CNB 红」这种漂移。
+#
+# `services: docker` 不只是给 vscode 用的：`scripts/ci.sh` 最后一步
+# 「真实后端对拍」会拿这个 daemon 跑一遍 `docker inspect` / `save` / `pull`，
+# 以及 `dive --from-image` 的三条通路（见 scripts/docker-cli-probe.sh）。
+# 少了它这一步会自己跳过（exit 77），不会把流水线弄红——
+# 但 docker_cli 的参数形态就退化成只有假 CLI 覆盖了。
 .ci-env: &ci-env
   docker:
     build:

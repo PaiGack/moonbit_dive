@@ -7,9 +7,9 @@ import {
 }
 
 // Values
-pub fn apply_layer(FileTree, BytesView, Int) -> Unit raise TarError
+pub fn apply_layer(FileTree, BytesView, Int32) -> Unit raise TarError
 
-pub fn apply_layer_with_media_type(FileTree, BytesView, String, Int) -> Unit raise LayerError
+pub fn apply_layer_with_media_type(FileTree, BytesView, String, Int32) -> Unit raise LayerError
 
 pub fn apply_layers_with_diffs(Array[BytesView], media_types? : Array[String]) -> LayerDiffResult raise LayerError
 
@@ -21,7 +21,7 @@ pub fn browse_layers(Array[BytesView], media_types? : Array[String]) -> Array[La
 
 pub fn build_tar(Array[TarEntrySpec]) -> Bytes
 
-pub fn compare_ascii(String, String) -> Int
+pub fn compare_ascii(String, String) -> Int32
 
 pub fn compression_of(String) -> String
 
@@ -29,7 +29,7 @@ pub fn content_changes(ContentScan, ContentScan) -> Array[String]
 
 pub fn content_scan(BytesView) -> ContentScan
 
-pub fn crc32(BytesView) -> UInt
+pub fn crc32(BytesView) -> UInt32
 
 pub fn decompress_layer(BytesView, String) -> Bytes raise DecompressError
 
@@ -37,11 +37,11 @@ pub fn decompress_layers(Array[BytesView], media_types? : Array[String]) -> Deco
 
 pub let default_render_options : RenderOptions
 
-pub fn diff_against_empty(FileTree, Int) -> Diff
+pub fn diff_against_empty(FileTree, Int32) -> Diff
 
-pub fn diff_aggregate(FileTree, FileTree, Array[Diff], Int, Int) -> Diff
+pub fn diff_aggregate(FileTree, FileTree, Array[Diff], Int32, Int32) -> Diff
 
-pub fn diff_snapshots(FileTree, FileTree, Int, Int) -> Diff
+pub fn diff_snapshots(FileTree, FileTree, Int32, Int32) -> Diff
 
 pub fn gzip_compress(BytesView) -> Bytes
 
@@ -51,7 +51,7 @@ pub fn inflate(BytesView) -> Bytes raise DecompressError
 
 pub fn join_path(String, String) -> String
 
-pub fn make_opaque(FileTree, String, Int) -> Unit
+pub fn make_opaque(FileTree, String, Int32) -> Unit
 
 pub let minimal_render_options : RenderOptions
 
@@ -63,31 +63,31 @@ pub fn parent_path(String) -> String
 
 pub fn parse_tar_entries(BytesView) -> Array[TarEntry] raise TarError
 
-pub fn path_depth(String) -> Int
+pub fn path_depth(String) -> Int32
 
 pub fn path_is_under(String, String) -> Bool
 
-pub fn path_order(String, String) -> Int
+pub fn path_order(String, String) -> Int32
 
-pub fn permission_string(Int, NodeKind) -> String
+pub fn permission_string(Int32, NodeKind) -> String
 
 pub let plnk_marker : String
 
 pub fn read_file_from_tar(BytesView, String) -> BytesView? raise TarError
 
-pub fn remove_subtree(FileTree, String, Int) -> Int
+pub fn remove_subtree(FileTree, String, Int32) -> Int32
 
 pub fn render_diff(Diff) -> String
 
 pub fn render_tree(FileTree, options? : RenderOptions) -> String
 
-pub fn render_tree_between(FileTree, Int, Int, options? : RenderOptions) -> String
+pub fn render_tree_between(FileTree, Int32, Int32, options? : RenderOptions) -> String
 
-pub let tar_block_size : Int
+pub let tar_block_size : Int32
 
-pub fn tar_directory_entry(String, mode? : Int, mtime? : Int) -> TarWriteEntry
+pub fn tar_directory_entry(String, mode? : Int32, mtime? : Int32) -> TarWriteEntry
 
-pub fn tar_file_entry(String, Int, mode? : Int, mtime? : Int) -> TarWriteEntry
+pub fn tar_file_entry(String, Int32, mode? : Int32, mtime? : Int32) -> TarWriteEntry
 
 pub fn whiteout_kind(String) -> WhiteoutKind?
 
@@ -145,8 +145,8 @@ pub impl Show for TarError
 // Types and methods
 pub struct BitReader {
   data : BytesView
-  mut byte : Int
-  mut bits : Int
+  mut byte : Int32
+  mut bits : Int32
 } derive(@debug.Debug)
 pub fn BitReader::to_repr(Self) -> @debug.Repr
 
@@ -157,7 +157,7 @@ pub fn ContentScan::to_repr(Self) -> @debug.Repr
 
 pub(all) struct DecompressedLayers {
   raws : Array[Bytes]
-  decompressed : Int
+  decompressed : Int32
 } derive(Eq, @debug.Debug)
 pub fn DecompressedLayers::equal(Self, Self) -> Bool
 pub fn DecompressedLayers::not_equal(Self, Self) -> Bool
@@ -167,8 +167,8 @@ pub fn DecompressedLayers::to_string(Self) -> String
 pub impl Show for DecompressedLayers
 
 pub(all) struct Diff {
-  base : Int
-  layer : Int
+  base : Int32
+  layer : Int32
   added : Array[String]
   modified : Array[String]
   removed : Array[String]
@@ -180,11 +180,11 @@ pub fn Diff::output(Self, &Logger) -> Unit
 pub fn Diff::section_name(Self) -> String
 pub fn Diff::to_repr(Self) -> @debug.Repr
 pub fn Diff::to_string(Self) -> String
-pub fn Diff::total(Self) -> Int
+pub fn Diff::total(Self) -> Int32
 pub impl Show for Diff
 
 pub(all) struct Digest {
-  changes : Int
+  changes : Int32
   hash : String?
 } derive(Eq, @debug.Debug)
 pub fn Digest::equal(Self, Self) -> Bool
@@ -196,7 +196,7 @@ pub impl Show for Digest
 
 pub(all) struct FileTree {
   root : Node
-  mut layers : Int
+  mut layers : Int32
   nodes : Map[String, Node]
   mut orphans : Map[String, Array[Node]]
   mut history : String
@@ -211,16 +211,16 @@ pub fn FileTree::paths(Self) -> Array[String]
 pub fn FileTree::require(Self, String) -> Node raise
 pub fn FileTree::root(Self) -> Node
 pub fn FileTree::scan_content(Self, Array[Bytes]) -> Unit
-pub fn FileTree::size(Self) -> Int
+pub fn FileTree::size(Self) -> Int32
 pub fn FileTree::snapshot(Self) -> Self
-pub fn FileTree::stat(Self, Int) -> LayerStat?
+pub fn FileTree::stat(Self, Int32) -> LayerStat?
 pub fn FileTree::to_repr(Self) -> @debug.Repr
 pub fn FileTree::to_string(Self) -> String
 pub impl Show for FileTree
 
 pub struct HuffmanTable {
-  counts : FixedArray[Int]
-  symbols : FixedArray[Int]
+  counts : FixedArray[Int32]
+  symbols : FixedArray[Int32]
 } derive(@debug.Debug)
 pub fn HuffmanTable::to_repr(Self) -> @debug.Repr
 
@@ -231,10 +231,10 @@ pub struct LayerDiffResult {
 pub fn LayerDiffResult::to_repr(Self) -> @debug.Repr
 
 pub(all) struct LayerStat {
-  layer : Int
-  mut changed_paths : Int
-  mut changed_bytes : Int
-  mut deleted_paths : Int
+  layer : Int32
+  mut changed_paths : Int32
+  mut changed_bytes : Int32
+  mut deleted_paths : Int32
 } derive(Eq, @debug.Debug)
 pub fn LayerStat::equal(Self, Self) -> Bool
 pub fn LayerStat::not_equal(Self, Self) -> Bool
@@ -244,16 +244,16 @@ pub fn LayerStat::to_string(Self) -> String
 pub impl Show for LayerStat
 
 pub(all) struct LayerView {
-  layer : Int
+  layer : Int32
   tree : FileTree
   diff : Diff
   aggregate : Diff
-  layer_sizes : Array[Int]
+  layer_sizes : Array[Int32]
 } derive(@debug.Debug)
 pub fn LayerView::aggregate_changed_paths(Self) -> Array[String]
-pub fn LayerView::aggregate_size_delta(Self, Int) -> Int
+pub fn LayerView::aggregate_size_delta(Self, Int32) -> Int32
 pub fn LayerView::changed_paths(Self) -> Array[String]
-pub fn LayerView::layer_size(Self, Int) -> Int
+pub fn LayerView::layer_size(Self, Int32) -> Int32
 pub fn LayerView::output(Self, &Logger) -> Unit
 pub fn LayerView::subtree(Self, String) -> FileTree
 pub fn LayerView::to_repr(Self) -> @debug.Repr
@@ -261,9 +261,9 @@ pub fn LayerView::to_string(Self) -> String
 pub impl Show for LayerView
 
 pub(all) struct LayerWrite {
-  layer : Int
+  layer : Int32
   kind : NodeKind
-  size : Int
+  size : Int32
 } derive(Eq, @debug.Debug)
 pub fn LayerWrite::equal(Self, Self) -> Bool
 pub fn LayerWrite::not_equal(Self, Self) -> Bool
@@ -275,12 +275,12 @@ pub impl Show for LayerWrite
 pub(all) struct Node {
   path : String
   mut kind : NodeKind
-  mut size : Int
-  mut mode : Int
-  mut uid : Int
-  mut gid : Int
-  mut layer : Int
-  mut mtime : Int
+  mut size : Int32
+  mut mode : Int32
+  mut uid : Int32
+  mut gid : Int32
+  mut layer : Int32
+  mut mtime : Int32
   mut digest : Digest?
   mut files : Array[NodeFile]
   mut children : Array[Node]
@@ -291,7 +291,7 @@ pub fn Node::is_dir(Self) -> Bool
 pub fn Node::is_file(Self) -> Bool
 pub fn Node::is_link(Self) -> Bool
 pub fn Node::link_target(Self) -> String?
-pub fn Node::new(String, NodeKind, size? : Int, mode? : Int, uid? : Int, gid? : Int, layer? : Int, mtime? : Int) -> Self
+pub fn Node::new(String, NodeKind, size? : Int32, mode? : Int32, uid? : Int32, gid? : Int32, layer? : Int32, mtime? : Int32) -> Self
 pub fn Node::output(Self, &Logger) -> Unit
 pub fn Node::remove_child(Self, String) -> Bool
 pub fn Node::to_repr(Self) -> @debug.Repr
@@ -299,8 +299,8 @@ pub fn Node::to_string(Self) -> String
 pub impl Show for Node
 
 pub(all) struct NodeFile {
-  layer : Int
-  size : Int
+  layer : Int32
+  size : Int32
   hash : String?
 } derive(Eq, @debug.Debug)
 pub fn NodeFile::equal(Self, Self) -> Bool
@@ -335,13 +335,13 @@ pub fn RenderOptions::to_repr(Self) -> @debug.Repr
 pub struct TarBuilder {
   blocks : Array[Byte]
 } derive(@debug.Debug)
-pub fn TarBuilder::add_directory(Self, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
-pub fn TarBuilder::add_file(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
-pub fn TarBuilder::add_hardlink(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
-pub fn TarBuilder::add_header(Self, String, Int, entry_type? : Byte, mode? : Int, link_target? : String, mtime? : Int, uid? : Int, gid? : Int) -> Unit
+pub fn TarBuilder::add_directory(Self, String, mode? : Int32, mtime? : Int32, uid? : Int32, gid? : Int32) -> Unit
+pub fn TarBuilder::add_file(Self, String, String, mode? : Int32, mtime? : Int32, uid? : Int32, gid? : Int32) -> Unit
+pub fn TarBuilder::add_hardlink(Self, String, String, mode? : Int32, mtime? : Int32, uid? : Int32, gid? : Int32) -> Unit
+pub fn TarBuilder::add_header(Self, String, Int32, entry_type? : Byte, mode? : Int32, link_target? : String, mtime? : Int32, uid? : Int32, gid? : Int32) -> Unit
 pub fn TarBuilder::add_opaque(Self, String) -> Unit
-pub fn TarBuilder::add_raw_file(Self, String, BytesView, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
-pub fn TarBuilder::add_symlink(Self, String, String, mode? : Int, mtime? : Int, uid? : Int, gid? : Int) -> Unit
+pub fn TarBuilder::add_raw_file(Self, String, BytesView, mode? : Int32, mtime? : Int32, uid? : Int32, gid? : Int32) -> Unit
+pub fn TarBuilder::add_symlink(Self, String, String, mode? : Int32, mtime? : Int32, uid? : Int32, gid? : Int32) -> Unit
 pub fn TarBuilder::add_whiteout(Self, String, String) -> Unit
 pub fn TarBuilder::finish(Self) -> Bytes
 pub fn TarBuilder::new() -> Self
@@ -350,13 +350,13 @@ pub fn TarBuilder::to_repr(Self) -> @debug.Repr
 pub(all) struct TarEntry {
   path : String
   entry_type : TarEntryType
-  size : Int
-  mode : Int
-  uid : Int
-  gid : Int
-  mtime : Int
+  size : Int32
+  mode : Int32
+  uid : Int32
+  gid : Int32
+  mtime : Int32
   link_target : String
-  data_offset : Int
+  data_offset : Int32
 } derive(Eq, @debug.Debug)
 pub fn TarEntry::data(Self, BytesView) -> BytesView
 pub fn TarEntry::equal(Self, Self) -> Bool
@@ -395,21 +395,21 @@ pub impl Show for TarEntryType
 
 pub struct TarReader {
   stream : BytesView
-  base_offset : Int
-  mut cursor : Int
+  base_offset : Int32
+  mut cursor : Int32
   mut done : Bool
 } derive(@debug.Debug)
 pub fn TarReader::new(BytesView) -> Self
 pub fn TarReader::next(Self) -> TarEntry? raise TarError
 pub fn TarReader::to_repr(Self) -> @debug.Repr
-pub fn TarReader::with_base(BytesView, Int) -> Self
+pub fn TarReader::with_base(BytesView, Int32) -> Self
 
 pub(all) struct TarWriteEntry {
   path : String
   entry_type : TarEntryType
-  size : Int
-  mode : Int
-  mtime : Int
+  size : Int32
+  mode : Int32
+  mtime : Int32
 } derive(Eq, @debug.Debug)
 pub fn TarWriteEntry::equal(Self, Self) -> Bool
 pub fn TarWriteEntry::not_equal(Self, Self) -> Bool
@@ -421,7 +421,7 @@ pub struct TarWriter {
 pub fn TarWriter::begin(Self, TarWriteEntry) -> Unit
 pub fn TarWriter::finish(Self) -> Bytes
 pub fn TarWriter::new() -> Self
-pub fn TarWriter::pad(Self, Int) -> Unit
+pub fn TarWriter::pad(Self, Int32) -> Unit
 pub fn TarWriter::to_repr(Self) -> @debug.Repr
 pub fn TarWriter::write_data(Self, BytesView) -> Unit
 pub fn TarWriter::write_entry(Self, TarWriteEntry, BytesView) -> Unit
