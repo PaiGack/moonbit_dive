@@ -150,7 +150,27 @@ pub(open) trait ImageSource {
 | `--from-image`（默认）本地缺失时先拉再取，已有则不动 | ✅ | `pipeline_test.mbt` + `cmd/main/from_image_wbtest.mbt` |
 | `--no-pull` 绝不在本地缺镜像时拉取（纯离线） | ✅ | `cmd/main/from_image_wbtest.mbt` |
 | socket 通 `_ping` 但取不到归档时换下一条候选；「没有镜像」与「后端坏了」分开 | ✅ | `transport_test.mbt` + `cli_source_test.mbt` |
-| `moon check` / `moon test` 全绿 | ✅ | 327 个用例（native），见 `scripts/ci.sh` |
+| `moon check` / `moon test` 全绿 | ✅ | 582 个用例（native），见 `scripts/ci.sh` |
+| CI 里有真实镜像 + 真实 CLI 后端的对拍 | ✅ | `scripts/docker-cli-probe.sh`：手搓最小 OCI layout → `docker load` → `inspect` / `save` / `--from-image` / `--from-registry` 四条通路 |
+
+## CI 里的真实后端对拍
+
+单元测试全用假 CLI（`fake_cli.mbt`）：证明解析逻辑对，证明不了
+「我们敲的 `docker save` / `inspect` 和真 daemon 对得上」。参数形态写错、
+docker 改了输出结构，假 CLI 一样全绿。
+
+所以 `scripts/docker-cli-probe.sh` 补一层**真后端**对拍，接在
+`scripts/ci.sh` 第 5 段：
+
+- **测试镜像自己造**：手搓一份最小 OCI layout（单层 tar + `etc/dive-ci-marker`），
+  `docker load` 进去。不依赖任何 base 镜像，CI 里没有「机器上有没有 alpine」这种不确定性。
+- **不碰共享 daemon 的仓库名**：CNB 的 socket 常常是外层转发进来的，
+  里面可能有别人的镜像。脚本只按 ID 操作自己 `load` 进去的那一个，跑完按名清掉。
+- **四条通路**：`inspect` / `save` 的参数形态与归档结构 →
+  `dive --from-image`（本地命中不联网、`--no-pull` 不许上网、缺了就拉）→
+  `dive --from-registry`（不碰 daemon 的 registry 直拉）。
+- **没有 daemon 就跳过**：脚本 exit 77，`scripts/ci.sh` 据此放行而不是判红。
+  但「有 docker 却取不到镜像」必须是红的——那才是真问题。
 
 ## 遗留
 
