@@ -290,11 +290,16 @@ async fn health_check(
   windows_platform~ : Bool,
 ) -> (Bool, String) {
   match candidate {
-    Socket(path) =>
-      match socket_health(path, timeout_ms~) {
+    Socket(path) => {
+      // `socket_health` 是 async 的（要真发一次 `_ping`）：不 await 的话
+      // 拿到的是任务、不是 `String?`，match 的两个分支永远走不到；
+      // 更糟的是探活根本没跑，socket 候选会被当成「没有答案」→ 不可用。
+      let unhealthy = socket_health(path, timeout_ms~)
+      match unhealthy {
         Some(reason) => (false, reason)
         None => (true, "socket answers _ping")
       }
+    }
     Cli(tool) =>
       match
         resolve_executable_opts(
