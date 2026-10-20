@@ -117,14 +117,18 @@ pub async fn resolve_backend(
   timeout_ms~ : Int32 = default_timeout_ms,
 ) -> ResolvedBackend raise DockerCliError {
   let probed = probe_backends(candidates, env, timeout_ms~) catch {
-    err => raise NoBackend("backend probing failed: \{err}")
+    err => raise NoBackend("backend probing failed: \{err}", "")
   }
   match probed.candidate {
-    None => raise NoBackend(describe_backends(probed))
+    // 探测记录随错误一起带出去：调用方（`dive --from-image`）要就着它
+    // 判断「这台机器根本没有 docker」还是「socket 在但对端不理」，
+    // 前者才该回退到直连 registry（issue #109）
+    None =>
+      raise NoBackend(describe_backends(probed), describe_backends(probed))
     Some(Socket(path)) => {
       let uri = match parse_unix_uri("unix://\{path}") {
         Some(uri) => uri
-        None => raise NoBackend("unusable unix socket: \{path}")
+        None => raise NoBackend("unusable unix socket: \{path}", "")
       }
       {
         backend: ImageBackend::Engine(EngineSource::new(uri, timeout_ms~)),
@@ -145,7 +149,8 @@ pub async fn resolve_backend(
       let program = match
         (resolve_executable(name, path_of(env)) catch { _ => None }) {
         Some(path) => path
-        None => raise NoBackend("\\{name} disappeared between probing and use")
+        None =>
+          raise NoBackend("\\{name} disappeared between probing and use", "")
       }
       {
         backend: ImageBackend::Cli(
@@ -398,7 +403,11 @@ async fn save_or_pull_across_backends_into(
   // 读日志的人拿到完整的故事。
   match first {
     Some(err) => raise with_attempts(err, attempts)
-    None => raise NoBackend("no backend available to fetch \{reference}")
+    None =>
+      raise NoBackend(
+        "no backend available to fetch \{reference}",
+        attempts.join("\n"),
+      )
   }
 }
 
@@ -419,7 +428,10 @@ fn with_attempts(
   // 往它们的 payload 上拼 trail 会把句子拼坏，故只保留原样——
   // 这两种情况的标题已经说清楚了，逐条原因留给 `--verbose`。
   match err {
-    NoBackend(detail) => NoBackend(detail + trail)
+    NoBackend(detail, probed) => {
+      let merged = if probed.is_empty() { trail } else { probed + trail }
+      NoBackend(detail + trail, merged)
+    }
     Backend(name, code, detail) => Backend(name, code, detail + trail)
     Archive(detail) => Archive(detail + trail)
     InvalidReference(detail) => InvalidReference(detail + trail)

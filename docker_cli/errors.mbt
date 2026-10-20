@@ -2,8 +2,12 @@
 /// 后端探测与调用的错误。区分「找不到可用后端」与「后端跑失败了」，
 /// 因为前者要提示用户装什么、后者要透传子进程的 stderr 供排查。
 pub(all) suberror DockerCliError {
-  /// 一个后端都探测不到：既没有 unix socket，PATH 上也没有 docker/podman/nerdctl
-  NoBackend(String)
+  /// 一个后端都探测不到：既没有 unix socket，PATH 上也没有 docker/podman/nerdctl。
+  ///
+  /// 第二个字段是逐条候选的探测记录（`describe_backends` 的原文），
+  /// 单独留着而不是拼进 detail：调用方要能一眼看出**为什么**没有后端，
+  /// 却不必去解析一段面向用户的文案（见 `no_backend_at_all`）。
+  NoBackend(String, String)
   /// 探测到了后端，但执行失败（退出码非 0 / 无法 spawn / 超时）
   Backend(String, Int32, String)
   /// 找不到可执行文件
@@ -36,7 +40,7 @@ pub extend DockerCliError with @debug.Debug::{to_repr}
 /// 错误信息面向用户：先说哪里错了，再给出可执行的下一步。
 pub impl Show for DockerCliError with fn to_string(self) {
   match self {
-    NoBackend(detail) =>
+    NoBackend(detail, _) =>
       "no usable docker backend: \{detail}\n" + backend_hint()
     Backend(name, code, stderr) => {
       let trimmed = stderr.trim()
@@ -65,6 +69,34 @@ pub impl Show for DockerCliError with fn to_string(self) {
     InvalidReference(detail) => "invalid image reference: \{detail}"
     ImageNotFound(reference) => "no such image locally: \{reference}"
   }
+}
+
+///|
+/// 这条错误是不是「这台机器根本没有 docker」——也就是**一条能走到运行期的路都没有**。
+///
+/// `dive --from-image` 靠它决定要不要回退到直连 registry（issue #109）。
+/// 判据只有一条：探测记录里出现了 `ok` 的候选。
+///
+/// 为什么不是「错误类型恰好是 `NoBackend`」：`fetch_archive_verbose` 的
+/// 后端序列会在取归档阶段继续往下试，某个候选探活了却取不到（socket 通了、
+/// 对端不认识这个镜像），主错误仍然是 `NoBackend`——那种情况 docker 是**在**的，
+/// 回退到 registry 只会拿一场网络拉取盖住真正的原因。
+pub fn no_backend_at_all(err : DockerCliError) -> Bool {
+  match err {
+    NoBackend(_, probed) => !any_backend_probed(probed)
+    _ => false
+  }
+}
+
+///|
+/// 逐条候选的探测记录里，有没有任何一个候选探测通过。
+pub fn any_backend_probed(dir : String) -> Bool {
+  for line in dir.split("\n") {
+    if line.has_prefix("[ok]") {
+      return true
+    }
+  }
+  false
 }
 
 ///|

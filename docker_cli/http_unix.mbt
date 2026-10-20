@@ -116,7 +116,7 @@ pub async fn http_over_unix(
 /// 类型信息在那一下就没了，只能在这里按变体接回来。
 fn preserve(err : Error) -> DockerCliError {
   match err {
-    DockerCliError::NoBackend(detail) => NoBackend(detail)
+    DockerCliError::NoBackend(detail, probed) => NoBackend(detail, probed)
     DockerCliError::Backend(name, code, detail) => Backend(name, code, detail)
     DockerCliError::ExecutableNotFound(name) => ExecutableNotFound(name)
     DockerCliError::Cancelled(name, reason) => Cancelled(name, reason)

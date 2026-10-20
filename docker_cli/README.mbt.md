@@ -158,7 +158,7 @@ socket 在、`connect` 也成功，但对端不通——`timeout_ms = 0` 会让�
 
 | 错误 | 场景 |
 |---|---|
-| `NoBackend` | 一个后端都探不到，信息里逐条列出尝试过谁、为什么失败 |
+| `NoBackend(detail, probed)` | 一个后端都探不到，信息里逐条列出尝试过谁、为什么失败；第二个字段是同一份探测记录，供调用方判断「一个都没有」还是「有但取不到」（`no_backend_at_all`） |
 | `ImageNotFound` | 后端答「本地没有这个镜像」——**不是故障**，可据此去拉 / 换路 |
 | `Backend(name, code, stderr)` | 后端跑了但失败，子进程 stderr 原样透传 |
 | `ExecutableNotFound` | 可执行文件不存在或无法 spawn |
@@ -167,6 +167,8 @@ socket 在、`connect` 也成功，但对端不通——`timeout_ms = 0` 会让�
 | `InvalidReference` | 空镜像名，在进子进程之前就拦下 |
 
 无 daemon 环境（CI 常见）下探测失败只会得到明确的 `NoBackend` 与安装提示，不 panic。
+`dive --from-image` 会就着 `no_backend_at_all` 把「这台机器根本没有 docker」
+改判成「直连 registry 拉一次」（`--no-pull` 关掉这个兜底）。
 
 ## 本地没有就先拉
 

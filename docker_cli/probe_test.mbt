@@ -415,3 +415,68 @@ async test "the no-backend hint is platform aware" {
   let posix = @docker_cli.backend_hint(windows_platform=false)
   assert_true(posix.contains("/var/run/docker.sock"))
 }
+
+///|
+/// 「一个后端都没有」与「有后端但取不到」要分得开（issue #109）。
+///
+/// `dive --from-image` 只在前者才回退到直连 registry。判据是探测记录里
+/// 有没有 `[ok]`：探测全灭说明这台机器上没有 docker，回退是兜底；
+/// 探活了却取不到说明 docker 在、是这个镜像推不动，回退只会盖住真原因。
+async test "no_backend_at_all separates 'nothing installed' from 'could not fetch'" {
+  let probed = @docker_cli.ProbedBackend::{
+    candidate: None,
+    index: -1,
+    attempts: [
+      @docker_cli.BackendAttempt::{
+        candidate: @docker_cli.BackendCandidate::Cli(
+          @docker_cli.CliTool::Docker,
+        ),
+        ok: false,
+        reason: "not found on PATH",
+      },
+    ],
+  }
+  let nothing = @docker_cli.NoBackend(
+    @docker_cli.describe_backends(probed),
+    @docker_cli.describe_backends(probed),
+  )
+  assert_true(@docker_cli.no_backend_at_all(nothing))
+
+  // 探测记录里有一条 ok：docker 是活的，取不到归档不算「没有 docker」
+  let probed_something = @docker_cli.ProbedBackend::{
+    candidate: None,
+    index: -1,
+    attempts: [
+      @docker_cli.BackendAttempt::{
+        candidate: @docker_cli.BackendCandidate::Cli(
+          @docker_cli.CliTool::Docker,
+        ),
+        ok: true,
+        reason: "found at /usr/bin/docker",
+      },
+      @docker_cli.BackendAttempt::{
+        candidate: @docker_cli.BackendCandidate::Cli(
+          @docker_cli.CliTool::Podman,
+        ),
+        ok: false,
+        reason: "not found on PATH",
+      },
+    ],
+  }
+  let some = @docker_cli.NoBackend(
+    @docker_cli.describe_backends(probed_something),
+    @docker_cli.describe_backends(probed_something),
+  )
+  assert_false(@docker_cli.no_backend_at_all(some))
+
+  // 别的错误类型一律不兜底
+  assert_false(
+    @docker_cli.no_backend_at_all(@docker_cli.Backend("docker", 1, "boom")),
+  )
+  assert_false(
+    @docker_cli.no_backend_at_all(@docker_cli.Cancelled("docker", "timeout")),
+  )
+  assert_false(
+    @docker_cli.no_backend_at_all(@docker_cli.ImageNotFound("nginx")),
+  )
+}
