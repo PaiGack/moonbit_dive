@@ -512,5 +512,138 @@ PY
   fi
 fi
 
+# ------------------------------------------------ 7. 明文 registry 的换票 --
+# 上面几条都是「registry 走 https」的形状，而认不出的两种失败只在明文上出现：
+#   a. 挑战里的 realm 写成 `https://`，可它其实只有明文（TLS 握手就断）；
+#   b. 中间站给的 `Location` 是绝对地址、带明文端口（302 到镜像存储）。
+# 用 `--insecure-registry` 起一份最小的假 registry 把这两条钉住：
+# 明文 80 在这里只是「对方说要 https / 要跳一跳」，能不能拿到 token
+# 才是「有没有退回已知能走的那个 origin」的答案。
+say ''
+say "${BOLD}== --from-registry（明文 registry：换票与重定向都要退回已知 origin）==${RESET}"
+# 端口 18080 是随手挑的：会与真实 registry 撞车的概率小到可以忽略
+PLAIN_PORT=${DIVE_TEST_PLAIN_PORT:-18080}
+mkdir -p "$work/plainsrv"
+# 假 registry 的应答逻辑（python3 已由上面第 1 节验在场）：一层、明文、
+# 挑战写 https、blob 端点 302 到另一个端口上的绝对地址。
+cat > "$work/plainsrv/server.py" <<'PY'
+import hashlib, http.server, io, json, sys, tarfile
+
+port = int(sys.argv[1])
+
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tar:
+    data = b"plain-marker\n"
+    info = tarfile.TarInfo("etc/plain-marker")
+    info.size = len(data)
+    info.mode = 0o644
+    info.mtime = 0
+    info.uid = info.gid = 0
+    tar.addfile(info, io.BytesIO(data))
+layer = buf.getvalue()
+layer_digest = "sha256:" + hashlib.sha256(layer).hexdigest()
+
+config = json.dumps({
+    "architecture": "amd64",
+    "os": "linux",
+    "config": {},
+    "rootfs": {"type": "layers", "diff_ids": [layer_digest]},
+}, sort_keys=True).encode()
+config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+
+manifest = json.dumps({
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "digest": config_digest,
+        "size": len(config),
+    },
+    "layers": [{
+        "mediaType": "application/vnd.oci.image.layer.v1.tar",
+        "digest": layer_digest,
+        "size": len(layer),
+    }],
+}, sort_keys=True).encode()
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def send(self, status, headers, body):
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path
+        authorized = self.headers.get("Authorization") == "Bearer plain-token"
+        if path.startswith("/token"):
+            body = json.dumps({"token": "plain-token"}).encode()
+            self.send(200, [("Content-Type", "application/json")], body)
+            return
+        if path.startswith("/store/"):
+            # 这一跳就是「本地存储」：目标与起点同一个端口，内容照给
+            self.send(200, [], layer if path.endswith(layer_digest) else config)
+            return
+        if not authorized:
+            # 挑战写 https：明文这边建不起 TLS，只有退回已知 origin 才走得通
+            challenge = (
+                'Bearer realm="https://127.0.0.1:%d/token",service="plain",'
+                'scope="repository:test/plain:pull"' % port
+            )
+            self.send(401, [("WWW-Authenticate", challenge)], b"")
+            return
+        if "/manifests/" in path:
+            self.send(
+                200,
+                [("Content-Type", "application/vnd.oci.image.manifest.v1+json")],
+                manifest,
+            )
+            return
+        if "/blobs/" in path:
+            # 绝对地址 + 明文端口：跟着这一跳才能拿到字节
+            target = "http://127.0.0.1:%d/store/%s" % (
+                port,
+                path.rsplit("/", 1)[-1],
+            )
+            self.send(302, [("Location", target)], b"")
+            return
+        self.send(404, [], b"")
+
+
+# 多线程：客户端同时开着「换票」与「重定向」两条连接，单线程的服务端
+# 会在 HEAD 上把另一条堵住，表现成随机的超时
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+
+python3 "$work/plainsrv/server.py" "$PLAIN_PORT" >"$work/plainsrv/log" 2>&1 &
+plain_pid=$!
+sleep 1
+if kill -0 "$plain_pid" 2>/dev/null; then
+  if "$DIVE" "127.0.0.1:$PLAIN_PORT/test/plain:latest" --from-registry \
+      --insecure-registry --save --output "$work/plain.tar" --format json \
+      >"$work/plain.json" 2>"$work/plain.log"; then
+    python3 - "$work/plain.tar" <<'PY' || fail "明文 registry 的产物不是合法 docker-archive"
+import json, sys, tarfile
+with tarfile.open(sys.argv[1]) as tar:
+    manifest = json.load(tar.extractfile("manifest.json"))
+    assert manifest and manifest[0]["Layers"], "registry 产物缺层"
+PY
+    pass "明文 registry：挑战说要 https、blob 再跳一跳，都退回已知 origin 走过去"
+  else
+    fail "明文 registry 拉取失败：$(tail -5 "$work/plain.log")"
+  fi
+else
+  say "${YELLOW}skip${RESET} 起不了明文假 registry（端口 $PLAIN_PORT 被占？），跳过这一节"
+fi
+kill "$plain_pid" >/dev/null 2>&1 || true
+
 say ''
 printf '%s真实后端对拍全绿%s\n' "$GREEN$BOLD" "$RESET"

@@ -341,7 +341,9 @@ async fn pull_from(
   )
   let image = {
     errdefer client.close()
-    pull_with_client(client, reference, options~)
+    // 假的 registry 是明文：换票端点与 blob 重定向时若挑战里的 https 连不上，
+    // 就该退回这个 origin（否则「换票建不起 TLS」只能报一句看不懂的错）
+    pull_with_client(client, reference, fallback="http://\{host}", options~)
   }
   client.close()
   image
