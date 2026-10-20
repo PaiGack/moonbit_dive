@@ -70,4 +70,35 @@ int32_t dive_unix_close(int32_t fd) {
   return close(fd);
 }
 
+#else
+/*
+Windows 分支：符号得在，行为要明确。
+
+MoonBit 侧的 FFI 声明（`unix_connect.mbt`）不按平台裁剪——裁掉之后调用方
+会报「标识符未绑定」，那串报错的落点离真凶很远。所以平台差异收在这里：
+返回 `-EPROTONOSUPPORT`，调用方把它渲染成一条能读懂的 `Backend`。
+Windows 上本来也没有 `/var/run/docker.sock`，报「这台机器没有 unix socket」
+比报「编译不过」更接近事实。
+
+`WSASocket(AF_UNIX)` 是 Win10 1803 之后才有的东西，不走它：
+Engine 后端在 Windows 上是 CLI 子进程那条路，不走 socket。
+*/
+#include <moonbit.h>
+
+#ifndef EPROTONOSUPPORT
+#define EPROTONOSUPPORT 93
+#endif
+
+MOONBIT_FFI_EXPORT
+int32_t dive_unix_connect(const char *path) {
+  (void)path;
+  return -EPROTONOSUPPORT;
+}
+
+MOONBIT_FFI_EXPORT
+int32_t dive_unix_close(int32_t fd) {
+  (void)fd;
+  return -1;
+}
+
 #endif

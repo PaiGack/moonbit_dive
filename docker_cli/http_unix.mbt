@@ -59,8 +59,16 @@ pub async fn http_over_unix(
   timeout_ms : Int32,
 ) -> HttpResponse raise DockerCliError {
   let work = () => {
-    let connection = connect_unix_socket(socket_path) catch {
-      err => raise connect_error(socket_path, err)
+    // 取 `Result` 再 `match`：`connect_unix_socket` 一旦被平台条件裁掉，
+    // 直接写 `catch { err => ... }` 就变成「对一个不抛错的表达式 catch」，
+    // 报错落在 `err` 的类型不匹配上，指向的是这里而不是真凶。
+    // `Result` 写法两种情况下都能编过，错误路径也仍然收在一处。
+    let connected = Ok(connect_unix_socket(socket_path)) catch {
+      err => Err(err)
+    }
+    let connection = match connected {
+      Ok(connection) => connection
+      Err(err) => raise connect_error(socket_path, err)
     }
     defer connection.close()
     let head = build_head(request)
