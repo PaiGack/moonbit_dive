@@ -1,6 +1,6 @@
 ///|
 /// maxImageSize：上限之上判 fail，之下判 pass。
-test "maxImageSize" {
+async test "maxImageSize" {
   let (report, tree) = @image_ci.covered_fixture()
   // 当前占用 16 字节
   let ok = Ruleset::of_rules([MaxImageSize(16)]).check(report, tree)
@@ -15,7 +15,7 @@ test "maxImageSize" {
 
 ///|
 /// maxLayerSize：看单层最大写入，并指认出超限的那一层。
-test "maxLayerSize" {
+async test "maxLayerSize" {
   let (report, tree) = @image_ci.covered_fixture()
   // L0 写 10 字节，L1 写 16 字节（层 tar 实际写入量）
   let ok = Ruleset::of_rules([MaxLayerSize(64)]).check(report, tree)
@@ -29,7 +29,7 @@ test "maxLayerSize" {
 
 ///|
 /// maxWastedSize：覆盖掉的旧字节算浪费。
-test "maxWastedSize" {
+async test "maxWastedSize" {
   let (report, tree) = @image_ci.covered_fixture()
   // 10 字节被覆盖
   let ok = Ruleset::of_rules([MaxWastedSize(10)]).check(report, tree)
@@ -42,7 +42,7 @@ test "maxWastedSize" {
 
 ///|
 /// minEfficiency：分数按 min / cumulative 算，10/26 约 38%。
-test "minEfficiency" {
+async test "minEfficiency" {
   let (report, tree) = @image_ci.covered_fixture()
   let ok = Ruleset::of_rules([MinEfficiency(0.3)]).check(report, tree)
   assert_true(ok.all_passed())
@@ -55,7 +55,7 @@ test "minEfficiency" {
 
 ///|
 /// denyPaths：黑名单命中文件即失败，命中路径进 locations。
-test "denyPaths" {
+async test "denyPaths" {
   let (report, tree) = @image_ci.fat_fixture()
   let ok = Ruleset::of_rules([DenyPaths(["/usr/**", "/node_modules/**"])]).check(
     report, tree,
@@ -70,7 +70,7 @@ test "denyPaths" {
 
 ///|
 /// allowPaths：白名单外的文件即失败。
-test "allowPaths" {
+async test "allowPaths" {
   let (report, tree) = @image_ci.fat_fixture()
   // 只允许 /app.js 与 /node_modules 下的东西
   let ok = Ruleset::of_rules([AllowPaths(["/app.js", "/node_modules/**"])]).check(
@@ -85,7 +85,7 @@ test "allowPaths" {
 
 ///|
 /// maxFileSize：不带范围看全镜像，带范围只看子树；递归开关生效。
-test "maxFileSize" {
+async test "maxFileSize" {
   let (report, tree) = @image_ci.fat_fixture()
   // /node_modules/pkg/index.js 当前 20 字节，/app.js 5 字节
   let ok = Ruleset::of_rules([MaxFileSize(20, None)]).check(report, tree)
@@ -105,7 +105,7 @@ test "maxFileSize" {
 
 ///|
 /// 混合规则：一条失败即整体失败，汇总计数正确。
-test "mixed rules and summary" {
+async test "mixed rules and summary" {
   let (report, tree) = @image_ci.covered_fixture()
   let result = Ruleset::of_rules([
     MaxImageSize(1024),
@@ -120,7 +120,7 @@ test "mixed rules and summary" {
 
 ///|
 /// 全过时退出码为 0。
-test "exit code when all pass" {
+async test "exit code when all pass" {
   let (report, tree) = @image_ci.covered_fixture()
   let result = Ruleset::of_rules([MaxImageSize(1024)]).check(report, tree)
   assert_eq(exit_code_of(result), 0)
@@ -129,7 +129,7 @@ test "exit code when all pass" {
 
 ///|
 /// 规则类型名与 JSON 里的 `type` 一致。
-test "rule type names match the dsl" {
+async test "rule type names match the dsl" {
   let (report, tree) = @image_ci.covered_fixture()
   let result = Ruleset::of_rules([
     MaxImageSize(1),

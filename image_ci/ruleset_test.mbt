@@ -1,6 +1,6 @@
 ///|
 /// 载入一份合法规则集，检查 id 与种类。
-test "parse rules json" {
+async test "parse rules json" {
   let ruleset = Ruleset::parse(
     (
       #|{
@@ -25,7 +25,7 @@ test "parse rules json" {
 
 ///|
 /// 顶层 `ids` 数组可以批量命名。
-test "top level ids rename rules" {
+async test "top level ids rename rules" {
   let inline =
     #|{ "ids": ["a", "b"], "rules": [{ "type": "maxImageSize", "maxBytes": 1 }, { "type": "maxWastedSize", "maxBytes": 2 }] }
   let ruleset = Ruleset::parse(inline) catch { err => fail(err.to_string()) }
@@ -35,7 +35,7 @@ test "top level ids rename rules" {
 
 ///|
 /// 六类规则都能从 JSON 加载。
-test "all six rule types load" {
+async test "all six rule types load" {
   let ruleset = Ruleset::parse(
     (
       #|{
@@ -58,7 +58,7 @@ test "all six rule types load" {
 
 ///|
 /// 规则非法：解析失败、空规则集、未知类型、越界数值。
-test "config errors are distinguished" {
+async test "config errors are distinguished" {
   let cases : Array[(String, String)] = [
     ("not json", "{oops"),
     ("not an object", "[1, 2]"),

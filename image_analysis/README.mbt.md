@@ -10,7 +10,7 @@
 
 ```moonbit check
 ///|
-test "README example" {
+async test "README example" {
   // 手工造两层 tar（真实场景下数据来自镜像 registry）
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
@@ -98,7 +98,7 @@ base image 大、用户只盖几层时它会超过 100%，dive 原版同样如�
 
 ```moonbit check
 ///|
-test "README efficiency view example" {
+async test "README efficiency view example" {
   // 一个路径被放大重写、另一个同大小重写：两者的「多写」量完全不同
   let report = @image_analysis.efficiency_of_versions({
     "/app/main.js": [10, 20],

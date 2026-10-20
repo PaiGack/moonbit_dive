@@ -1,7 +1,7 @@
 ///|
 /// 端到端：造一个 docker save tar → 加载 → 叠树 → 分析 → 门禁判定。
 /// 走的是 `cmd/main` 里同一条链路，验证四个包能接上。
-test "end to end: docker archive to gate verdict" {
+async test "end to end: docker archive to gate verdict" {
   let archive = @image_ci.sample_docker_archive()
   let source = ImageSource::from_tar_bytes(archive, name="sample-image.tar") catch {
     err => fail(err.to_string())
@@ -51,7 +51,7 @@ test "end to end: docker archive to gate verdict" {
 
 ///|
 /// 同一个镜像换一套宽松规则应当全过，退出码回到 0。
-test "end to end: relaxed rules pass" {
+async test "end to end: relaxed rules pass" {
   let source = ImageSource::from_tar_bytes(
     @image_ci.sample_docker_archive(),
     name="sample-image.tar",

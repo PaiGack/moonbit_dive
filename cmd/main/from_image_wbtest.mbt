@@ -333,10 +333,10 @@ fn options_of(args : Array[String]) -> Options raise {
 ///|
 /// 只读视图的文本：`render_layer_view` 是纯函数，测试直接断言它的输出，
 /// 不必去截 `println` 的 stdout。
-fn layer_view_text(
+async fn layer_view_text(
   options : Options,
   layers : Array[BytesView],
-) -> String raise {
+) -> String {
   let views = @layer_tree.browse_layers(layers) catch {
     err => raise CommandError::Analysis(err.to_string())
   }
@@ -353,7 +353,7 @@ fn layer_view_text(
 ///|
 /// 聚合档与单层档的差别在 CLI 上也成立：同一条路径「被改回原样」时，
 /// `--aggregate` 仍把它算进 `modified`，不给开关时按逐层口径（默认行为不变）。
-test "aggregate flag switches the compare range of the layer view" {
+async test "aggregate flag switches the compare range of the layer view" {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("etc"),
     @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
@@ -389,7 +389,7 @@ test "aggregate flag switches the compare range of the layer view" {
 
 ///|
 /// 默认档位下 `--layer` 的输出与从前一致：不给 `--aggregate` 时不多不少。
-test "the layer view is unchanged without the aggregate flag" {
+async test "the layer view is unchanged without the aggregate flag" {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
   ])
@@ -408,7 +408,7 @@ test "the layer view is unchanged without the aggregate flag" {
 ///|
 /// `--aggregate` 的 JSON：`compare`、`aggregateBytes`、`base` 三个新字段，
 /// 既有字段（tree / layer / diff 三组）一个都没动。
-test "aggregate json adds the compare fields" {
+async test "aggregate json adds the compare fields" {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
   ])
@@ -433,10 +433,10 @@ test "aggregate json adds the compare fields" {
 
 ///|
 /// 与 `layer_view_text` 同形，只是走后者的 JSON 分支。
-fn layer_view_json_for(
+async fn layer_view_json_for(
   options : Options,
   layers : Array[BytesView],
-) -> String raise {
+) -> String {
   let views = @layer_tree.browse_layers(layers) catch {
     err => raise CommandError::Analysis(err.to_string())
   }
@@ -449,7 +449,7 @@ fn layer_view_json_for(
 
 ///|
 /// `image_of_layers` 也要有人用：钉住内存来源能造出「多层 + 无压缩」的镜像。
-test "image_of_layers builds a multi-layer source" {
+async test "image_of_layers builds a multi-layer source" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
   ])

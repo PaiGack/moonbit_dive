@@ -1,5 +1,5 @@
 ///|
-test "bearer challenge is parsed" {
+async test "bearer challenge is parsed" {
   let challenge = @registry_cli.parse_challenge(
     "Bearer realm=\"https://auth.docker.io/token\",service=\"registry.docker.io\",scope=\"repository:library/nginx:pull\"",
   ).unwrap()
@@ -10,7 +10,7 @@ test "bearer challenge is parsed" {
 }
 
 ///|
-test "challenge scope may contain commas" {
+async test "challenge scope may contain commas" {
   let challenge = @registry_cli.parse_challenge(
     "Bearer realm=\"https://auth.example.com/token\",scope=\"repository:a/b:pull,push\"",
   ).unwrap()
@@ -19,7 +19,7 @@ test "challenge scope may contain commas" {
 }
 
 ///|
-test "challenge fields may be unquoted" {
+async test "challenge fields may be unquoted" {
   let challenge = @registry_cli.parse_challenge(
     "Bearer realm=https://auth.example.com/token,service=example",
   ).unwrap()
@@ -29,20 +29,20 @@ test "challenge fields may be unquoted" {
 }
 
 ///|
-test "basic challenge is recognised" {
+async test "basic challenge is recognised" {
   let challenge = @registry_cli.parse_challenge("Basic realm=\"registry\"").unwrap()
   assert_eq(challenge.scheme, "basic")
   assert_eq(challenge.realm, "registry")
 }
 
 ///|
-test "unknown scheme is not a challenge" {
+async test "unknown scheme is not a challenge" {
   assert_true(@registry_cli.parse_challenge("Negotiate") is None)
   assert_true(@registry_cli.parse_challenge("") is None)
 }
 
 ///|
-test "credentials do not leak the token in Show" {
+async test "credentials do not leak the token in Show" {
   let credentials = @registry_cli.Bearer("super-secret-token")
   let rendered = credentials.to_string()
   assert_false(rendered.contains("super-secret-token"))

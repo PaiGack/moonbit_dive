@@ -4,7 +4,7 @@
 ///
 /// 显式声明的两个 socket 排在系统默认值前面，两个系统 socket 一起上——
 /// 容器环境里常只跑其中一只 daemon，少一条就多一次「明明装了却取不到」。
-test "default candidates follow the documented order" {
+async test "default candidates follow the documented order" {
   let env = {
     "DOCKER_HOST": "unix:///custom/docker.sock",
     "CONTAINER_HOST": "unix:///custom/podman.sock",
@@ -24,7 +24,7 @@ test "default candidates follow the documented order" {
 ///|
 /// 没设 DOCKER_HOST / CONTAINER_HOST 时不该凭空多一个 socket 候选，
 /// 但两个系统默认 socket 要在。
-test "missing DOCKER_HOST still yields both system sockets" {
+async test "missing DOCKER_HOST still yields both system sockets" {
   let candidates = @docker_cli.default_candidates({})
   assert_eq(candidates.length(), 5)
   assert_eq(
@@ -40,7 +40,7 @@ test "missing DOCKER_HOST still yields both system sockets" {
 ///|
 /// podman 的 `CONTAINER_HOST` 是裸路径（不带 `unix://`），也要收。
 /// 同一条 socket 被两个变量重复指定时只留一条，别探两遍。
-test "CONTAINER_HOST accepts a bare path and dedupes" {
+async test "CONTAINER_HOST accepts a bare path and dedupes" {
   assert_eq(
     @docker_cli.unix_socket_of("/run/podman/podman.sock"),
     Some("/run/podman/podman.sock"),
@@ -63,7 +63,7 @@ test "CONTAINER_HOST accepts a bare path and dedupes" {
 ///|
 /// podman rootless 的 socket 路径由 `XDG_RUNTIME_DIR` 推出来，
 /// 没设时退回 `/run/user/<uid>`。
-test "podman rootless socket path derives from XDG_RUNTIME_DIR or UID" {
+async test "podman rootless socket path derives from XDG_RUNTIME_DIR or UID" {
   assert_eq(
     @docker_cli.podman_rootless_socket({ "XDG_RUNTIME_DIR": "/run/user/1000" }),
     Some("/run/user/1000/podman/podman.sock"),
@@ -82,7 +82,7 @@ test "podman rootless socket path derives from XDG_RUNTIME_DIR or UID" {
 
 ///|
 /// `tcp://` / `ssh://` 属于后续 issue 的范围内，这里明确跳过。
-test "non-unix DOCKER_HOST is skipped" {
+async test "non-unix DOCKER_HOST is skipped" {
   for
     host in ["tcp://1.2.3.4:2375", "ssh://user@host", "npipe:////./pipe/docker"] {
     assert_true(@docker_cli.unix_socket_of(host) is None)
@@ -99,7 +99,7 @@ test "non-unix DOCKER_HOST is skipped" {
 /// 提上来的是 `Program(路径, ...)` 而**不是** `Cli(工具名)`：
 /// `DOCKER_CLI` 写的是「用哪个文件」，不是「去 PATH 上找哪个名字」。
 /// 折回 `Cli(tool)` 会把路径扔掉，用户写死的程序根本不会被调用。
-test "DOCKER_CLI promotes the explicit program" {
+async test "DOCKER_CLI promotes the explicit program" {
   let env = { "DOCKER_CLI": "/opt/bin/podman" }
   let candidates = @docker_cli.default_candidates(env)
   let promoted = @docker_cli.probe_order_for_test(candidates, env)
@@ -299,7 +299,7 @@ async test "a socket that answers _ping is healthy" {
 /// 这条是一条「不许再退回无超时」的守门：0 表示永远等下去，
 /// 半死的 daemon 就会让 `dive --from-image` 静默挂住——
 /// 与 `--verbose` 都打不出任何东西的表现完全一致。
-test "the default timeout is finite" {
+async test "the default timeout is finite" {
   assert_true(@docker_cli.default_timeout_ms > 0)
 }
 
@@ -327,7 +327,7 @@ fn count_occurrences(text : String, needle : String) -> Int32 {
 /// 那边只有命名管道与 `tcp://`，`/var/run/docker.sock` 必然不存在。
 /// 留着这些候选只会让 `--verbose` 多两行无意义的 `socket not found`，
 /// 把人往「路径写错了」上带；要查的其实是 docker CLI 装没装。
-test "windows candidates carry no posix sockets" {
+async test "windows candidates carry no posix sockets" {
   let candidates = @docker_cli.default_candidates_opts(
     {},
     windows_platform=true,
@@ -342,7 +342,7 @@ test "windows candidates carry no posix sockets" {
 ///|
 /// 显式写的 `DOCKER_HOST` 在 Windows 上也得留着：用户都写死了，别跟他争。
 /// 认不出形态的（`npipe://`）照旧跳过，不塞半成品进候选表。
-test "windows keeps an explicit DOCKER_HOST" {
+async test "windows keeps an explicit DOCKER_HOST" {
   let candidates = @docker_cli.default_candidates_opts(
     { "DOCKER_HOST": "unix:///custom/docker.sock" },
     windows_platform=true,
@@ -382,7 +382,7 @@ async test "windows PATH is split on semicolons" {
 
 ///|
 /// 平台判断跟着 `env` 走：`OS` 优先，没有就退回带盘符的 `pwd`。
-test "platform detection reads OS then pwd" {
+async test "platform detection reads OS then pwd" {
   assert_true(@docker_cli.is_windows_platform_env({ "OS": "Windows_NT" }))
   assert_true(@docker_cli.is_windows_platform_env({ "OS": "windows" }))
   assert_true(@docker_cli.is_windows_platform_env({ "pwd": "D:\\code" }))
@@ -393,7 +393,7 @@ test "platform detection reads OS then pwd" {
 ///|
 /// `DOCKER_CLI` 写成 Windows 路径时：basename 要按 `\` 切，
 /// `.exe` 要剥掉才能认出是哪个工具——否则 podman.exe 会被记成 docker。
-test "windows DOCKER_CLI path is parsed for tool and name" {
+async test "windows DOCKER_CLI path is parsed for tool and name" {
   let candidates = @docker_cli.probe_order_for_test([], {
     "DOCKER_CLI": "C:\\Program Files\\RedHat\\Podman\\podman.exe",
   })
@@ -408,7 +408,7 @@ test "windows DOCKER_CLI path is parsed for tool and name" {
 ///|
 /// 「一个后端都没有」的提示要跟着平台换：Windows 上念
 /// `DOCKER_HOST=unix:///var/run/docker.sock` 等于让人去开一个不存在的门。
-test "the no-backend hint is platform aware" {
+async test "the no-backend hint is platform aware" {
   let windows = @docker_cli.backend_hint(windows_platform=true)
   assert_true(windows.contains("docker.exe") || windows.contains("PATH"))
   assert_false(windows.contains("/var/run/docker.sock"))

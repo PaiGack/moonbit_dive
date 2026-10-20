@@ -3,8 +3,12 @@ package "PaiGack/dive/registry_cli"
 
 import {
   "PaiGack/dive/oci_spec",
+  "moonbitlang/async/fs",
   "moonbitlang/async/http",
+  "moonbitlang/async/io",
+  "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
+  "moonbitlang/x/crypto",
 }
 
 // Values
@@ -15,8 +19,6 @@ pub let docker_hub_registry : String
 pub fn host_platform() -> @oci_spec.Platform
 
 pub fn human_bytes(Int64) -> String
-
-pub fn package_image(RemoteImage, format~ : ArchiveFormat) -> ArchiveBundle raise RegistryError
 
 pub fn parse_challenge(String) -> AuthChallenge?
 
@@ -38,6 +40,8 @@ pub fn short_digest(String) -> String
 
 pub fn target_architecture() -> String
 
+pub async fn write_image(RemoteImage, String, format~ : ArchiveFormat) -> WrittenArchive raise RegistryError
+
 // Errors
 pub(all) suberror RegistryError {
   InvalidReference(String)
@@ -56,15 +60,6 @@ pub fn RegistryError::to_string(Self) -> String
 pub impl Show for RegistryError
 
 // Types and methods
-pub(all) struct ArchiveBundle {
-  files : Array[(String, Bytes)]
-  format : ArchiveFormat
-} derive(Eq, @debug.Debug)
-pub fn ArchiveBundle::equal(Self, Self) -> Bool
-pub fn ArchiveBundle::not_equal(Self, Self) -> Bool
-pub fn ArchiveBundle::to_repr(Self) -> @debug.Repr
-pub fn ArchiveBundle::total_size(Self) -> Int32
-
 pub(all) enum ArchiveFormat {
   DockerArchive
   OciLayout
@@ -86,18 +81,44 @@ pub fn AuthChallenge::equal(Self, Self) -> Bool
 pub fn AuthChallenge::not_equal(Self, Self) -> Bool
 pub fn AuthChallenge::to_repr(Self) -> @debug.Repr
 
+pub struct BytesBuffer {
+  buffer : @buffer.Buffer
+}
+pub fn BytesBuffer::new() -> Self
+pub fn BytesBuffer::to_bytes(Self) -> Bytes
+pub async fn BytesBuffer::write(Self, &@io.Data) -> Unit
+pub async fn BytesBuffer::write_once(Self, Bytes, offset~ : Int32, len~ : Int32) -> Int32
+pub async fn BytesBuffer::write_reader(Self, &@io.Reader) -> Unit
+pub impl @io.Writer for BytesBuffer
+
+pub struct CountingWriter {
+  file : @fs.File
+  mut total : Int64
+}
+pub async fn CountingWriter::write(Self, &@io.Data) -> Unit
+pub async fn CountingWriter::write_once(Self, Bytes, offset~ : Int32, len~ : Int32) -> Int32
+pub async fn CountingWriter::write_reader(Self, &@io.Reader) -> Unit
+pub impl @io.Writer for CountingWriter
+
+pub struct HashingWriter {
+  hasher : @crypto.SHA256
+  mut total : Int64
+}
+pub async fn HashingWriter::write(Self, &@io.Data) -> Unit
+pub async fn HashingWriter::write_once(Self, Bytes, offset~ : Int32, len~ : Int32) -> Int32
+pub async fn HashingWriter::write_reader(Self, &@io.Reader) -> Unit
+pub impl @io.Writer for HashingWriter
+
 pub(all) struct HttpReply {
   status : Int32
   headers : Map[String, String]
   body : Bytes
-  source : ReplySource?
 }
 pub fn HttpReply::equal(Self, Self) -> Bool
 pub fn HttpReply::header(Self, String) -> String?
 pub fn HttpReply::is_redirect(Self) -> Bool
 pub fn HttpReply::not_equal(Self, Self) -> Bool
-pub async fn HttpReply::read_body(Self) -> Bytes raise RegistryError
-pub async fn HttpReply::read_body_with(Self, on_progress? : (Int64, Int64?) -> Unit, on_tick? : () -> Unit) -> Bytes raise RegistryError
+pub fn HttpReply::read_body(Self) -> Bytes
 pub fn HttpReply::to_repr(Self) -> @debug.Repr
 pub impl Eq for HttpReply
 pub impl @debug.Debug for HttpReply
@@ -117,6 +138,8 @@ pub fn ImageReference::output(Self, &Logger) -> Unit
 pub fn ImageReference::to_repr(Self) -> @debug.Repr
 pub fn ImageReference::to_string(Self) -> String
 pub impl Show for ImageReference
+
+type LayerPlan
 
 pub(all) enum PullEvent {
   Started(reference~ : String)
@@ -182,7 +205,7 @@ pub struct RegistryClient {
 }
 pub fn RegistryClient::close(Self) -> Unit
 pub async fn RegistryClient::connect(String, insecure? : Bool, token? : String?) -> Self
-pub async fn RegistryClient::get(Self, String, headers? : Map[String, String]) -> HttpReply raise RegistryError
+pub async fn RegistryClient::get(Self, String, headers? : Map[String, String], on_progress? : (Int64, Int64?) -> Unit, on_tick? : () -> Unit) -> HttpReply raise RegistryError
 pub fn RegistryClient::has_token(Self) -> Bool
 pub fn RegistryClient::output(Self, &Logger) -> Unit
 pub fn RegistryClient::set_token(Self, String) -> Unit
@@ -212,8 +235,6 @@ pub fn RemoteImage::equal(Self, Self) -> Bool
 pub fn RemoteImage::not_equal(Self, Self) -> Bool
 pub fn RemoteImage::to_repr(Self) -> @debug.Repr
 
-type ReplySource
-
 pub(all) struct SaveRequest {
   reference : String
   output : String
@@ -242,6 +263,14 @@ pub fn SaveResult::output(Self, &Logger) -> Unit
 pub fn SaveResult::to_repr(Self) -> @debug.Repr
 pub fn SaveResult::to_string(Self) -> String
 pub impl Show for SaveResult
+
+pub(all) struct WrittenArchive {
+  path : String
+  bytes : Int64
+} derive(Eq, @debug.Debug)
+pub fn WrittenArchive::equal(Self, Self) -> Bool
+pub fn WrittenArchive::not_equal(Self, Self) -> Bool
+pub fn WrittenArchive::to_repr(Self) -> @debug.Repr
 
 // Type aliases
 

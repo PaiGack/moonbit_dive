@@ -1,6 +1,6 @@
 ///|
 /// 基线克隆不带脏标记：脏标记属于「这一帧写过什么」，拷过去会让下一帧全量重画。
-test "clone_screen keeps cells but clears dirty" {
+async test "clone_screen keeps cells but clears dirty" {
   let screen = Screen::new(3, 2)
   screen.set(0, 0, "a")
   screen.set(2, 1, "b")
@@ -15,7 +15,7 @@ test "clone_screen keeps cells but clears dirty" {
 
 ///|
 /// 没写过（不脏）的格子不算差异，即使基线与当前不同。
-test "is_dirty requires both a write and a change" {
+async test "is_dirty requires both a write and a change" {
   let current = Screen::new(3, 1)
   let baseline = Screen::new(3, 1)
   // 基线有内容、当前是空格，但当前没写过 → 不算脏
@@ -32,7 +32,7 @@ test "is_dirty requires both a write and a change" {
 
 ///|
 /// 尺寸放大后，超出旧基线范围的格子一律算脏。
-test "is_dirty treats cells outside the baseline as changed" {
+async test "is_dirty treats cells outside the baseline as changed" {
   let current = Screen::new(4, 2)
   let baseline = Screen::new(2, 1)
   current.set(3, 1, "z")
@@ -41,7 +41,7 @@ test "is_dirty treats cells outside the baseline as changed" {
 
 ///|
 /// 连续段的取字：占位符（宽字符后半格）不吐字节。
-test "segment_string skips wide-char placeholders" {
+async test "segment_string skips wide-char placeholders" {
   let screen = Screen::new(6, 1)
   screen.write_text(0, 0, "中x")
   // 区间 [0,2]：中 → 占位符（跳过） → x
@@ -52,7 +52,7 @@ test "segment_string skips wide-char placeholders" {
 
 ///|
 /// 区间宽度按列补齐：末尾的空白也要吐出来，否则光标推进量会短、后面内容左移。
-test "segment_string pads to the interval width" {
+async test "segment_string pads to the interval width" {
   let screen = Screen::new(5, 1)
   screen.set(0, 0, "a")
   // 区间 [0,3] 是 4 列，只有首格有内容
@@ -63,7 +63,7 @@ test "segment_string pads to the interval width" {
 
 ///|
 /// 基线的样式要一起拷过来：只拷字符的话下一帧会把「同字不同色」当成没变。
-test "clone_screen keeps styles but clears dirty" {
+async test "clone_screen keeps styles but clears dirty" {
   let screen = Screen::new(2, 1)
   screen.set_styled(0, 0, "a", style_added)
   let clone = clone_screen(screen)
@@ -74,7 +74,7 @@ test "clone_screen keeps styles but clears dirty" {
 
 ///|
 /// 样式不同也算脏——这是「样式进脏格判定」的最小断言。
-test "is_dirty treats a style-only change as a change" {
+async test "is_dirty treats a style-only change as a change" {
   let current = Screen::new(2, 1)
   let baseline = Screen::new(2, 1)
   baseline.set(0, 0, "a")
@@ -90,7 +90,7 @@ test "is_dirty treats a style-only change as a change" {
 
 ///|
 /// 脏段里逐格切样式：段首、段中、复位三处都要有字节。
-test "segment_string switches style inside a segment" {
+async test "segment_string switches style inside a segment" {
   let screen = Screen::new(4, 1)
   screen.write_text(0, 0, "abcd")
   screen.set_styled(0, 0, "a", style_added)
@@ -102,7 +102,7 @@ test "segment_string switches style inside a segment" {
 
 ///|
 /// 全默样式的段不插任何 SGR（绝大多数画面走这条路径）。
-test "segment_string leaves a plain segment untouched" {
+async test "segment_string leaves a plain segment untouched" {
   let screen = Screen::new(3, 1)
   screen.write_text(0, 0, "abc")
   assert_eq(segment_string(screen, 0, 2, 0), "abc")

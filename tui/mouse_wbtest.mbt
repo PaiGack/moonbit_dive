@@ -1,6 +1,6 @@
 ///|
 /// 造一个两层的逐层视图（与 `app_wbtest.mbt` 的同名工具同形）。
-fn mouse_views() -> Array[@layer_tree.LayerView] raise {
+async fn mouse_views() -> Array[@layer_tree.LayerView] {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("etc"),
     @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
@@ -13,7 +13,7 @@ fn mouse_views() -> Array[@layer_tree.LayerView] raise {
 
 ///|
 /// 造一个已经画过一帧的状态：`last_layout` 有值，鼠标坐标才有落点。
-fn mouse_state() -> AppState raise {
+async fn mouse_state() -> AppState {
   let state = AppState::new(mouse_views(), None, "demo")
   let layout = Layout::compute(80, 24)
   state.view.page_height = max(layout.body_height() - 1, 1)
@@ -42,7 +42,7 @@ fn mouse_at(
 ///
 /// 80x24 下树的内容区从第 2 行（0 起）起笔，即终端的第 3 行；
 /// 详情面板从第 42 列（0 起）起笔，即终端的第 43 列。
-test "hit test resolves panes and relative rows" {
+async test "hit test resolves panes and relative rows" {
   let layout = Layout::compute(80, 24)
   // 树内容区的第一行
   assert_eq(hit_test(layout, 3, 2), Some((PaneId::Tree, 0)))
@@ -61,7 +61,7 @@ test "hit test resolves panes and relative rows" {
 
 ///|
 /// 窄屏退化单栏时，右栏的坐标落不到详情面板上（面板不存在，不该被凭空命中）。
-test "hit test has no detail pane on a narrow terminal" {
+async test "hit test has no detail pane on a narrow terminal" {
   let layout = Layout::compute(30, 20)
   assert_eq(layout.pane(PaneId::Detail), None)
   assert_eq(hit_test(layout, 3, 40), None)
@@ -71,7 +71,7 @@ test "hit test has no detail pane on a narrow terminal" {
 
 ///|
 /// 点在树上：选中那一行，并把键盘焦点交给树。
-test "click selects a tree row and focuses the tree" {
+async test "click selects a tree row and focuses the tree" {
   let state = mouse_state()
   state.focus = Focus::Detail
   let quit = handle_mouse(
@@ -86,7 +86,7 @@ test "click selects a tree row and focuses the tree" {
 
 ///|
 /// 点在详情面板：焦点切过去，树的光标不动。
-test "click on the detail pane only moves the focus" {
+async test "click on the detail pane only moves the focus" {
   let state = mouse_state()
   state.view.move_to(1)
   ignore(
@@ -101,7 +101,7 @@ test "click on the detail pane only moves the focus" {
 
 ///|
 /// 点空白（内容区里的空白格）什么都不做：不选行，也不抢焦点。
-test "click on empty space in the pane changes nothing" {
+async test "click on empty space in the pane changes nothing" {
   let state = mouse_state()
   state.focus = Focus::Detail
   state.view.move_to(1)
@@ -118,7 +118,7 @@ test "click on empty space in the pane changes nothing" {
 
 ///|
 /// 滚轮：树上滚光标，详情上滚视口——鼠标在哪块就滚哪块，不需要先点一下。
-test "wheel scrolls the pane under the pointer" {
+async test "wheel scrolls the pane under the pointer" {
   let state = mouse_state()
   ignore(
     handle_mouse(
@@ -149,7 +149,7 @@ test "wheel scrolls the pane under the pointer" {
 
 ///|
 /// 右键点目录行：切展开状态；点文件行不动。
-test "right click toggles the fold of the row under the pointer" {
+async test "right click toggles the fold of the row under the pointer" {
   let state = mouse_state()
   let dir_row = state.view.index_of_path("/etc").unwrap()
   // `/etc` 是第 0 行可见行 → 内容区第 0 行 → 屏幕第 3 行
@@ -175,7 +175,7 @@ test "right click toggles the fold of the row under the pointer" {
 /// 左键点目录行：选中并开合（#62）。
 ///
 /// `/etc` 是第 0 行可见行 → 内容区第 0 行 → 屏幕第 3 行。
-test "left click on a folder toggles its fold" {
+async test "left click on a folder toggles its fold" {
   let state = mouse_state()
   ignore(
     handle_mouse(
@@ -199,7 +199,7 @@ test "left click on a folder toggles its fold" {
 
 ///|
 /// 左键点文件行只选中，不开合（没有可开合的东西）。
-test "left click on a file only selects it" {
+async test "left click on a file only selects it" {
   let state = mouse_state()
   // `/etc/hosts` 是第 1 行可见行 → 内容区第 1 行 → 屏幕第 4 行
   ignore(
@@ -215,7 +215,7 @@ test "left click on a file only selects it" {
 
 ///|
 /// 左键点面板空白处：既不选行，也不开合（折叠状态一个都不该动）。
-test "left click on empty space does not toggle anything" {
+async test "left click on empty space does not toggle anything" {
   let state = mouse_state()
   ignore(
     handle_mouse(
@@ -229,7 +229,7 @@ test "left click on empty space does not toggle anything" {
 
 ///|
 /// 拖拽 / 移动不产生任何状态变化（本轮不做拖拽与框选）。
-test "drag and move never change the state" {
+async test "drag and move never change the state" {
   let state = mouse_state()
   state.view.move_to(2)
   let snapshot = state.view.cursor
@@ -246,7 +246,7 @@ test "drag and move never change the state" {
 
 ///|
 /// 还没画过帧时（`last_layout` 为空）鼠标事件被安静丢掉，不崩。
-test "mouse events before the first frame are ignored" {
+async test "mouse events before the first frame are ignored" {
   let state = AppState::new(mouse_views(), None, "demo")
   assert_eq(state.last_layout, None)
   let quit = handle_mouse(
@@ -259,7 +259,7 @@ test "mouse events before the first frame are ignored" {
 
 ///|
 /// 帮助浮层开着时，点击不穿透到浮层底下的面板。
-test "clicks do not fall through the help overlay" {
+async test "clicks do not fall through the help overlay" {
   let state = mouse_state()
   state.help_visible = true
   state.view.move_to(0)

@@ -22,7 +22,7 @@ fn size_at(tree : FileTree, path : String) -> Int32 {
 }
 
 ///|
-test "whiteout entry removes a sibling file" {
+async test "whiteout entry removes a sibling file" {
   let first = build_tar([Dir("etc"), File("etc/passwd", "root:x:0:0")])
   let second = build_tar([Whiteout("etc", "passwd")])
   let tree = apply_all([first, second])
@@ -34,7 +34,7 @@ test "whiteout entry removes a sibling file" {
 }
 
 ///|
-test "whiteout only affects its own directory" {
+async test "whiteout only affects its own directory" {
   let first = build_tar([
     Dir("a"),
     Dir("b"),
@@ -48,7 +48,7 @@ test "whiteout only affects its own directory" {
 }
 
 ///|
-test "whiteout on a directory removes the whole subtree" {
+async test "whiteout on a directory removes the whole subtree" {
   let first = build_tar([
     Dir("opt"),
     Dir("opt/tools"),
@@ -65,7 +65,7 @@ test "whiteout on a directory removes the whole subtree" {
 }
 
 ///|
-test "a file re-created after a whiteout is a fresh node" {
+async test "a file re-created after a whiteout is a fresh node" {
   // 这是 OCI 里最常见的边界：同一层里先 whiteout 再写回同名文件
   let first = build_tar([Dir("app"), File("app/config", "old")])
   let second = build_tar([
@@ -78,7 +78,7 @@ test "a file re-created after a whiteout is a fresh node" {
 }
 
 ///|
-test "whiteout then re-create in the same layer shows up as modified" {
+async test "whiteout then re-create in the same layer shows up as modified" {
   let first = build_tar([Dir("app"), File("app/config", "old")])
   let second = build_tar([
     Whiteout("app", "config"),
@@ -96,7 +96,7 @@ test "whiteout then re-create in the same layer shows up as modified" {
 }
 
 ///|
-test "whiteout without re-create shows up as removed in diff" {
+async test "whiteout without re-create shows up as removed in diff" {
   let first = build_tar([Dir("app"), File("app/config", "old")])
   let second = build_tar([Whiteout("app", "config")])
   let tree = FileTree::new()
@@ -110,7 +110,7 @@ test "whiteout without re-create shows up as removed in diff" {
 }
 
 ///|
-test "opaque directory drops entries the new layer did not write" {
+async test "opaque directory drops entries the new layer did not write" {
   let first = build_tar([
     Dir("srv"),
     File("srv/legacy.conf", "old"),
@@ -125,7 +125,7 @@ test "opaque directory drops entries the new layer did not write" {
 }
 
 ///|
-test "opaque directory keeps files written by the same layer" {
+async test "opaque directory keeps files written by the same layer" {
   let first = build_tar([Dir("data"), File("data/old.txt", "old")])
   let second = build_tar([
     Opaque("data"),
@@ -139,7 +139,7 @@ test "opaque directory keeps files written by the same layer" {
 }
 
 ///|
-test "plnk marker is recognised but never lands in the tree" {
+async test "plnk marker is recognised but never lands in the tree" {
   let builder = TarBuilder::new()
   builder.add_directory("var")
   builder.add_header("var/.wh..wh..plnk", 0, entry_type=b'0')
@@ -148,7 +148,7 @@ test "plnk marker is recognised but never lands in the tree" {
 }
 
 ///|
-test "whiteout_kind classifies all three marker forms" {
+async test "whiteout_kind classifies all three marker forms" {
   assert_eq(
     whiteout_kind("etc/.wh.passwd"),
     Some(WhiteoutKind::Entry("passwd")),
@@ -162,7 +162,7 @@ test "whiteout_kind classifies all three marker forms" {
 }
 
 ///|
-test "whiteout in a compressed layer behaves the same" {
+async test "whiteout in a compressed layer behaves the same" {
   let first = build_tar([Dir("etc"), File("etc/hosts", "127.0.0.1")])
   let second = build_tar([Whiteout("etc", "hosts")])
   let tree = FileTree::new()
@@ -179,21 +179,21 @@ test "whiteout in a compressed layer behaves the same" {
 }
 
 ///|
-test "a bare .wh. prefix is not a whiteout" {
+async test "a bare .wh. prefix is not a whiteout" {
   // `.wh.` 后面没有名字时语义不完整，不作为删除处理
   assert_eq(whiteout_kind("etc/.wh."), None)
   assert_eq(whiteout_kind(".wh."), None)
 }
 
 ///|
-test "whiteout kinds render readably" {
+async test "whiteout kinds render readably" {
   assert_eq(WhiteoutKind::Entry("passwd").to_string(), "whiteout entry passwd")
   assert_eq(WhiteoutKind::Opaque.to_string(), "opaque directory")
   assert_eq(WhiteoutKind::Plnk.to_string(), "plnk marker (ignored)")
 }
 
 ///|
-test "whiteout markers never become tree nodes" {
+async test "whiteout markers never become tree nodes" {
   // 三种标记混在一层里：最终树上都不该出现
   let builder = TarBuilder::new()
   builder.add_directory("etc")
@@ -209,7 +209,7 @@ test "whiteout markers never become tree nodes" {
 }
 
 ///|
-test "whiteout removes an entry that lives in an earlier layer only" {
+async test "whiteout removes an entry that lives in an earlier layer only" {
   // 目标只在更早的层出现过，whiteout 仍然要生效
   let layers = [
     build_tar([Dir("opt"), File("opt/tool", "binary")]),
@@ -222,7 +222,7 @@ test "whiteout removes an entry that lives in an earlier layer only" {
 }
 
 ///|
-test "whiting out a missing path is a no-op" {
+async test "whiting out a missing path is a no-op" {
   let first = build_tar([Dir("etc"), File("etc/a", "1")])
   let second = build_tar([Whiteout("etc", "never-existed")])
   let tree = apply_all([first, second])
@@ -230,7 +230,7 @@ test "whiting out a missing path is a no-op" {
 }
 
 ///|
-test "opaque on the root keeps only the current layer" {
+async test "opaque on the root keeps only the current layer" {
   let first = build_tar([Dir("a"), Dir("b"), File("a/x", "1"), File("b/y", "2")])
   let second = build_tar([Opaque("/"), File("c", "3")])
   let tree = apply_all([first, second])

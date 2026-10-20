@@ -13,6 +13,10 @@ import {
   "PaiGack/dive/layer_tree",
 } for "wbtest"
 
+import {
+  "moonbitlang/async",
+} for "test"
+
 warnings = "-test_unqualified_package"
 
 supported_targets = "wasm-gc+native"

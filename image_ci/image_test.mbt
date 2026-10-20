@@ -33,7 +33,7 @@ fn bytes_as_text(data : Bytes) -> String {
 
 ///|
 /// docker save 产物：读 manifest.json，拿到两层，config 里的 diff_id 对得上。
-test "load docker archive" {
+async test "load docker archive" {
   let source = ImageSource::from_tar_bytes(
     docker_archive_tar(),
     name="demo.tar",
@@ -50,7 +50,7 @@ test "load docker archive" {
 
 ///|
 /// 单层 tar：没有 manifest.json 时按一个文件系统层处理。
-test "load plain layer tar" {
+async test "load plain layer tar" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("hello.txt", "hi"),
   ])
@@ -64,7 +64,7 @@ test "load plain layer tar" {
 
 ///|
 /// 坏输入：不是 tar / manifest.json 结构不对，都归到 `Malformed`。
-test "malformed archive reports an error" {
+async test "malformed archive reports an error" {
   let cases : Array[Bytes] = [b"this is not a tar"]
   for data in cases {
     let failed = loaded_badly(fn() raise ImageError { load_tar_result(data) })
@@ -76,7 +76,7 @@ test "malformed archive reports an error" {
 
 ///|
 /// `manifest.json` 缺 Layers 字段时报错，而不是当成空镜像放过去。
-test "manifest without layers is malformed" {
+async test "manifest without layers is malformed" {
   let builder = @layer_tree.TarBuilder::new()
   builder.add_file("manifest.json", "[ { \"Config\": \"config.json\" } ]")
   builder.add_file("config.json", "{}")
@@ -89,7 +89,7 @@ test "manifest without layers is malformed" {
 
 ///|
 /// 内存里的 OCI layout：blob 目录结构由测试直接在磁盘上摆。
-test "load oci layout from disk" {
+async test "load oci layout from disk" {
   let root = "target/image_ci_fixture"
   mkdir_p(root + "/blobs/sha256")
   let layer0 = @layer_tree.build_tar([
@@ -124,7 +124,7 @@ test "load oci layout from disk" {
 
 ///|
 /// 找不到目录时是 `Io` 而不是崩。
-test "missing input reports io error" {
+async test "missing input reports io error" {
   let failed = try {
     load_path_result("target/definitely-not-here.tar") |> ignore
     false

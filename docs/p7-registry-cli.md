@@ -46,9 +46,9 @@ GET /v2/<repo>/manifests/<ref> 401 → 解析 WWW-Authenticate → 换 token →
         ↓                      index 就按 platform 选子 manifest，按 digest 再取一次
 GET /v2/<repo>/blobs/<digest>  每个 descriptor 一次；307 跟到 CDN（不带 Authorization）
         ↓                      size 先对、再算 sha256 对 digest
-package_image                  docker-archive（层解压）或 OCI layout（blob 原样）
+write_image                    解压即写盘：docker-archive（层解压）或 OCI layout（blob 原样）
         ↓
-write_bundle                   一个 tar 文件 / 一个 blobs+index.json 目录
+                               一个 tar 文件 / 一个 blobs+index.json 目录
 ```
 
 模块对照：
@@ -59,7 +59,8 @@ write_bundle                   一个 tar 文件 / 一个 blobs+index.json 目�
 | `auth.mbt` | `WWW-Authenticate` 挑战解析、凭据类型 |
 | `client.mbt` | 只做 `GET` 的 HTTP 客户端（token 挂在客户端上，调用方不用自己拼头） |
 | `pull.mbt` | 拉取主流程：换票、选平台、取 blob、校验 |
-| `package.mbt` | 两种产物的打包 |
+| `package.mbt` | 两种产物的打包与落盘（全程流式，不整包进内存） |
+| `writer.mbt` | 三个落点：数着字节写文件、只算 sha256、攒成一块 |
 | `save.mbt` | `save_image`：拉取 + 打包 + 落盘，CLI 只需要这一个入口 |
 
 ## 3. 几个必须说清楚的决定

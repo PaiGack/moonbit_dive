@@ -15,7 +15,7 @@ fn pane_fixture(focused~ : Bool = false) -> (Screen, Pane) {
 
 ///|
 /// 边框四角是 `+`、横边 `-`、竖边 `|`。
-test "paint_pane draws a box around the pane" {
+async test "paint_pane draws a box around the pane" {
   let (screen, pane) = pane_fixture()
   paint_pane(screen, pane, false)
   assert_eq(screen.get(0, 0), "+")
@@ -32,7 +32,7 @@ test "paint_pane draws a box around the pane" {
 
 ///|
 /// 标题画在顶边上；聚焦时前面多一个 `>`。
-test "paint_pane marks the focused pane in its title" {
+async test "paint_pane marks the focused pane in its title" {
   let (screen, pane) = pane_fixture()
   paint_pane(screen, pane, false)
   let plain = screen.row_string(0)
@@ -45,7 +45,7 @@ test "paint_pane marks the focused pane in its title" {
 
 ///|
 /// 内容区不被边框覆盖：清空只动内圈。
-test "clear_pane keeps the border intact" {
+async test "clear_pane keeps the border intact" {
   let (screen, pane) = pane_fixture()
   paint_pane(screen, pane, false)
   screen.set(4, 3, "x")
@@ -57,7 +57,7 @@ test "clear_pane keeps the border intact" {
 
 ///|
 /// 退化到 1 列 / 1 行时不画框（画出来只剩一条线，比不画更难看）。
-test "paint_pane skips boxes that cannot hold a border" {
+async test "paint_pane skips boxes that cannot hold a border" {
   let screen = Screen::new(1, 1)
   let pane : Pane = {
     id: PaneId::Popup,
@@ -72,7 +72,7 @@ test "paint_pane skips boxes that cannot hold a border" {
 
 ///|
 /// 行数提示只在内容超出窗口时出现，落在右下角。
-test "paint_overflow_hint shows how much was cut" {
+async test "paint_overflow_hint shows how much was cut" {
   let (screen, pane) = pane_fixture()
   paint_pane(screen, pane, false)
   paint_overflow_hint(screen, pane, 4, 4)

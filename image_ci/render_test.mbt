@@ -1,6 +1,6 @@
 ///|
 /// 造一份三规则、两条失败的结论，用于输出测试。
-fn failing_result() -> CheckResult raise {
+async fn failing_result() -> CheckResult {
   Ruleset::of_rules(
     [MaxImageSize(15), MinEfficiency(0.9), DenyPaths(["/node_modules/**"])],
     source="rules.json",
@@ -9,20 +9,20 @@ fn failing_result() -> CheckResult raise {
 
 ///|
 /// 共用的小工具：一份「覆盖写入」镜像的报告与树。
-fn covered_report() -> @image_analysis.Report raise {
+async fn covered_report() -> @image_analysis.Report {
   let (report, _) = @image_ci.covered_pair()
   report
 }
 
 ///|
-fn covered_tree() -> @layer_tree.FileTree raise {
+async fn covered_tree() -> @layer_tree.FileTree {
   let (_, tree) = @image_ci.covered_pair()
   tree
 }
 
 ///|
 /// 文本报告：每条规则一行，失败带 reason，末尾给汇总。
-test "text report snapshot" {
+async test "text report snapshot" {
   let result = failing_result()
   assert_eq(
     result.to_text(),
@@ -43,7 +43,7 @@ test "text report snapshot" {
 
 ///|
 /// JSON 输出：字段齐全，CI 能直接读 `passed` 与 `exitCode`。
-test "json output shape" {
+async test "json output shape" {
   let result = failing_result()
   let json = result.to_json()
   let text = json.stringify(indent=2)
@@ -60,7 +60,7 @@ test "json output shape" {
 
 ///|
 /// CI 注解：失败出 `::error`，并通过出 `::notice`，最后给一行总结。
-test "ci annotations" {
+async test "ci annotations" {
   let result = failing_result()
   let annotations = result.to_annotations()
   assert_true(
@@ -81,7 +81,7 @@ test "ci annotations" {
 
 ///|
 /// 全过时：exit code 0、gate pass、注解给一行通过总结。
-test "passing output" {
+async test "passing output" {
   let result = Ruleset::of_rules([MaxImageSize(1024)]).check(
     covered_report(),
     covered_tree(),
@@ -98,7 +98,7 @@ test "passing output" {
 
 ///|
 /// 规则非法走 exit 2，与「有规则失败」分开。
-test "config error output" {
+async test "config error output" {
   let error = ConfigError::MissingRules
   assert_eq(exit_config_error, 2)
   let json = config_error_to_json(error, "broken.json").stringify(indent=2)

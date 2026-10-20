@@ -1,7 +1,7 @@
 ///|
 /// 三层镜像：`/app/main.js` 被放大重写、`/lib/a` 被 whiteout 删掉、
 /// `/app/util.js` 同大小重写一次——三种「多写」的形态都在里面。
-fn effview_fixture() -> EfficiencyReport raise {
+async fn effview_fixture() -> EfficiencyReport {
   let layers = [
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("app"),
@@ -21,7 +21,7 @@ fn effview_fixture() -> EfficiencyReport raise {
 }
 
 ///|
-test "efficiency view ranks by extra writes, not by wasted bytes" {
+async test "efficiency view ranks by extra writes, not by wasted bytes" {
   let report = effview_fixture()
   let rows = efficiency_view_rows(report, EfficiencyViewOptions::new(top=10))
   assert_eq(rows.length(), 3)
@@ -42,7 +42,7 @@ test "efficiency view ranks by extra writes, not by wasted bytes" {
 }
 
 ///|
-test "rows add up to the efficiency denominator" {
+async test "rows add up to the efficiency denominator" {
   // 表里每行都能推出总分：Σcumulative 是分母，Σmin 是分子
   let report = effview_fixture()
   let rows = efficiency_view_rows(report, EfficiencyViewOptions::new(top=-1))
@@ -63,7 +63,7 @@ test "rows add up to the efficiency denominator" {
 }
 
 ///|
-test "top truncates after the path filter, not before" {
+async test "top truncates after the path filter, not before" {
   let report = effview_fixture()
   // 前 1 条是 /app/main.js；只看 /app 下再取前 1 条，仍该是它
   let scoped = efficiency_view_rows(
@@ -82,7 +82,7 @@ test "top truncates after the path filter, not before" {
 }
 
 ///|
-test "path prefix tolerates a trailing slash and a missing leading one" {
+async test "path prefix tolerates a trailing slash and a missing leading one" {
   let report = effview_fixture()
   for prefix in ["/app/", "/app", "app"] {
     let rows = efficiency_view_rows(
@@ -95,7 +95,7 @@ test "path prefix tolerates a trailing slash and a missing leading one" {
 }
 
 ///|
-test "top 0 means no truncation" {
+async test "top 0 means no truncation" {
   let report = effview_fixture()
   let all = efficiency_view_rows(report, EfficiencyViewOptions::new(top=-1))
   assert_eq(all.length(), 3)
@@ -105,7 +105,7 @@ test "top 0 means no truncation" {
 }
 
 ///|
-test "text view snapshots the table" {
+async test "text view snapshots the table" {
   let report = effview_fixture()
   inspect(
     render_efficiency_view(report, EfficiencyViewOptions::new(top=10)),
@@ -121,7 +121,7 @@ test "text view snapshots the table" {
 }
 
 ///|
-test "empty scope renders none instead of an empty table" {
+async test "empty scope renders none instead of an empty table" {
   let report = effview_fixture()
   inspect(
     render_efficiency_view(
@@ -138,7 +138,7 @@ test "empty scope renders none instead of an empty table" {
 }
 
 ///|
-test "json view mirrors the text columns" {
+async test "json view mirrors the text columns" {
   let report = effview_fixture()
   let json = efficiency_view_to_json(
     report,
@@ -183,7 +183,7 @@ test "json view mirrors the text columns" {
 }
 
 ///|
-test "a perfectly efficient image has an empty table" {
+async test "a perfectly efficient image has an empty table" {
   let (_, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::File("a", "0123456789"),

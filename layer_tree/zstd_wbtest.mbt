@@ -22,7 +22,7 @@ let zstd_cli_vector : FixedArray[Byte] = [
 let zstd_cli_vector_plaintext : String = "dive-zstd-vector:0123456789:abcdefghijklmnopqrstuvwxyz:0123456789:abcdefghijklmnopqrstuvwxyz"
 
 ///|
-test "zstd: real zstd -19 frame decodes to the original text" {
+async test "zstd: real zstd -19 frame decodes to the original text" {
   let decoded = zstd_decompress(Bytes::from_array(zstd_cli_vector[:]))
   assert_eq(decoded.length(), zstd_cli_vector_plaintext.length())
   // 逐字节比：字节数一样但内容不同时，这条断言才看得出差别
@@ -30,7 +30,7 @@ test "zstd: real zstd -19 frame decodes to the original text" {
 }
 
 ///|
-test "zstd: minimum frame round-trips" {
+async test "zstd: minimum frame round-trips" {
   for text in ["", "a", "abc", zstd_cli_vector_plaintext] {
     let raw = @encoding.encode(UTF8, text)
     let frame = zstd_compress(raw)
@@ -41,7 +41,7 @@ test "zstd: minimum frame round-trips" {
 }
 
 ///|
-test "zstd: long incompressible input round-trips" {
+async test "zstd: long incompressible input round-trips" {
   // 单段帧的窗口就是内容长度，夹具编码器因此只到 255 字节；
   // 这一段要的是「窗口内每个字节都被原样吐出」
   let bytes = FixedArray::make(255, b'\x00')
@@ -53,7 +53,7 @@ test "zstd: long incompressible input round-trips" {
 }
 
 ///|
-test "zstd: a plain gzip stream is rejected with a clear message" {
+async test "zstd: a plain gzip stream is rejected with a clear message" {
   let gzip = gzip_compress(@encoding.encode(UTF8, "not zstd"))
   let error = try zstd_decompress(gzip) catch {
     err => err
@@ -64,7 +64,7 @@ test "zstd: a plain gzip stream is rejected with a clear message" {
 }
 
 ///|
-test "zstd: truncated streams say they are truncated" {
+async test "zstd: truncated streams say they are truncated" {
   let error = try zstd_decompress(b"\x28\xb5\x2f") catch {
     err => err
   } noraise {
@@ -85,7 +85,7 @@ test "zstd: truncated streams say they are truncated" {
 }
 
 ///|
-test "zstd: corrupt payload is reported, not silently accepted" {
+async test "zstd: corrupt payload is reported, not silently accepted" {
   let frame = zstd_compress(@encoding.encode(UTF8, "dive"))
   // 把 raw 块里的一个字节改掉：帧结构还在（解不出错），但内容变了——
   // 这正是「不校验就默默产出错误数据」的入口，断言它至少不会 panic。
@@ -96,7 +96,7 @@ test "zstd: corrupt payload is reported, not silently accepted" {
 }
 
 ///|
-test "zstd: decompress_layer dispatches on the algorithm name" {
+async test "zstd: decompress_layer dispatches on the algorithm name" {
   let raw = @encoding.encode(UTF8, zstd_cli_vector_plaintext)
   let frame = zstd_compress(raw)
   assert_eq(decompress_layer(frame, "zstd"), raw)
@@ -114,7 +114,7 @@ test "zstd: decompress_layer dispatches on the algorithm name" {
 /// 夹具编码器的帧结构：`<magic:f4> <FHD:20> <FCS:len> <块头:3> <数据> <校验和:4>`。
 /// 这里把已知帧逐字节钉住，「解压器能读」和「我们写的是不是 RFC 8878 的帧」
 /// 两件事才算都被证明了。
-test "zstd: the fixture encoder writes RFC 8878 frames" {
+async test "zstd: the fixture encoder writes RFC 8878 frames" {
   // "hello"：5 字节 raw 块，块头 = (5 << 3) | 1 = 41
   let frame = zstd_compress(b"hello")
   assert_eq(frame.length(), 14)
@@ -131,7 +131,7 @@ test "zstd: the fixture encoder writes RFC 8878 frames" {
 
 ///|
 /// RLE 块也单独钉一条：整块同一个字节时，帧里只跟一个字节。
-test "zstd: a run of one byte becomes an RLE block" {
+async test "zstd: a run of one byte becomes an RLE block" {
   let frame = zstd_compress(b"aaaaaa")
   // 块头 = (6 << 3) | (1 << 1) | 1 = 51
   assert_eq(frame[6], b'\x33')

@@ -9,7 +9,7 @@ fn reply_of(status : Int32, location : String?) -> @registry_cli.HttpReply {
 }
 
 ///|
-test "3xx responses count as redirects" {
+async test "3xx responses count as redirects" {
   for status in [301, 302, 303, 307, 308] {
     assert_true(reply_of(status, None).is_redirect())
   }
@@ -20,7 +20,7 @@ test "3xx responses count as redirects" {
 }
 
 ///|
-test "absolute location keeps its own origin" {
+async test "absolute location keeps its own origin" {
   // blob 常被 307 到 CDN：目标 host 与 registry 不同，必须按 Location 走
   let (origin, path) = @registry_cli.resolve_location(
     "https://registry-1.docker.io", "https://production.cloudflare.docker.com/v2/x/blobs/sha256:abc?verify=1",
@@ -33,7 +33,7 @@ test "absolute location keeps its own origin" {
 }
 
 ///|
-test "host-relative location stays on the registry" {
+async test "host-relative location stays on the registry" {
   let (origin, path) = @registry_cli.resolve_location(
     "https://localhost:5000", "/v2/library/nginx/blobs/sha256:abc",
   ) catch {
@@ -45,7 +45,7 @@ test "host-relative location stays on the registry" {
 }
 
 ///|
-test "path-relative location is rejected with a readable message" {
+async test "path-relative location is rejected with a readable message" {
   let error = try
     @registry_cli.resolve_location("https://localhost:5000", "../other")
   catch {
@@ -70,7 +70,7 @@ test "path-relative location is rejected with a readable message" {
 /// 于是 `dive --from-registry` 在真机上必挂（issue #97 的 CI 就是这里红的）。
 ///
 /// 现在正文只可能在 `get` 里读一次，`read_body` 是纯取值，二次取也不会重放连接。
-test "a reply carries its body; reading it twice is harmless" {
+async test "a reply carries its body; reading it twice is harmless" {
   let reply : @registry_cli.HttpReply = {
     status: 200,
     headers: Map([]),
@@ -81,7 +81,7 @@ test "a reply carries its body; reading it twice is harmless" {
 }
 
 ///|
-test "show of a reply keeps header lookup case-insensitive" {
+async test "show of a reply keeps header lookup case-insensitive" {
   let headers : Map[String, String] = Map([("content-type", "application/json")])
   let reply : @registry_cli.HttpReply = { status: 200, headers, body: b"", }
   assert_eq(reply.header("Content-Type"), Some("application/json"))

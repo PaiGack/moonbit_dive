@@ -132,7 +132,7 @@ async test "cli backend rejects an empty save output" {
 
 ///|
 /// save 的参数形态随工具不同：podman 必须显式要 docker-archive 格式。
-test "save and inspect arguments differ per tool" {
+async test "save and inspect arguments differ per tool" {
   assert_eq(
     @docker_cli.save_args(@docker_cli.CliTool::Docker, "nginx:latest"),
     ["save", "nginx:latest"],
@@ -237,7 +237,7 @@ async test "spawn retry uses a fresh pipe pair and keeps the output" {
 
 ///|
 /// `pull` 的参数形态：镜像引用是唯一的位置参数，三个工具没有差异。
-test "cli pull takes just the reference" {
+async test "cli pull takes just the reference" {
   assert_eq(@docker_cli.pull_args("nginx:latest"), ["pull", "nginx:latest"])
   assert_eq(@docker_cli.pull_args("host:5000/app:1.2"), [
     "pull", "host:5000/app:1.2",

@@ -601,7 +601,7 @@ fn describe_stage(options : Options, stage : @docker_cli.FetchStage) -> Unit {
 
 ///|
 /// 跑一遍完整链路，返回退出码。
-fn run(
+async fn run(
   options : Options,
   source : @image_ci.ImageSource,
 ) -> Int32 raise CommandError {
@@ -672,7 +672,7 @@ fn write_report_output(options : Options, text : String) -> Unit {
 /// `--aggregate` 换的是**比较区间**而不是数据源（issue #69）：树仍是第 n 层的，
 /// 但 diff 换成「第 0 层之前到现在这一整段的累积」，与 TUI 的 `Ctrl+A` 同义。
 /// `removed` 不在树上，所以单独列一段——它是「这段区间少了什么」的唯一出口。
-fn run_layer_view(
+async fn run_layer_view(
   options : Options,
   layers : Array[BytesView],
 ) -> Int32 raise CommandError {
@@ -793,7 +793,7 @@ fn layer_view_to_json(
 /// 数字全部来自 `EfficiencyReport.paths`（即 efficiency score 的同一批原料），
 /// 这里只负责渲染与截断。与 `--layer` 一样返回 `exit_ok`：
 /// 这是一张观察用的表，不是判定。
-fn run_efficiency_view(
+async fn run_efficiency_view(
   options : Options,
   layers : Array[BytesView],
 ) -> Int32 raise CommandError {

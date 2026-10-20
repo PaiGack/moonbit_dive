@@ -201,25 +201,43 @@ let code_length_order : ReadOnlyArray[Int32] = [
 ]
 
 ///|
-/// 解压一段 raw DEFLATE 数据；`stop_at_end` 为 false 时忽略剩余输入。
-pub fn inflate(data : BytesView) -> Bytes raise DecompressError {
+/// 解压一段 raw DEFLATE 数据，整段返回。
+///
+/// 只给「结果本来就不大」的场合用（配置、夹具、测试）。
+/// 镜像层动辄几十上百 MB，解压出来再攒成一块既慢又占两倍内存，
+/// 那条路请用 `inflate_to` 直接流给下游。
+pub async fn inflate(data : BytesView) -> Bytes raise DecompressError {
+  let sink = BytesSink::new()
+  inflate_to(data, sink)
+  sink.to_bytes()
+}
+
+///|
+/// 解一段 raw DEFLATE 数据，边解边写给 `sink`。
+///
+/// 输出不驻留：这条路径只留一个 32KiB 的回拷窗口，
+/// 内存占用与解压总量无关（issue #97 里解一层的 700MB 就是死在这上面）。
+pub async fn inflate_to(
+  data : BytesView,
+  sink : &@io.Writer,
+) -> Unit raise DecompressError {
   let reader = BitReader::new(data)
-  let output = @buffer.Buffer()
+  let window = InflateWindow::new(sink)
   while true {
     let final_block = reader.read_bits(1) == 1
     let block_type = reader.read_bits(2)
     match block_type {
-      0 => inflate_stored(reader, output)
+      0 => inflate_stored(reader, window)
       1 =>
         inflate_block(
           reader,
-          output,
+          window,
           fixed_literal_table(),
           fixed_distance_table(),
         )
       2 => {
         let (literal, distance) = read_dynamic_tables(reader)
-        inflate_block(reader, output, literal, distance)
+        inflate_block(reader, window, literal, distance)
       }
       _ => raise Gzip("reserved DEFLATE block type")
     }
@@ -227,14 +245,138 @@ pub fn inflate(data : BytesView) -> Bytes raise DecompressError {
       break
     }
   }
-  output.to_bytes()
+  window.flush() catch {
+    err => raise Gzip(err.to_string())
+  }
+}
+
+///|
+/// 一个 DEFLATE 输出窗口：攒到一批就整块下发，同时留着最近 32KiB 供回拷。
+///
+/// 两件事共用同一块缓冲，因为它们描述的是同一段字节：回拷要能读到
+/// 「刚写下的字节」，而那些字节正好还没发给下游。下发时只放掉前 32KiB、
+/// 尾巴原地留着，于是「最近 32KiB」永远都在缓冲里，回拷不必绕圈。
+pub struct InflateWindow {
+  buffer : FixedArray[Byte]
+  /// `[0, length)` 是还没下发的字节，恒小于缓冲长度
+  mut length : Int32
+  /// 这段缓冲在整条输出流里的起点；回拷只能回退到它
+  mut produced : Int64
+  sink : &@io.Writer
+}
+
+///|
+/// 攒批粒度：DEFLATE 的距离上限就是 32KiB，缓冲留两倍做「留下的尾巴 + 新写的」。
+let inflate_window_size : Int32 = 32768
+
+///|
+fn InflateWindow::new(sink : &@io.Writer) -> InflateWindow {
+  {
+    buffer: FixedArray::make(inflate_window_size * 2, b'\x00'),
+    length: 0,
+    produced: 0L,
+    sink,
+  }
+}
+
+///|
+/// 缓冲里攒满就下发前半段，后半段搬回开头。
+async fn InflateWindow::drain(self : InflateWindow) -> Unit {
+  if self.length < self.buffer.length() {
+    return
+  }
+  let head = self.buffer.unsafe_reinterpret_as_bytes()[:inflate_window_size]
+  self.sink.write(head)
+  let tail = self.buffer.unsafe_reinterpret_as_bytes()[inflate_window_size:]
+  self.buffer.blit_from_bytesview(0, tail)
+  self.length = self.length - inflate_window_size
+  self.produced = self.produced + inflate_window_size.to_int64()
+}
+
+///|
+/// 收尾：把攒着的全下发。
+async fn InflateWindow::flush(self : InflateWindow) -> Unit {
+  if self.length > 0 {
+    self.sink.write(self.buffer.unsafe_reinterpret_as_bytes()[:self.length])
+    self.produced = self.produced + self.length.to_int64()
+    self.length = 0
+  }
+}
+
+///|
+/// 写一个字节。
+async fn InflateWindow::write_byte(
+  self : InflateWindow,
+  byte : Byte,
+) -> Unit raise DecompressError {
+  self.drain() catch {
+    err => raise Gzip(err.to_string())
+  }
+  self.buffer[self.length] = byte
+  self.length = self.length + 1
+}
+
+///|
+/// 写一段字节（stored 块用）：能塞多少塞多少，塞满了边下发边继续。
+async fn InflateWindow::write_bytes(
+  self : InflateWindow,
+  data : BytesView,
+) -> Unit raise DecompressError {
+  let mut offset = 0
+  while offset < data.length() {
+    self.drain() catch {
+      err => raise Gzip(err.to_string())
+    }
+    let room = self.buffer.length() - self.length
+    let take = if data.length() - offset < room {
+      data.length() - offset
+    } else {
+      room
+    }
+    self.buffer.blit_from_bytesview(self.length, data[offset:offset + take])
+    self.length = self.length + take
+    offset = offset + take
+  }
+}
+
+///|
+/// 回拷 `length` 个字节，源位置距当前位置 `back` 字节。
+///
+/// `back < length` 是常见情况（`abcabcabc...`）：后写的字节立刻成为后续读取的源，
+/// 所以必须逐字节推进，不能整段复制。
+///
+/// 距离可以越过当前攒着的范围（跨过已经下发的字节），但不能越过整条输出流的开头——
+/// 那说明压缩流本身是坏的。缓冲里留着的尾巴保证「越过」这一支读得到。
+async fn InflateWindow::copy_from(
+  self : InflateWindow,
+  back : Int32,
+  length : Int32,
+) -> Unit raise DecompressError {
+  let back64 = back.to_int64()
+  if back64 <= 0 || back64 > self.produced + self.length.to_int64() {
+    raise Gzip("distance points before the start of the output")
+  }
+  for _ in 0..<length {
+    let source = self.length.to_int64() - back64
+    // 下发时留下的尾巴让 `source` 落不进负区：`produced` 增长与
+    // `length` 回落是同步的，回拷最多回退 32KiB，而缓冲正好留了 32KiB 尾巴
+    if source < 0 {
+      raise Gzip("distance reaches past the retained window")
+    }
+    let byte = self.buffer[source.to_int()]
+    self.drain() catch {
+      err => raise Gzip(err.to_string())
+    }
+    self.buffer[self.length] = byte
+    self.length = self.length + 1
+  }
 }
 
 ///|
 /// stored（未压缩）块：先对齐到字节边界，再读 LEN/NLEN 与原始数据。
-fn inflate_stored(
+async fn inflate_stored(
   reader : BitReader,
-  output : @buffer.Buffer,
+  window : InflateWindow,
 ) -> Unit raise DecompressError {
   // LEN/NLEN 是对齐后的 2 字节小端字段，不能按位读，否则会把字节读串
   let header = reader.read_bytes(4)
@@ -243,7 +385,7 @@ fn inflate_stored(
   if (length ^ complement) != 0xFFFF {
     raise Gzip("stored block length check failed")
   }
-  output.write_bytes(reader.read_bytes(length))
+  window.write_bytes(reader.read_bytes(length))
 }
 
 ///|
@@ -316,16 +458,16 @@ fn read_dynamic_tables(
 
 ///|
 /// 用 literal/distance 码表解一个 Huffman 压缩块，遇结束符 256 返回。
-fn inflate_block(
+async fn inflate_block(
   reader : BitReader,
-  output : @buffer.Buffer,
+  window : InflateWindow,
   literal : HuffmanTable,
   distance : HuffmanTable,
 ) -> Unit raise DecompressError {
   while true {
     let symbol = reader.read_symbol(literal)
     if symbol < 256 {
-      output.write_byte(symbol.to_byte())
+      window.write_byte(symbol.to_byte())
       continue
     }
     if symbol == 256 {
@@ -343,53 +485,7 @@ fn inflate_block(
     }
     let back = distance_base[distance_symbol] +
       reader.read_bits(distance_extra[distance_symbol])
-    copy_from_window(output, back, length)
-  }
-}
-
-///|
-/// 从已解出的输出里按距离回拷 `length` 个字节。
-///
-/// 距离可能小于长度（重叠拷贝，`back < length`），因此这**不是**一次整段复制：
-/// 后写的字节会立刻成为后续读取的源。逐字节推进是语义要求。
-///
-/// 性能上只跟「输出总量的常数倍」成正比，不能是平方：
-/// 原先每读一个字节都调一次 `output.to_bytes()`，而 `to_bytes` 会把**整段**
-/// 已解出的数据复制一份——于是回拷一次是 O(输出长度)，解一整层是 O(N²)。
-/// 真实镜像的一层动辄几十 MB，慢到看起来像挂死（issue #42 的现场）。
-///
-/// 这里改成读 `Buffer::view()`——它是与缓冲区共享存储的零拷贝视图，
-/// 长度等于当前已写字节数。缓冲区在写入过程中可能扩容，视图因此会失效
-/// （旧视图的长度停在扩容前、覆盖不到新写的字节）；
-/// 所以每次取源字节前确认视图覆盖得到 `source`，覆盖不到就重新取一次视图。
-/// 重新取是 O(1)，于是整段解压回到 O(输出总量)。
-fn copy_from_window(
-  output : @buffer.Buffer,
-  back : Int32,
-  length : Int32,
-) -> Unit raise DecompressError {
-  let produced = output.length()
-  if back <= 0 || back > produced {
-    raise Gzip("distance points before the start of the output")
-  }
-  // 逐字节推进：`back < length` 时源区间会盖到正在写的位置，
-  // 必须一边写一边读，不能整段复制。
-  //
-  // 读回已写内容用 `Buffer::view()`（与缓冲区共享存储的零拷贝视图，O(1)），
-  // **不要**用 `to_bytes()`——它是整体拷贝，每写一个字节都拷一遍，
-  // 让一次解压退化成 O(n²)：真实镜像的 80MB 层会「跑起来没有任何输出」，
-  // 看上去就是挂死。
-  //
-  // 视图在缓冲区扩容后会失效（长度停在扩容前、覆盖不到新写的字节），
-  // 因此先取一次、按需重取：每次重取是 O(1)，于是整段回拷是 O(length)。
-  // 这也正是重叠拷贝的要求——刚写下的字节要能立刻被后面的读取看到。
-  let mut view : ArrayView[Byte] = output.view()
-  for index = 0; index < length; index = index + 1 {
-    let source = produced - back + index
-    if source >= view.length() {
-      view = output.view()
-    }
-    output.write_byte(view[source])
+    window.copy_from(back, length)
   }
 }
 
@@ -397,7 +493,25 @@ fn copy_from_window(
 /// gzip 解压：解析头、inflate、跳过 CRC，最后校验 CRC32 与 ISIZE。
 ///
 /// CRC 校验放在最后统一做，因此这里只需要单次扫描就能拿到原始数据。
-pub fn gzip_decompress(data : BytesView) -> Bytes raise DecompressError {
+pub async fn gzip_decompress(data : BytesView) -> Bytes raise DecompressError {
+  let sink = BytesSink::new()
+  gzip_decompress_to(data, sink)
+  sink.to_bytes()
+}
+
+///|
+/// gzip 解压，边解边写给 `sink`。
+///
+/// 与 `gzip_decompress` 的差别只有一条：解出来的字节不攒成一块。
+/// 校验（ISIZE / CRC32）在最后统一做，所以调用方要在本函数返回之后
+/// 才把 `sink` 里的内容当真——中途出错时已经写出去的部分是不完整的。
+///
+/// 这一层就是 issue #97 的现场：700MB 的层按老写法要整段落在内存里再打包，
+/// 而打包本身又整段攒一遍，两倍的内存直接把缓冲区顶爆。
+pub async fn gzip_decompress_to(
+  data : BytesView,
+  sink : &@io.Writer,
+) -> Unit raise DecompressError {
   if data.length() < 18 {
     raise Gzip("stream is too short to be a gzip member")
   }
@@ -432,17 +546,71 @@ pub fn gzip_decompress(data : BytesView) -> Bytes raise DecompressError {
     raise Gzip("gzip header runs past the end of the stream")
   }
   let deflated = data[offset:data.length() - 8]
-  let raw = inflate(deflated)
+  // 边解边过一遍 CRC：输出不落盘，校验也就不必再扫第二遍
+  let tee = Crc32Tee::new(sink)
+  inflate_to(deflated, tee)
+  tee.finish()
   let trailer = data.length() - 8
   let expected_crc = read_le_uint32(data, trailer)
   let expected_size = read_le_uint32(data, trailer + 4)
-  if raw.length().reinterpret_as_uint() != expected_size {
+  if (tee.total & 0xFFFFFFFFL).to_int().reinterpret_as_uint() != expected_size {
     raise Gzip("uncompressed size mismatch")
   }
-  if crc32(raw) != expected_crc {
+  if tee.checksum() != expected_crc {
     raise Gzip("CRC32 mismatch")
   }
-  raw
+}
+
+///|
+/// 一个「转发给下游 + 顺手算 CRC32 和长度」的写入器。
+///
+/// gzip 的 trailer 在流的最后，而正文已经流走了；要么再扫一遍（大层上不可能），
+/// 要么在写出去的同时把校验位算出来。这里选后者。
+pub struct Crc32Tee {
+  sink : &@io.Writer
+  mut crc : UInt32
+  /// 已写出的字节数；gzip 的 ISIZE 只有 32 位，比较时取低 32 位
+  mut total : Int64
+}
+
+///|
+fn Crc32Tee::new(sink : &@io.Writer) -> Crc32Tee {
+  { sink, crc: 0xFFFFFFFFU, total: 0L, }
+}
+
+///|
+pub impl @io.Writer for Crc32Tee with fn write_once(
+  self : Crc32Tee,
+  buf : Bytes,
+  offset~ : Int32,
+  len~ : Int32,
+) -> Int32 {
+  let data = buf[offset:offset + len]
+  let mut value = self.crc
+  for index = 0; index < data.length(); index = index + 1 {
+    value = crc32_table[(value ^ data[index].to_int().reinterpret_as_uint()).reinterpret_as_int() &
+      0xFF] ^
+      (value >> 8)
+  }
+  self.crc = value
+  self.total = self.total + data.length().to_int64()
+  self.sink.write(data)
+  len
+}
+
+///|
+pub extend Crc32Tee with @io.Writer::{write_once, write, write_reader}
+
+///|
+/// 收尾：把 CRC 取反成最终值（gzip trailer 里存的是取反后的结果）。
+fn Crc32Tee::finish(self : Crc32Tee) -> Unit {
+  self.crc = self.crc ^ 0xFFFFFFFFU
+}
+
+///|
+/// 当前 CRC32；`finish` 之后才是最终值。
+fn Crc32Tee::checksum(self : Crc32Tee) -> UInt32 {
+  self.crc
 }
 
 ///|
@@ -512,3 +680,37 @@ fn fixed_array_to_array(values : FixedArray[Int32]) -> Array[Int32] {
   }
   result
 }
+
+///|
+/// 一个纯粹的「攒字节」写入器：给 `inflate` / `gzip_decompress` 这种
+/// 「整段返回」的入口当落地端。
+///
+/// `@buffer.Buffer` 现在没有 `io.Writer` 实现（上游还在过渡），
+/// 而流式解压必须有个写入器出口，所以这里自己实现一份最小的。
+pub struct BytesSink {
+  buffer : @buffer.Buffer
+}
+
+///|
+fn BytesSink::new() -> BytesSink {
+  { buffer: @buffer.Buffer(size_hint=64 * 1024), }
+}
+
+///|
+fn BytesSink::to_bytes(self : BytesSink) -> Bytes {
+  self.buffer.to_bytes()
+}
+
+///|
+pub impl @io.Writer for BytesSink with fn write_once(
+  self : BytesSink,
+  buf : Bytes,
+  offset~ : Int32,
+  len~ : Int32,
+) -> Int32 {
+  self.buffer.write_bytes(buf[offset:offset + len])
+  len
+}
+
+///|
+pub extend BytesSink with @io.Writer::{write_once, write, write_reader}

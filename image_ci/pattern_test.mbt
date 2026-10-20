@@ -1,6 +1,6 @@
 ///|
 /// 字面量模式：整段匹配，不做前缀。
-test "literal pattern" {
+async test "literal pattern" {
   let pattern = PathPattern::compile("/usr/bin/sh")
   assert_true(pattern.matches("/usr/bin/sh"))
   assert_false(pattern.matches("/usr/bin"))
@@ -10,7 +10,7 @@ test "literal pattern" {
 
 ///|
 /// 相对写法会被补上前导 `/`。
-test "relative pattern" {
+async test "relative pattern" {
   let pattern = PathPattern::compile("usr/bin")
   assert_true(pattern.matches("/usr/bin"))
   assert_eq(pattern.raw, "/usr/bin")
@@ -18,7 +18,7 @@ test "relative pattern" {
 
 ///|
 /// `**` 匹配任意多段（含零段）。
-test "double star" {
+async test "double star" {
   let pattern = PathPattern::compile("/app/node_modules/**")
   assert_true(pattern.matches("/app/node_modules"))
   assert_true(pattern.matches("/app/node_modules/react/index.js"))
@@ -33,7 +33,7 @@ test "double star" {
 
 ///|
 /// `*` 只在单段内通配。
-test "single star" {
+async test "single star" {
   let pattern = PathPattern::compile("/app/*.log")
   assert_true(pattern.matches("/app/build.log"))
   assert_true(pattern.matches("/app/.log"))
@@ -50,7 +50,7 @@ test "single star" {
 
 ///|
 /// 以 `/` 结尾的模式按子树匹配。
-test "subtree pattern" {
+async test "subtree pattern" {
   let pattern = PathPattern::compile("/var/log/")
   assert_true(pattern.matches("/var/log/syslog"))
   assert_true(pattern.matches("/var/log/nginx/access.log"))
@@ -58,7 +58,7 @@ test "subtree pattern" {
 
 ///|
 /// 目录匹配：过滤器把整棵树当路径看。
-test "filter render and covers" {
+async test "filter render and covers" {
   let recursive = PathFilter::new(PathPattern::compile("/usr/lib/**"))
   assert_true(recursive.covers("/usr/lib/libc.so"))
   assert_true(recursive.covers("/usr/lib/x86_64/thing.so"))

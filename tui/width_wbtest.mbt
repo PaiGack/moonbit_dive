@@ -1,6 +1,6 @@
 ///|
 /// 各分支都要走到，否则 0 宽 / 宽字符 / 普通字符的分类回归时看不出来。
-test "char_width classifies control, wide and normal" {
+async test "char_width classifies control, wide and normal" {
   // NUL 算零宽
   assert_eq(char_width('\u{0}'), 0)
   // 组合记号零宽
@@ -17,7 +17,7 @@ test "char_width classifies control, wide and normal" {
 
 ///|
 /// `display_width` 把各字符的宽度加起来。
-test "display_width sums per-char widths" {
+async test "display_width sums per-char widths" {
   assert_eq(display_width(""), 0)
   assert_eq(display_width("abc"), 3)
   assert_eq(display_width("中a"), 3)
@@ -26,7 +26,7 @@ test "display_width sums per-char widths" {
 
 ///|
 /// cluster 划分：ZWJ 序列、组合记号、旗帜、普通字各自成簇。
-test "graphemes splits zwj sequences and flags" {
+async test "graphemes splits zwj sequences and flags" {
   assert_eq(graphemes("👨‍👩‍👧‍👦").count(), 1)
   assert_eq(graphemes("👨‍🚀👩‍🚀").count(), 2)
   assert_eq(graphemes("a\u{0301}b").count(), 2)
@@ -36,7 +36,7 @@ test "graphemes splits zwj sequences and flags" {
 
 ///|
 /// 单个 cluster 的宽度口径。
-test "cluster_width picks the first visible codepoint" {
+async test "cluster_width picks the first visible codepoint" {
   assert_eq(cluster_width("👨‍🚀"), 2)
   assert_eq(cluster_width("a\u{0301}"), 1)
   assert_eq(cluster_width("\u{0301}"), 0)

@@ -375,7 +375,7 @@ pub fn make_opaque(tree : FileTree, directory : String, layer : Int32) -> Unit {
 
 ///|
 /// 按压缩方式解压一层的数据。`algorithm` 取 `"none"` / `"gzip"` / `"zstd"`。
-pub fn decompress_layer(
+pub async fn decompress_layer(
   data : BytesView,
   algorithm : String,
 ) -> Bytes raise DecompressError {
@@ -388,8 +388,44 @@ pub fn decompress_layer(
 }
 
 ///|
+/// 按压缩方式解压一层，把结果写进 `sink`，不攒成一块。
+///
+/// `docker save` 这条链路要的正是这个形态：层解出来是几十上百 MB 的 tar，
+/// 攒成 `Bytes` 再打包，峰值内存等于镜像解压后的体积。
+///
+/// zstd 这一支目前仍是「整段解压再写出」——上游解码器只给了
+/// `BytesView -> Bytes` 的接口。它的输出上限写在 `zstd_max_output` 里，
+/// 不会像 gzip 那样无限膨胀；等解码器公开流式入口再换成真流式。
+pub async fn decompress_layer_to(
+  data : BytesView,
+  algorithm : String,
+  sink : &@io.Writer,
+) -> Unit raise DecompressError {
+  match algorithm {
+    "" | "none" => write_or_die(sink, data)
+    "gzip" => gzip_decompress_to(data, sink)
+    "zstd" => write_or_die(sink, zstd_decompress(data))
+    _ => raise Unsupported(algorithm)
+  }
+}
+
+///|
+/// 写 `sink`，把写盘的错误折成解压错误的 `Io` 一支。
+///
+/// 解压产出往哪儿写是调用方决定的（文件、缓冲区、另一个流），
+/// 写失败不该被解压器当成「压缩流坏了」，所以文案要区分开。
+async fn write_or_die(
+  sink : &@io.Writer,
+  data : BytesView,
+) -> Unit raise DecompressError {
+  sink.write(data) catch {
+    err => raise Write(err.to_string())
+  }
+}
+
+///|
 /// 解压并按 media type 推断压缩方式后应用到树上。
-pub fn apply_layer_with_media_type(
+pub async fn apply_layer_with_media_type(
   tree : FileTree,
   data : BytesView,
   media_type : String,

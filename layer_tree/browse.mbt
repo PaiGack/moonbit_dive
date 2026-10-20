@@ -67,7 +67,7 @@ pub extend LayerView with Show::{to_string, output}
 ///
 /// `layers` 与 `media_types` 的口径同 `apply_layers_with_diffs`；
 /// 返回的 `raws` 与 `layers` 一一对应。**每层只解压一次**。
-pub fn decompress_layers(
+pub async fn decompress_layers(
   layers : Array[BytesView],
   media_types~ : Array[String] = [],
 ) -> DecompressedLayers raise LayerError {
@@ -92,7 +92,7 @@ pub fn decompress_layers(
 ///
 /// `layers` 与 `media_types` 的口径同 `apply_layers_with_diffs`。
 /// 返回数组与层一一对应，第 `i` 个元素的 `tree` 是「应用完第 i 层」的样子。
-pub fn browse_layers(
+pub async fn browse_layers(
   layers : Array[BytesView],
   media_types~ : Array[String] = [],
 ) -> Array[LayerView] raise LayerError {

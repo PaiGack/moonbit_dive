@@ -1,20 +1,20 @@
 ///|
 /// 焦点在两个面板之间正向循环。
-test "focus cycles forward through the focusable panes" {
+async test "focus cycles forward through the focusable panes" {
   assert_eq(Focus::Tree.next(), Focus::Detail)
   assert_eq(Focus::Detail.next(), Focus::Tree)
 }
 
 ///|
 /// 反向循环。
-test "focus cycles backward" {
+async test "focus cycles backward" {
   assert_eq(Focus::Tree.prev(), Focus::Detail)
   assert_eq(Focus::Detail.prev(), Focus::Tree)
 }
 
 ///|
 /// 焦点顺序里只有会接交互的面板：状态行 / 帮助浮层不参与。
-test "focus order excludes read-only surfaces" {
+async test "focus order excludes read-only surfaces" {
   let order = focus_order()
   assert_eq(order.length(), 2)
   assert_true(order.contains(Focus::Tree))
@@ -24,7 +24,7 @@ test "focus order excludes read-only surfaces" {
 ///|
 /// 窄屏下详情栏没有位置，但焦点留在它身上不算错——
 /// 拉到足够宽之后面板会回来，焦点不该被硬拽走。
-test "focus survives losing the detail pane on a narrow terminal" {
+async test "focus survives losing the detail pane on a narrow terminal" {
   let narrow = Layout::compute(30, 20)
   assert_false(focus_is_visible(Focus::Detail, narrow))
   assert_true(focus_is_visible(Focus::Tree, narrow))
@@ -34,7 +34,7 @@ test "focus survives losing the detail pane on a narrow terminal" {
 
 ///|
 /// 焦点映射到面板 id，渲染层据此决定谁的标题高亮。
-test "focus maps to a pane id" {
+async test "focus maps to a pane id" {
   assert_eq(focus_pane_id(Focus::Tree), PaneId::Tree)
   assert_eq(focus_pane_id(Focus::Detail), PaneId::Detail)
 }

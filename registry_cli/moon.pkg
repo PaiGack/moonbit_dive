@@ -3,10 +3,13 @@ import {
   "PaiGack/dive/oci_spec",
   "moonbitlang/async/fs",
   "moonbitlang/async/http",
+  "moonbitlang/async/io",
   "moonbitlang/async/tls",
+  "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
   "moonbitlang/core/env",
   "moonbitlang/core/json",
+  "moonbitlang/x/crypto",
   "moonbitlang/x/encoding",
 }
 

@@ -4,7 +4,7 @@
 ///
 /// 这是 issue #17 的核心验收：CLI 后端产出的归档必须能直接被既有的
 /// P1–P4 链路吃下，输入契约不变。
-test "docker archive feeds P2 layer stacking and P3 analysis" {
+async test "docker archive feeds P2 layer stacking and P3 analysis" {
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
     @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),

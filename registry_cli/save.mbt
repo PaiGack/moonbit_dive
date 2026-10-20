@@ -104,16 +104,15 @@ pub async fn save_image(
     request.on_progress,
     Packing(note="packing the archive (decompress + tar)"),
   )
-  let bundle = package_image(image, format=request.format)
+  let written = write_image(image, request.output, format=request.format)
   notify_option(
     request.on_progress,
-    Writing(path=request.output, bytes=bundle.total_size().to_int64()),
+    Writing(path=request.output, bytes=written.bytes),
   )
-  let written = write_bundle(bundle, request.output)
   {
     path: written.path,
     format: request.format,
-    bytes: written.bytes,
+    bytes: written.bytes.to_int(),
     layers: image.layers.length(),
     platform: describe_platform(platform),
   }
@@ -170,63 +169,22 @@ fn describe_platform(platform : @oci_spec.Platform) -> String {
 }
 
 ///|
-/// 落盘结果。
-priv struct WrittenArchive {
+/// 落盘结果：写到哪、写了多少字节。
+pub(all) struct WrittenArchive {
   path : String
-  bytes : Int32
-}
+  bytes : Int64
+} derive(Eq, Debug)
 
 ///|
-/// 把产物写出去：
-///
-/// - docker-archive：写**一个 tar 文件**，路径就是 `request.output`
-/// - OCI layout：写**一个目录**，目录里按 `blobs/sha256/<hex>` 摆开
-///
-/// 目录已存在且非空就直接拒绝——半覆盖一个 layout 会留下
-/// 「index.json 指着不存在的 blob」这种坏状态，修起来比重新拉一遍麻烦。
-async fn write_bundle(
-  bundle : ArchiveBundle,
-  output : String,
-) -> WrittenArchive raise RegistryError {
-  match bundle.format {
-    DockerArchive => {
-      let tar = bundle.files[0].1
-      @fs.write_file(output, tar) catch {
-        err => raise Io("\{output}: \{err}")
-      }
-      { path: output, bytes: tar.length(), }
-    }
-    OciLayout => {
-      let exists = @fs.exists(output) catch {
-        err => raise Io("\{output}: \{err}")
-      }
-      if exists {
-        let entries = @fs.readdir(output) catch {
-          err => raise Io("\{output}: \{err}")
-        }
-        if !entries.is_empty() {
-          raise Io(
-            "\{output} already exists and is not empty; pass a fresh directory for --format oci",
-          )
-        }
-      } else {
-        @fs.mkdir(output, recursive=true) catch {
-          err => raise Io("\{output}: \{err}")
-        }
-      }
-      @fs.mkdir("\{output}/blobs/sha256", recursive=true) catch {
-        err => raise Io("\{output}/blobs/sha256: \{err}")
-      }
-      let mut bytes = 0
-      for entry in bundle.files {
-        let (name, data) = entry
-        let destination = "\{output}/\{name}"
-        @fs.write_file(destination, data) catch {
-          err => raise Io("\{destination}: \{err}")
-        }
-        bytes = bytes + data.length()
-      }
-      { path: output, bytes, }
-    }
+pub extend WrittenArchive with Eq::{equal, not_equal}
+
+///|
+pub extend WrittenArchive with @debug.Debug::{to_repr}
+
+///|
+/// 打开输出文件（截断写）。
+async fn open_output(path : String) -> @fs.File raise RegistryError {
+  @fs.create(path) catch {
+    err => raise Io("\{path}: \{err}")
   }
 }

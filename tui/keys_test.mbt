@@ -1,7 +1,7 @@
 ///|
 /// 造一个两层的逐层视图（与 `app_wbtest.mbt` 的同名工具同形，
 /// 但黑盒测试里看不到内部包，所以各自留一份）。
-fn two_layers() -> Array[@layer_tree.LayerView] {
+async fn two_layers() -> Array[@layer_tree.LayerView] {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("etc"),
     @layer_tree.TarEntrySpec::File("etc/hosts", "a"),
@@ -27,7 +27,7 @@ fn key(
 
 ///|
 /// 核心键位映射。
-test "action_of_key maps navigation keys" {
+async test "action_of_key maps navigation keys" {
   assert_eq(action_of_key(key(@input.KeyCode::Up)), Action::MoveUp)
   assert_eq(action_of_key(key(@input.KeyCode::Down)), Action::MoveDown)
   assert_eq(action_of_key(key(@input.KeyCode::Char('j'))), Action::MoveDown)
@@ -46,7 +46,7 @@ test "action_of_key maps navigation keys" {
 
 ///|
 /// 展开/收起/换层/退出。
-test "action_of_key maps fold and layer keys" {
+async test "action_of_key maps fold and layer keys" {
   assert_eq(action_of_key(key(@input.KeyCode::Left)), Action::Collapse)
   assert_eq(action_of_key(key(@input.KeyCode::Char('h'))), Action::Collapse)
   assert_eq(action_of_key(key(@input.KeyCode::Right)), Action::Expand)
@@ -70,7 +70,7 @@ test "action_of_key maps fold and layer keys" {
 ///
 /// `ctrl+space` 在终端里是 NUL，tty 把它解成 `Char(' ') + ctrl`（真终端实测，
 /// 不是「按 `Char('\u{0}')` 推导」）——这里就按那个形态钉住。
-test "action_of_key maps the ctrl chords" {
+async test "action_of_key maps the ctrl chords" {
   assert_eq(
     action_of_key(key(@input.KeyCode::Char('c'), ctrl=true)),
     Action::Quit,
@@ -107,7 +107,7 @@ test "action_of_key maps the ctrl chords" {
 
 ///|
 /// `Ctrl+Space` 全折叠 / 再按一次全展开，光标行被折掉时落到最近的祖先。
-test "apply_action toggles collapse all" {
+async test "apply_action toggles collapse all" {
   let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
   assert_false(apply_action(Action::ToggleCollapseAll, state))
   assert_true(state.view.collapsed.contains("/etc"))
@@ -118,7 +118,7 @@ test "apply_action toggles collapse all" {
 
 ///|
 /// `Ctrl+U` 只看改写过的行，再按一次撤销（`set_filter` 自带反转）。
-test "apply_action toggles the modified-only filter" {
+async test "apply_action toggles the modified-only filter" {
   let state = AppState::new(two_layers(), None, "demo", initial_layer=1)
   let total = state.view.visible.length()
   assert_false(apply_action(Action::FilterModified, state))
@@ -136,7 +136,7 @@ test "apply_action toggles the modified-only filter" {
 
 ///|
 /// 没绑定的键给 None，不会误触。
-test "action_of_key ignores unbound keys" {
+async test "action_of_key ignores unbound keys" {
   assert_eq(action_of_key(key(@input.KeyCode::Char('z'))), Action::None)
   assert_eq(action_of_key(key(@input.KeyCode::F5)), Action::None)
   // Ctrl + 非 c 不响应，避免和终端自己的快捷键打架
@@ -148,7 +148,7 @@ test "action_of_key ignores unbound keys" {
 
 ///|
 /// 松开键不响应：否则同一颗键会被算两次。
-test "action_of_key ignores key release" {
+async test "action_of_key ignores key release" {
   let release = @input.KeyEvent::new(
     @input.KeyCode::Down,
     kind=@input.KeyEventKind::Release,
@@ -158,7 +158,7 @@ test "action_of_key ignores key release" {
 
 ///|
 /// 重复键（长按）按按下处理。
-test "action_of_key accepts key repeat" {
+async test "action_of_key accepts key repeat" {
   let repeat = @input.KeyEvent::new(
     @input.KeyCode::Down,
     kind=@input.KeyEventKind::Repeat,
@@ -168,7 +168,7 @@ test "action_of_key accepts key repeat" {
 
 ///|
 /// 焦点键与帮助键与树无关：Tab 切焦点、? 开关帮助面板。
-test "action_of_key maps focus and help keys" {
+async test "action_of_key maps focus and help keys" {
   assert_eq(action_of_key(key(@input.KeyCode::Tab)), Action::NextFocus)
   assert_eq(
     action_of_key(key(@input.KeyCode::Tab, shift=true)),
@@ -179,7 +179,7 @@ test "action_of_key maps focus and help keys" {
 
 ///|
 /// 焦点面板上动作走详情滚动：移动类动作直接反映在滚动偏移上。
-test "apply_action scrolls the detail pane when it is focused" {
+async test "apply_action scrolls the detail pane when it is focused" {
   let state = AppState::new(two_layers(), None, "demo")
   state.focus = Focus::Detail
   // 详情内容 10 行，窗口 3 行
@@ -197,7 +197,7 @@ test "apply_action scrolls the detail pane when it is focused" {
 
 ///|
 /// 切焦点与帮助开关都不退出；帮助展开时走行动作被忽略（浮层内容固定）。
-test "apply_action handles focus switching and the help overlay" {
+async test "apply_action handles focus switching and the help overlay" {
   let state = AppState::new([], None, "demo")
   assert_false(apply_action(Action::NextFocus, state))
   assert_eq(state.focus, Focus::Detail)
@@ -217,7 +217,7 @@ test "apply_action handles focus switching and the help overlay" {
 
 ///|
 /// 动作施加到视图上：移动类动作直接反映在光标上，退出返回 true。
-test "apply_action drives the view and signals quit" {
+async test "apply_action drives the view and signals quit" {
   let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
   state.view.move_to_home()
   state.view.page_height = 10
@@ -230,7 +230,7 @@ test "apply_action drives the view and signals quit" {
 
 ///|
 /// 换层动作只在合法范围内生效，且不退出。
-test "apply_action clamps layer switching" {
+async test "apply_action clamps layer switching" {
   let views = two_layers()
   let state = AppState::new(views, None, "demo", initial_layer=1)
   assert_false(apply_action(Action::PrevLayer, state))
@@ -244,7 +244,7 @@ test "apply_action clamps layer switching" {
 
 ///|
 /// `s` 切排序口径：切一次按大小，再切一次回名字。
-test "apply_action toggles the sort order" {
+async test "apply_action toggles the sort order" {
   let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
   assert_false(state.view.sort_by_size)
   assert_false(apply_action(Action::ToggleSort, state))
@@ -255,13 +255,13 @@ test "apply_action toggles the sort order" {
 
 ///|
 /// `s` 的键位映射。
-test "action_of_key maps the sort key" {
+async test "action_of_key maps the sort key" {
   assert_eq(action_of_key(key(@input.KeyCode::Char('s'))), Action::ToggleSort)
 }
 
 ///|
 /// 换层保留排序口径：切到大小序再换层，不该悄悄回到名字序。
-test "layer switching keeps the sort order" {
+async test "layer switching keeps the sort order" {
   let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
   ignore(apply_action(Action::ToggleSort, state))
   assert_false(apply_action(Action::NextLayer, state))
@@ -270,7 +270,7 @@ test "layer switching keeps the sort order" {
 
 ///|
 /// `Ctrl+A` / `Ctrl+L` 的键位映射：与原版 dive 的 layer 面板同义。
-test "action_of_key maps the compare mode keys" {
+async test "action_of_key maps the compare mode keys" {
   assert_eq(
     action_of_key(key(@input.KeyCode::Char('a'), ctrl=true)),
     Action::CompareAggregate,
@@ -286,7 +286,7 @@ test "action_of_key maps the compare mode keys" {
 
 ///|
 /// `d` 开关删除列表；`d` 不带 Ctrl 才算，`Ctrl+D` 不绑。
-test "action_of_key maps the removed list key" {
+async test "action_of_key maps the removed list key" {
   assert_eq(
     action_of_key(key(@input.KeyCode::Char('d'))),
     Action::ToggleRemoved,
@@ -300,7 +300,7 @@ test "action_of_key maps the removed list key" {
 ///|
 /// 造一个「聚合档与单层档不一样」的三层视图：`/etc/hosts` 在 L1 被改写、
 /// L2 又改回 L0 的样子，`/etc/old` 在 L2 被删。
-fn aggregate_layers() -> Array[@layer_tree.LayerView] {
+async fn aggregate_layers() -> Array[@layer_tree.LayerView] {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("etc"),
     @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
@@ -322,7 +322,7 @@ fn aggregate_layers() -> Array[@layer_tree.LayerView] {
 /// 切档位：树形状不变（行数列数都一样），只有标注变。
 ///
 /// 这是 issue #69 的第一条验收：换的是「比较区间」，不是数据源。
-test "switching the compare mode keeps the tree and only re-colours" {
+async test "switching the compare mode keeps the tree and only re-colours" {
   let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=2)
   let paths = state.view.all_rows.map(fn(row) { row.path })
   let statuses = state.view.all_rows.map(fn(row) { row.status })
@@ -355,7 +355,7 @@ fn status_of_row(state : AppState, path : String) -> RowStatus {
 
 ///|
 /// 聚合档下 `removed` 有出口：`d` 打开列表，列表内容就是聚合 diff 的 `removed`。
-test "the removed list is filled from the active compare mode" {
+async test "the removed list is filled from the active compare mode" {
   let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=2)
   // 单层档：只有 L2 自己删的那条
   assert_eq(state.removed_paths(), ["/etc/old"])
@@ -375,7 +375,7 @@ test "the removed list is filled from the active compare mode" {
 
 ///|
 /// 换层保留档位：在聚合档里换层，不该悄悄回到单层档。
-test "layer switching keeps the compare mode" {
+async test "layer switching keeps the compare mode" {
   let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=0)
   ignore(apply_action(Action::CompareAggregate, state))
   assert_false(apply_action(Action::NextLayer, state))

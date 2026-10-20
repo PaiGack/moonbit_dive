@@ -9,7 +9,7 @@ import {
 // Values
 pub fn analyze_decompressed(@layer_tree.FileTree, @layer_tree.DecompressedLayers) -> Analysis raise @layer_tree.LayerError
 
-pub fn analyze_layers(@layer_tree.FileTree, Array[BytesView], media_types? : Array[String]) -> Analysis raise @layer_tree.LayerError
+pub async fn analyze_layers(@layer_tree.FileTree, Array[BytesView], media_types? : Array[String]) -> Analysis raise @layer_tree.LayerError
 
 pub fn build_report(Analysis, @layer_tree.FileTree) -> Report
 

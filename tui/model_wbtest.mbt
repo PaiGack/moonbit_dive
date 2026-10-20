@@ -1,6 +1,6 @@
 ///|
 /// 把分析结果压成详情数据源：每个路径的版本数与累计字节都要有落点。
-test "detail_source_of maps analysis into per-path entries" {
+async test "detail_source_of maps analysis into per-path entries" {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
     @layer_tree.TarEntrySpec::File("app/main", "xxxx"),
@@ -30,7 +30,7 @@ test "detail_source_of maps analysis into per-path entries" {
 /// - 概览行的 `wasted` = `Σ` 表里每行的 `size`（都是 `cumulative - min` 口径）
 /// - 表里的行数与排序跟 `report.inefficient_paths` 一一对应：
 ///   面板与 `--efficiency` 视图看的是同一批数字，不各自算一套
-test "detail source waste total equals the sum of the inefficient rows" {
+async test "detail source waste total equals the sum of the inefficient rows" {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
     @layer_tree.TarEntrySpec::File("app/main", "xxxx"),
@@ -67,7 +67,7 @@ test "detail source waste total equals the sum of the inefficient rows" {
 
 ///|
 /// 空层集合下 `analysis_of_decompressed` 也要给出结果（不抛），详情源为空但可用。
-test "analysis_of_decompressed tolerates empty input" {
+async test "analysis_of_decompressed tolerates empty input" {
   let layers : Array[BytesView] = []
   let decompressed = @layer_tree.decompress_layers(layers) catch {
     err => fail(err.to_string())
@@ -86,7 +86,7 @@ test "analysis_of_decompressed tolerates empty input" {
 /// issue #52 的验收条件在 TUI 这一侧的样子——`AppState::new` 拿到的视图
 /// 与 `analysis_of_decompressed` 出的详情，必须来自同一个 `DecompressedLayers`，
 /// 而不是各自解压一遍。解压次数由 `decompressed` 钉死。
-test "views and details share one decompression" {
+async test "views and details share one decompression" {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
     @layer_tree.TarEntrySpec::File("app/main", "xxxx"),

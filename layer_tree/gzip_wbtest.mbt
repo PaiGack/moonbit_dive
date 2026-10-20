@@ -1,6 +1,6 @@
 ///|
 /// whitebox：位读取器的对齐与位序是最容易出错的地方，单独盯住。
-test "BitReader reads bits LSB-first and aligns to the next byte" {
+async test "BitReader reads bits LSB-first and aligns to the next byte" {
   let data : Bytes = b"\x01\x10\x00\xef\xff\xff"
   let reader = BitReader::new(data)
   // BFINAL=1、BTYPE=00，还剩 5 位没读
@@ -15,7 +15,7 @@ test "BitReader reads bits LSB-first and aligns to the next byte" {
 }
 
 ///|
-test "BitReader keeps byte position when already aligned" {
+async test "BitReader keeps byte position when already aligned" {
   let reader = BitReader::new(b"\x01\x10\x00\xef")
   // 读完 8 位后 bits == 0，此时不应再跳过字节
   assert_eq(reader.read_bits(8) catch { _ => fail("read") }, 1)
@@ -25,7 +25,7 @@ test "BitReader keeps byte position when already aligned" {
 }
 
 ///|
-test "inflate decodes a stored block" {
+async test "inflate decodes a stored block" {
   let raw : Bytes = b"hello stored"
   let compressed = gzip_compress(raw)
   let deflated = compressed[10:compressed.length() - 8]
@@ -36,14 +36,14 @@ test "inflate decodes a stored block" {
 }
 
 ///|
-test "crc32 matches the reference value for a known input" {
+async test "crc32 matches the reference value for a known input" {
   // CRC32("123456789") = 0xCBF43926，DEFLATE 与 gzip 的通用校验基准
   assert_eq(crc32(b"123456789"), 0xCBF43926U)
   assert_eq(crc32(b""), 0U)
 }
 
 ///|
-test "gzip rejects a stream with a bad magic number" {
+async test "gzip rejects a stream with a bad magic number" {
   let broken = b"not a gzip stream at all, really"
   let result = try {
     ignore(gzip_decompress(broken))
@@ -59,7 +59,7 @@ test "gzip rejects a stream with a bad magic number" {
 }
 
 ///|
-test "inflate rejects a reserved block type" {
+async test "inflate rejects a reserved block type" {
   // BFINAL=0、BTYPE=11（保留类型）：位序是 LSB-first，故首字节为 0b0000_0110
   let result = try {
     ignore(inflate(b"\x06\x00"))
@@ -74,7 +74,7 @@ test "inflate rejects a reserved block type" {
 }
 
 ///|
-test "inflate decodes real streams produced by an external gzip encoder" {
+async test "inflate decodes real streams produced by an external gzip encoder" {
   assert_eq(gzip_reference_streams.length(), gzip_reference_sizes.length())
   for index, stream in gzip_reference_streams {
     let restored = gzip_decompress(stream) catch {
@@ -90,7 +90,7 @@ test "inflate decodes real streams produced by an external gzip encoder" {
 }
 
 ///|
-test "gzip round trip is stable for varied payload shapes" {
+async test "gzip round trip is stable for varied payload shapes" {
   let cases : Array[String] = [
     "", "a", "0123456789", "repeated payload repeated payload repeated payload",
   ]
@@ -105,7 +105,7 @@ test "gzip round trip is stable for varied payload shapes" {
 }
 
 ///|
-test "inflate rejects a stored block with a mismatched length" {
+async test "inflate rejects a stored block with a mismatched length" {
   // BFINAL=1、BTYPE=00，LEN=4 但 NLEN 不取反
   let broken : Bytes = b"\x01\x04\x00\x00\x00abcd"
   let result = try {
@@ -122,7 +122,7 @@ test "inflate rejects a stored block with a mismatched length" {
 }
 
 ///|
-test "inflate reports truncation instead of reading past the buffer" {
+async test "inflate reports truncation instead of reading past the buffer" {
   // fixed Huffman 块的开始，但数据只有几个字节
   let broken : Bytes = b"\x05\x00"
   let result = try {
@@ -138,7 +138,7 @@ test "inflate reports truncation instead of reading past the buffer" {
 }
 
 ///|
-test "gzip rejects a truncated member" {
+async test "gzip rejects a truncated member" {
   let result = try {
     ignore(gzip_decompress(b"\x1f\x8b\x08\x00"))
     None
@@ -152,7 +152,7 @@ test "gzip rejects a truncated member" {
 }
 
 ///|
-test "gzip reports an unsupported compression method" {
+async test "gzip reports an unsupported compression method" {
   // magic 正确，方法字段是 7（非 deflate）
   let broken : Bytes = b"\x1f\x8b\x07\x00\x00\x00\x00\x00\x00\xff\x00\x00\x00\x00\x00\x00\x00\x00"
   let result = try {
@@ -258,7 +258,7 @@ fn fixed_huffman_overlap_stream(repeats : Int32) -> Bytes {
 /// 那是整体拷贝，于是这条测试退化成 O(n²)：40000 次重复（约 10MB 输出）
 /// 几十秒都跑不完，表现为「跑起来没有任何输出」。现在每个字节只读一次，
 /// 这条用例在 1 秒内完成；回归了就会立刻挂住。
-test "inflate handles long overlapping back-references without quadratic blowup" {
+async test "inflate handles long overlapping back-references without quadratic blowup" {
   let repeats = 40000
   let stream = fixed_huffman_overlap_stream(repeats)
   let raw = inflate(stream) catch {
@@ -279,7 +279,7 @@ test "inflate handles long overlapping back-references without quadratic blowup"
 /// 「每读一个字节就 `to_bytes()` 复制整段输出」那一版最吃亏的形状。
 /// 这里用一个 20 万字节的重复负载把两条都钉住：
 /// 结果必须逐字节正确，且不能退化成平方复杂度（旧实现下这条要几十秒）。
-test "inflate handles long overlapping back-references" {
+async test "inflate handles long overlapping back-references" {
   // 'A' × 200000 压缩后只有 230 字节，解压几乎全部走「距离 1、长度 258」的回拷
   let raw = @encoding.encode(UTF8, "A")
   let payload = gzip_repeat_payload(200000, raw[0])

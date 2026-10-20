@@ -4,6 +4,7 @@ import {
   "moonbitlang/x/crypto",
   "moonbitlang/x/encoding",
   "gaato/zstd",
+  "moonbitlang/async/io",
 }
 
 warnings = "-test_unqualified_package"
@@ -15,5 +16,10 @@ warnings = "-test_unqualified_package"
 supported_targets = "-all+wasm-gc+native"
 
 import {
+  "moonbitlang/async",
   "moonbitlang/x/fs",
 } for "test"
+
+import {
+  "moonbitlang/async",
+} for "wbtest"

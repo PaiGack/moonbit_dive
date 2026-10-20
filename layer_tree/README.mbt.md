@@ -10,7 +10,7 @@
 
 ```moonbit check
 ///|
-test "README example" {
+async test "README example" {
   // 手工造两层 tar（真实场景下数据来自镜像 registry）
   let layer0 = @layer_tree.build_tar([
     @layer_tree.Dir("etc"),
@@ -106,7 +106,7 @@ return Modified
 
 ```mbt check
 ///|
-test "README content hashes" {
+async test "README content hashes" {
   let layer0 = build_tar([TarEntrySpec::File("app/main.js", "0123456789")])
   let layer1 = build_tar([TarEntrySpec::File("app/main.js", "abcdefghij")])
   // 显式入口：`scan_content` 之后节点上才有内容摘要
@@ -156,7 +156,7 @@ OCI / AUFS 用特殊文件名表达「删除」，它们本身不会出现在最
 
 ```mbt check
 ///|
-test "README layer browse" {
+async test "README layer browse" {
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("app/main.js", "v1"),
   ])
@@ -193,7 +193,7 @@ test "README layer browse" {
 
 ```mbt check
 ///|
-test "README decompress once" {
+async test "README decompress once" {
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("app/main.js", "v1"),
   ])
@@ -247,7 +247,7 @@ CLI 的 `--aggregate` 单列一段，TUI 用 `d` 打开一张可滚动的列表�
 
 ```mbt check
 ///|
-test "README aggregate compare" {
+async test "README aggregate compare" {
   let l0 = build_tar([Dir("app"), File("app/main", "v1")])
   let l1 = build_tar([File("app/main", "v2-longer")])
   // 第 2 层改回与第 0 层一模一样的字节

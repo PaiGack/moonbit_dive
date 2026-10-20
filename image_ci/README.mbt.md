@@ -10,7 +10,7 @@
 
 ```moonbit check
 ///|
-test "README example" {
+async test "README example" {
   // 造一个两层镜像：/app/main.js 从 10 字节被覆盖成 16 字节
   let layer0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),
