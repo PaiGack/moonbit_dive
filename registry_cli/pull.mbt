@@ -127,7 +127,7 @@ pub async fn pull_with_client(
     )
   }
   // manifest 很小（几 KB），一次读完不心疼；层则一段一段读（见 `fetch_blob`）
-  let manifest_body = reply.read_body()
+  let manifest_body = reply.body
   // index 还是 manifest 看 Content-Type；头缺失时退回 body 里的 mediaType。
   // 不猜：真猜错会把 index 当 manifest 解析，症状是「config 字段是 undefined」
   let content_type = reply.header("content-type").unwrap_or("")
@@ -218,7 +218,7 @@ async fn choose_manifest(
     if child.status != 200 {
       raise Network("manifest \{chosen.digest} answered \{child.status}")
     }
-    let child_body = child.read_body()
+    let child_body = child.body
     let child_text = utf8(child_body)
     let manifest = parse_manifest(child_text)
     let media_type = child.header("content-type").unwrap_or("").to_string()
@@ -374,33 +374,34 @@ async fn fetch_blob(
     ConfigBlob => ()
     LayerBlob => notify(options, LayerStarted(index~, digest~, bytes=total))
   }
-  let reply = get_following_redirects(client, path, reference)
+  // 边下边报进度：回调直接给 `get`，正文就在那里读（config 一般几十 KB，
+  // 报进度只会把行刷乱，所以它是唯一不带回调的那种）
+  let progress = match (kind, options.on_progress) {
+    (LayerBlob, Some(callback)) =>
+      Some((received : Int64, length : Int64?) => {
+        // 有 content-length 用它：重定向到 CDN 后可能与 descriptor 报的不同
+        let total = match length {
+          Some(length) if length > 0 => length
+          _ => total
+        }
+        callback(LayerProgress(index~, received~, total~))
+      })
+    _ => None
+  }
+  let reply = get_following_redirects(
+    client,
+    path,
+    reference,
+    on_progress?=progress,
+    on_tick?=options.on_tick,
+  )
   if reply.status == 404 {
     raise NotFound("\{reference.canonical()}: blob \{digest} is missing")
   }
   if reply.status != 200 {
     raise Network("blob \{digest} answered \{reply.status}")
   }
-  let data = match kind {
-    // config 一般几十 KB，报进度只会把行刷乱
-    ConfigBlob => reply.read_body()
-    LayerBlob =>
-      match options.on_progress {
-        None => reply.read_body()
-        Some(callback) =>
-          reply.read_body_with(
-            on_progress=(received, length) => {
-              // 有 content-length 用它：重定向到 CDN 后可能与 descriptor 报的不同
-              let total = match length {
-                Some(length) if length > 0 => length
-                _ => total
-              }
-              callback(LayerProgress(index~, received~, total~))
-            },
-            on_tick?=options.on_tick,
-          )
-      }
-  }
+  let data = reply.body
   // 字节数先对一遍：对不上就是截断，没必要再算 sha256
   if descriptor.size > 0 && data.length() != descriptor.size {
     raise DigestMismatch(
@@ -429,6 +430,8 @@ async fn get_following_redirects(
   client : RegistryClient,
   path : String,
   reference : ImageReference,
+  on_progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
 ) -> HttpReply raise RegistryError {
   let reply = get_authorized(client, path, "", reference)
   if !reply.is_redirect() {
@@ -447,9 +450,11 @@ async fn get_following_redirects(
   ) catch {
     _ => raise Network("cannot create an HTTP client for \{origin}")
   }
+  // 重定向的目标可能是一个几百 MB 的层：进度要在这条连接上边读边报，
+  // 所以回调是交给 `mirror.get` 的，而不是回来以后再补
   let followed = {
     errdefer mirror.close()
-    mirror.get(target)
+    mirror.get(target, on_progress?, on_tick?)
   }
   mirror.close()
   followed
@@ -546,7 +551,7 @@ async fn fetch_token(
     )
   }
   // 换票应答也是正文：`get` 只收头，body 得自己读
-  let body = reply.read_body()
+  let body = reply.body
   let text = utf8(body)
   let json = @json.parse(text) catch {
     err => raise Auth("token endpoint returned non-JSON: \{err.to_string()}")

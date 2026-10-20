@@ -5,7 +5,7 @@ fn reply_of(status : Int32, location : String?) -> @registry_cli.HttpReply {
     Some(location) => headers.set("location", location)
     None => ()
   }
-  { status, headers, body: b"", source: None, }
+  { status, headers, body: b"", }
 }
 
 ///|
@@ -61,14 +61,29 @@ test "path-relative location is rejected with a readable message" {
 }
 
 ///|
-test "show of a reply keeps header lookup case-insensitive" {
-  let headers : Map[String, String] = Map([("content-type", "application/json")])
+/// 应答的正文在 `get` 返回时就已经读齐了。
+///
+/// 这条不是「顺手加的」：以前 `get` 只收头，正文留到 `read_body` 才读，
+/// 而 `HttpReply` 会跨过好几个 `await` 才被消费。native 后端的事件循环里
+/// 那条连接早被判成「当前任务的活」之外的东西，再读就是
+/// `Bad file descriptor`——换票（token endpoint）恒定踩中，
+/// 于是 `dive --from-registry` 在真机上必挂（issue #97 的 CI 就是这里红的）。
+///
+/// 现在正文只可能在 `get` 里读一次，`read_body` 是纯取值，二次取也不会重放连接。
+test "a reply carries its body; reading it twice is harmless" {
   let reply : @registry_cli.HttpReply = {
     status: 200,
-    headers,
-    body: b"",
-    source: None,
+    headers: Map([]),
+    body: b"hello",
   }
+  assert_eq(reply.read_body().length(), 5)
+  assert_eq(reply.read_body(), b"hello")
+}
+
+///|
+test "show of a reply keeps header lookup case-insensitive" {
+  let headers : Map[String, String] = Map([("content-type", "application/json")])
+  let reply : @registry_cli.HttpReply = { status: 200, headers, body: b"", }
   assert_eq(reply.header("Content-Type"), Some("application/json"))
   assert_eq(reply.header("content-type"), Some("application/json"))
   assert_true(reply.header("etag") is None)

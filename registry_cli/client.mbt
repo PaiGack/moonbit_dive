@@ -20,29 +20,15 @@ pub impl Show for RegistryClient with fn to_string(self) {
 pub extend RegistryClient with Show::{to_string, output}
 
 ///|
-/// 正文还没读的应答：一个 HTTP 客户端 + 它的长度上限。
+/// 一次 `GET` 的结果：状态 + 头 + 已经读下来的正文。
 ///
-/// 做成不透明字段是因为「读多少、什么时候报进度」只有 `read_body` 说了算；
-/// 让调用方直接摸客户端，迟早有人写出「读到一半又发下一个请求」这种代码。
-struct ReplySource {
-  client : @http.Client
-  /// `content-length`（没有就是 `None`：chunked 或重定向后不给长度）
-  length : Int32?
-}
-
-///|
-/// 一次 `GET` 的原始结果。
-///
-/// `body` 一律是「还没读的正文」的占位：内容靠 `HttpReply::read_body` 取。
-/// 这里不留 `Bytes` 字段，是因为一个 700MB 的层真的会被读成 700MB 的内存，
-/// 而读的时候还要能一段一段报进度（issue #97）。
+/// `body` 在 `get` 里就填好了；`read_body` 只是把它交出去，
+/// 保留那两个入口是为了让调用方的写法不必跟着改。
 pub(all) struct HttpReply {
   status : Int32
   headers : Map[String, String]
-  /// 已经读出来的字节（`RegistryClient::get` 返回时为空，见 `read_body`）
+  /// 正文；`get` 返回时已经读齐
   body : Bytes
-  /// 真正的读取入口；手工构造的应答（测试、重定向解析）为 `None`
-  source : ReplySource?
 }
 
 ///|
@@ -106,17 +92,25 @@ pub fn RegistryClient::close(self : RegistryClient) -> Unit {
 }
 
 ///|
-/// 发一个 GET，**只收响应头**，正文留给 `HttpReply::read_body`。
+/// 发一个 GET，并把正文按 `64 KiB` 一段读进来（`on_progress` 每 MiB 报一次）。
 ///
-/// 为什么不在这里一次读完：镜像的一层就是几百 MB，`read_all` 会把整层攒在
-/// 内存里，而调用方其实只想「边下边写盘、顺便报个进度」（issue #97）。
+/// 正文为什么必须在函数里读完：`HttpReply` 会被调用方带着跨过好几个 `await`
+/// 才消费，而 native 后端的事件循环只保证「当前任务」手里的连接是活的。
+/// 把一条「头收到了、body 还没读」的应答留到下一个挂起点，读到的就是已经
+/// 失效的 fd——换票（token endpoint）那条路径就踩在这上面，
+/// 症状是 `Bad file descriptor`（issue #97）。
 ///
-/// 失败折成 `Network`：连不上、TLS 握手失败都在这条路上。
+/// 不用 `read_all`：它按固定 4 KiB 攒块，攒到最后还要整段复制一遍；
+/// 这里按 `content-length` 预分配，700MB 的层也只多占一块。
+///
+/// 失败折成 `Network`：连不上、TLS 握手失败、读一半断了都在这条路上。
 /// 状态码不在这里判——401 / 404 都是有意义的答复，交给调用方。
 pub async fn RegistryClient::get(
   self : RegistryClient,
   path : String,
   headers~ : Map[String, String] = Map([]),
+  on_progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
 ) -> HttpReply raise RegistryError {
   let merged = http_headers(headers, self.token)
   let response = self.client.get(path, extra_headers=merged) catch {
@@ -134,44 +128,24 @@ pub async fn RegistryClient::get(
       }
     None => None
   }
-  {
-    status: response.code,
-    headers: fields,
-    body: b"",
-    source: Some({ client: self.client, length, }),
+  let total = match length {
+    Some(value) => Some(value.to_int64())
+    None => None
   }
+  // 正文必须在这里读完。`HttpReply` 会被调用方带过好几个 `await` 才消费，
+  // 而 native 后端的事件循环只保证「当前任务」手里的连接是活的：把没读的应答
+  // 留到下一个挂起点，读到的是已经失效的 fd（"Bad file descriptor"）。
+  let body = read_chunks(self.client, total, on_progress?, on_tick?) catch {
+    err => raise Network("\{self.base}\{path}: \{err}")
+  }
+  { status: response.code, headers: fields, body, }
 }
 
 ///|
-/// 把这个应答的正文读干净（不带进度回调）。
-pub async fn HttpReply::read_body(
-  self : HttpReply,
-) -> Bytes raise RegistryError {
-  self.read_body_with(on_progress?=None)
-}
-
-///|
-/// 把正文读出来；`on_progress` 每积够 `PROGRESS_STEP` 报一次 `(已读, 总长?)`。
-///
-/// 读不了第二次：正文与「下一个请求」共用同一条连接，二次读取读到的是下一条应答。
-/// 所以拿到 `Bytes` 后要复用就自己留一份，别指望这里能倒带。
-pub async fn HttpReply::read_body_with(
-  self : HttpReply,
-  on_progress? : (Int64, Int64?) -> Unit,
-  on_tick? : () -> Unit noraise,
-) -> Bytes raise RegistryError {
-  match self.source {
-    None => self.body
-    Some(source) => {
-      let total = match source.length {
-        Some(length) => Some(length.to_int64())
-        None => None
-      }
-      read_chunks(source.client, total, on_progress?, on_tick?) catch {
-        err => raise Network("reading the response body: \{err}")
-      }
-    }
-  }
+/// 取正文。正文在 `get` 里就按调用方给的回调读齐了（见那里的注释），
+/// 所以这里既不等 IO 也不会失败；保留成方法只是为了读起来顺手。
+pub fn HttpReply::read_body(self : HttpReply) -> Bytes {
+  self.body
 }
 
 ///|
