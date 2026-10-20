@@ -58,6 +58,8 @@ moon run --target native cmd/main -- --save --from-registry --platform linux/arm
 moon run --target native cmd/main -- --save --from-registry --insecure-registry -o x.tar localhost:5000/team/app:dev
 # 同时在途的层数（默认 4；1 = 逐层串行，排障用）
 moon run --target native cmd/main -- --save --from-registry --jobs 8 -o nginx.tar library/nginx:1.27
+# 根证书不在系统默认位置：指定一份 PEM（`https://` registry 都要校验证书）
+DIVE_CA_BUNDLE=/path/to/ca-bundle.crt moon run --target native cmd/main -- --save --from-registry -o x.tar registry.example.com/team/app:1.0
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，

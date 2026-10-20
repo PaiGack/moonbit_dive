@@ -161,14 +161,13 @@ pub async fn pull_image(
     Some(token) => Some(token)
     None => @env.get_env_var("DIVE_REGISTRY_TOKEN")
   }
+  // `connect` 现在自己报错（「连不上」与「机器没装 CA 包」不再是同一句话），
+  // 这里原样往上抛，别把原因盖掉
   let client = RegistryClient::connect(
     reference.api_host(),
     insecure=options.insecure,
     token~,
-  ) catch {
-    _ =>
-      raise Network("cannot create an HTTP client for \{reference.api_host()}")
-  }
+  )
   let image = {
     errdefer client.close()
     pull_with_client(client, reference, options~)
@@ -550,7 +549,7 @@ async fn fetch_all_concurrently(
     // config 不占在途名额：它是几十 KB 的一块，跟第一层挤在一起下最划算
     let config_task = group.spawn(() => {
       let outcome = Some(
-        fetch_on_own_connection(client, reference, own => {
+        fetch_on_own_connection(client, own => {
           fetch_blob(
             own,
             reference,
@@ -576,7 +575,7 @@ async fn fetch_all_concurrently(
       tasks.push(
         group.spawn(() => {
           let outcome = Some(
-            fetch_on_own_connection(client, reference, own => {
+            fetch_on_own_connection(client, own => {
               let blob = fetch_blob(
                 own,
                 reference,
@@ -647,19 +646,13 @@ async fn fetch_all_concurrently(
 /// 那是 `get_following_redirects` 自己的事，与这里的「一条连接」不冲突。
 async fn fetch_on_own_connection(
   template : RegistryClient,
-  reference : ImageReference,
   action : async (RegistryClient) -> PulledBlob raise RegistryError,
 ) -> PulledBlob raise RegistryError {
   let own = RegistryClient::connect(
     strip_scheme(template.base),
     insecure=template.base.has_prefix("http://"),
     token=template.token,
-  ) catch {
-    _ =>
-      raise Network(
-        "cannot open a connection to \{template.base} for \{reference.canonical()}",
-      )
-  }
+  )
   let blob = {
     errdefer own.close()
     action(own)
@@ -949,9 +942,7 @@ async fn get_stream_following_redirects(
     let mirror = RegistryClient::connect(
       strip_scheme(origin),
       insecure=origin.has_prefix("http://"),
-    ) catch {
-      _ => raise Network("cannot create an HTTP client for \{origin}")
-    }
+    )
     // 重定向的目标可能是几百 MB 的层：正文在这条连接上边读边写。
     // CDN 那边还可能再跳一次（S3、CloudFront 都会），所以这里先拿头再判。
     // 中间那条连接**没有**交给 `errdefer`：`mirror.close()` 必须在 return 之前
@@ -1026,9 +1017,7 @@ async fn get_following_redirects(
   let mirror = RegistryClient::connect(
     strip_scheme(origin),
     insecure=origin.has_prefix("http://"),
-  ) catch {
-    _ => raise Network("cannot create an HTTP client for \{origin}")
-  }
+  )
   // 重定向的目标可能是一个几百 MB 的层：进度要在这条连接上边读边报，
   // 所以回调是交给 `mirror.get` 的，而不是回来以后再补
   let followed = {
@@ -1114,9 +1103,7 @@ async fn fetch_token(
   let token_client = RegistryClient::connect(
     strip_scheme(origin),
     insecure=origin.has_prefix("http://"),
-  ) catch {
-    _ => raise Network("cannot create an HTTP client for the token endpoint")
-  }
+  )
   // 换票失败也要关掉这条连接：它连的是 auth 服务，与 registry 不是同一个对象。
   // `errdefer` 只在抛错时触发，正常路径下面手动 close——两条路都得关。
   let reply = {

@@ -66,6 +66,29 @@ if ! "$DOCKER_BIN" version --format '{{.Server.Version}}' >/dev/null 2>&1; then
   exit 77
 fi
 command -v python3 >/dev/null 2>&1 || fail "需要 python3 生成 tar 固定内容"
+
+# CA 包不是本仓库的依赖，但少了它 `--from-registry` 一定握手失败。
+# 这跟「没装 docker」是同一类事：环境缺件，不是代码坏了。所以在最前面就
+# 认定它，把 5 与 6 两节跳过并说清怎么办，而不是等到第 5 节变成一句红。
+#
+# 认法与 `registry_cli/tls_roots.mbt` 里的候选表一致：`DIVE_CA_BUNDLE` 优先，
+# 其次系统常见位置。走 http:// 的自建 registry（`--insecure-registry`）不在此列。
+ca_bundle=${DIVE_CA_BUNDLE:-}
+if [ -z "$ca_bundle" ]; then
+  for candidate in /etc/ssl/certs/ca-certificates.crt \
+    /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem /etc/ssl/ca-bundle.pem \
+    /usr/local/share/certs/ca-root-nss.crt \
+    /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem; do
+    if [ -s "$candidate" ]; then
+      ca_bundle=$candidate
+      break
+    fi
+  done
+fi
+if [ -z "$ca_bundle" ]; then
+  say "${YELLOW}skip${RESET} 找不到 CA 包（Debian 系装 ca-certificates），" \
+    "第 5 / 6 节要连 registry，跳过；设 DIVE_CA_BUNDLE 可指定别处的 bundle"
+fi
 command -v moon >/dev/null 2>&1 || fail "需要 moon 工具链（scripts/ci.sh 里已装）"
 say "$($DOCKER_BIN version --format 'docker server {{.Server.Version}}')"
 
@@ -74,7 +97,13 @@ DIVE="_build/native/debug/build/cmd/main/main.exe"
 
 # -------------------------------------------------- 1. 造一份固定输入 --
 # 不用 base 镜像：那会引入「机器上有没有 alpine」这种不确定性。
-# 直接手搓一个最小 OCI layout（单层、一个标记文件），`docker load` 进去。
+# 直接手搓一份 docker-archive（单层、一个标记文件），`docker load` 进去。
+#
+# 早先这里给的是 OCI layout：能不能被 `docker load` 吃下取决于 daemon 的实现
+# （新版会先把 layout 转进临时目录再按 `blobs/json` 之类路径去找文件，缺一个
+# 就报 `open /var/lib/docker/tmp/docker-import-xxxx/blobs/json: no such file`）。
+# 那是 docker 的行为，不是本仓库的代码，但它红的是本仓库的流水线。
+# docker-archive 是 `docker save` 的对称产物，每个 daemon 都认，也不给猜留空间。
 say ''
 say "${BOLD}== 构造测试镜像 ==${RESET}"
 marker="dive-ci-fixture-v1"
@@ -228,14 +257,63 @@ PY
 
 config_digest=$(cat "$work/config_digest")
 
+# 把 layout 目录转成 docker-archive 的壳：`manifest.json` + `<config>.json` +
+# `<layer-id>/layer.tar`。内容一字不改，只换外壳，后面「层里的标记文件」
+# 与「diff id 对账」照旧生效。
+write_archive() {
+  python3 - "$1" "$2" <<'PY'
+import json, os, shutil, sys
+
+layout, tag = sys.argv[1:3]
+blobs = os.path.join(layout, "blobs", "sha256")
+
+def blob(digest):
+    return os.path.join(blobs, digest.split(":", 1)[1])
+
+manifest = json.load(open(os.path.join(layout, "index.json")))
+descriptor = manifest["manifests"][0]
+image = json.load(open(blob(descriptor["digest"])))
+config_digest = image["config"]["digest"]
+config_name = config_digest.split(":", 1)[1] + ".json"
+shutil.copyfile(blob(config_digest), os.path.join(layout, config_name))
+
+layers = []
+for layer in image["layers"]:
+    # docker-archive 的目录名是「解压后 tar」的 sha256，也就是 config 里的 diff id
+    diff_id = layer["digest"]
+    name = diff_id.split(":", 1)[1]
+    os.makedirs(os.path.join(layout, name), exist_ok=True)
+    shutil.copyfile(blob(layer["digest"]), os.path.join(layout, name, "layer.tar"))
+    layers.append(name + "/layer.tar")
+
+open(os.path.join(layout, "manifest.json"), "w").write(json.dumps([{
+    "Config": config_name,
+    "RepoTags": [tag],
+    "Layers": layers,
+}]))
+print("\n".join([config_name] + layers))
+PY
+}
+
+# 造一份 docker-archive 并 load 进去。
+# 与 OCI layout 那版相比，这里**不猜**导入后的 ID：`docker-archive` 的
+# `RepoTags` 就是 tag 的来源，load 完直接按 tag 认。
+load_archive() {
+  local layout=$1 tag=$2 archive=$3
+  local entries
+  entries=$(write_archive "$layout" "$tag") || return 1
+  # shellcheck disable=SC2086
+  tar -cf "$archive" -C "$layout" manifest.json $entries
+  "$DOCKER_BIN" load -i "$archive" >"$archive.log" 2>&1
+}
+
 # 加载进去的是哪个 ID：先看 `docker load` 的回显，它不一定给 ID；
 # 给不出就按「层标记文件」去认——daemon 可能是共享的（CNB 把外层 socket
 # 转发进来），机器上早有别的镜像，拿「列表第一个」当自己的是错的。
 seeded=""
 for attempt in 1 2 3; do
-  tar -cf "$work/layout.tar" -C "$work/layout" .
-  if "$DOCKER_BIN" load -i "$work/layout.tar" >/dev/null 2>"$work/load.err"; then
-    seeded=$(grep -o 'sha256:[0-9a-f]\{64\}' "$work/load.err" | head -1)
+  if load_archive "$work/layout" "$IMAGE_REF" "$work/layout.tar"; then
+    seeded=$(grep -o 'sha256:[0-9a-f]\{64\}' "$work/layout.tar.log" | head -1)
   fi
   [ -n "$seeded" ] && break
   seeded=$("$DOCKER_BIN" images --no-trunc --format '{{.ID}}' 2>/dev/null |
@@ -250,7 +328,8 @@ for attempt in 1 2 3; do
   [ -n "$seeded" ] && break
   sleep 2
 done
-[ -n "$seeded" ] || fail "docker load 失败：$(cat "$work/load.err")"
+[ -n "$seeded" ] || seeded=$("$DOCKER_BIN" inspect --format '{{.Id}}' "$IMAGE_REF" 2>/dev/null)
+[ -n "$seeded" ] || fail "docker load 失败：$(tail -5 "$work/layout.tar.log" 2>/dev/null)"
 "$DOCKER_BIN" tag "$seeded" "$IMAGE_REF" >/dev/null 2>&1 ||
   fail "给测试镜像打 tag 失败（daemon 里没有 $seeded）"
 "$DOCKER_BIN" inspect "$IMAGE_REF" >/dev/null 2>&1 ||
@@ -342,7 +421,9 @@ fi
 # 现状里它也是整条链路唯一「完全不需要 daemon」的入口。
 say ''
 say "${BOLD}== dive --from-registry（不碰本地 daemon）==${RESET}"
-if "$DIVE" "$REMOTE_REF" --from-registry --save --output "$work/registry.tar" \
+if [ -z "$ca_bundle" ]; then
+  say "${YELLOW}skip${RESET} 没有 CA 包，连不了 https registry"
+elif "$DIVE" "$REMOTE_REF" --from-registry --save --output "$work/registry.tar" \
     --format json >"$work/registry.json" 2>"$work/registry.log"; then
   [ -s "$work/registry.tar" ] || fail "--from-registry --save 没落盘"
   python3 - "$work/registry.tar" <<'PY' || fail "--from-registry 的产物不是合法 docker-archive"
@@ -374,7 +455,11 @@ say ''
 say "${BOLD}== zstd 层镜像（$ZSTD_REF）==${RESET}"
 
 zstd_layer_ok=1
-if ! python3 - "$work" "$DOCKER_BIN" "$DIVE_TEST_ZSTD_HELPER_IMAGE" <<'PY'
+if [ -z "$ca_bundle" ]; then
+  # `docker run alpine` 要拉镜像，没有 CA 一样连不上
+  say "${YELLOW}skip${RESET} 没有 CA 包，拉不了 $DIVE_TEST_ZSTD_HELPER_IMAGE"
+  zstd_layer_ok=0
+elif ! python3 - "$work" "$DOCKER_BIN" "$DIVE_TEST_ZSTD_HELPER_IMAGE" <<'PY'
 import os, subprocess, sys
 
 work, docker_bin, helper = sys.argv[1:]
@@ -458,9 +543,12 @@ for digest, data in ((config_digest, config), (layer_digest, layer), (manifest_d
 open(os.path.join(work, "zstd-diff-id"), "w").write(diff_id)
 PY
 
-  tar -cf "$work/layout-zstd.tar" -C "$work/layout-zstd" .
-  zstd_image=$("$DOCKER_BIN" load -i "$work/layout-zstd.tar" 2>&1 |
-    grep -o 'sha256:[0-9a-f]\{64\}' | head -1)
+  zstd_image=""
+  if load_archive "$work/layout-zstd" "$ZSTD_REF" "$work/layout-zstd.tar"; then
+    zstd_image=$(grep -o 'sha256:[0-9a-f]\{64\}' "$work/layout-zstd.tar.log" | head -1)
+    [ -n "$zstd_image" ] ||
+      zstd_image=$("$DOCKER_BIN" inspect --format '{{.Id}}' "$ZSTD_REF" 2>/dev/null)
+  fi
   if [ -z "$zstd_image" ]; then
     # 回显里没有 ID 时，按「我们那层的 diff id」在 daemon 里找回自己
     zstd_image=$("$DOCKER_BIN" images --no-trunc --format '{{.ID}}' 2>/dev/null |
