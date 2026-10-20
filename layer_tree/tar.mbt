@@ -198,15 +198,16 @@ fn parse_header(
   stream : BytesView,
   header_offset : Int32,
   absolute_offset : Int32,
-) -> TarEntry? raise TarError {
+) -> TarEntry raise TarError {
+  // 流读完（零块 / 尾部填充）时 `NotFound` 就是正常的「没有下一条」
   if header_offset + tar_block_size > stream.length() {
     if is_zero_block_padded(stream, header_offset) {
-      return None
+      raise NotFound
     }
     raise Truncated("header block is shorter than 512 bytes")
   }
   if is_zero_block(stream, header_offset) {
-    return None
+    raise NotFound
   }
   let name = header_string(stream, header_offset, tar_name_field_size)
   let prefix = header_string(stream, header_offset + 345, tar_prefix_field_size)
@@ -222,16 +223,17 @@ fn parse_header(
   } else {
     ""
   }
-  // 目录 entry 不携带数据，但个别打包器会写非零 size；统一按 0 处理
+  // 目录 entry 不携带数据，但个别打包器会写非零 size；统一按 0 处理。
   let size = if entry_type is Directory { 0 } else { declared_size }
   let data_offset = header_offset + tar_block_size
-  if data_offset + size > stream.length() {
+  // 校验用**声明值**：数据段实际占几个块按声明值算，回给调用方的 `size` 才是规范化后的 0
+  if data_offset + declared_size > stream.length() {
     raise Truncated(
-      "entry \"\{name}\" declares \{size} bytes but the stream ends early",
+      "entry \"\\{name}\" declares \{declared_size} bytes but the stream ends early",
     )
   }
   let path = if prefix.is_empty() { name } else { "\{prefix}/\{name}" }
-  Some({
+  {
     path,
     entry_type,
     size,
@@ -241,7 +243,7 @@ fn parse_header(
     mtime,
     link_target,
     data_offset: absolute_offset + data_offset,
-  })
+  }
 }
 
 ///|
@@ -288,23 +290,28 @@ pub fn TarReader::with_base(
 }
 
 ///|
-/// 取下一条 entry；流已到底返回 `None`。
-pub fn TarReader::next(self : TarReader) -> TarEntry? raise TarError {
+/// 取下一条 entry；流已到底抛 `TarError::NotFound`（用 `catch` 当循环出口）。
+pub fn TarReader::next(self : TarReader) -> TarEntry raise TarError {
   if self.done {
-    return None
+    raise NotFound
   }
-  match parse_header(self.stream, self.cursor, self.base_offset) {
-    None => {
-      self.done = true
-      None
-    }
-    Some(entry) => {
-      self.cursor = align_block(
-        entry.data_offset - self.base_offset + entry.size,
-      )
-      Some(entry)
-    }
+  // 解析失败（不管是读到头还是流截断）之后，这个 reader 不会再产出东西了
+  let outcome = try
+    parse_header(self.stream, self.cursor, self.base_offset)
+  catch {
+    err => Err(err)
+  } noraise {
+    entry => Ok(entry)
   }
+  // 读到头 / 流被截断之后，这个 reader 不会再产出东西了
+  self.done = true
+  let entry = match outcome {
+    Ok(entry) => entry
+    Err(err) => raise err
+  }
+  self.done = false
+  self.cursor = align_block(entry.data_offset - self.base_offset + entry.size)
+  entry
 }
 
 ///|
@@ -315,10 +322,11 @@ pub fn parse_tar_entries(stream : BytesView) -> Array[TarEntry] raise TarError {
   let reader = TarReader::new(stream)
   let entries = []
   while true {
-    match reader.next() {
-      None => break
-      Some(entry) => entries.push(entry)
+    // 读完（`NotFound`）就是正常出口，其它错误照旧往上抛
+    let entry = reader.next() catch {
+      err => if err is NotFound { break } else { raise err }
     }
+    entries.push(entry)
   }
   entries
 }
@@ -331,12 +339,12 @@ pub fn read_file_from_tar(
 ) -> BytesView? raise TarError {
   let reader = TarReader::new(stream)
   while true {
-    match reader.next() {
-      None => break
-      Some(entry) =>
-        if entry.path == path && entry.entry_type is Regular {
-          return Some(entry.data(stream))
-        }
+    // 读完（`NotFound`）就是正常出口，其它错误照旧往上抛
+    let entry = reader.next() catch {
+      err => if err is NotFound { break } else { raise err }
+    }
+    if entry.path == path && entry.entry_type is Regular {
+      return Some(entry.data(stream))
     }
   }
   None

@@ -30,7 +30,7 @@ pub extend PathError with Show::{to_string, output}
 /// - `..` 逐段回退，越过根时报 `Escape`
 ///
 /// 结果始终以 `/` 开头，根为 `"/"`。
-pub fn normalize_path(raw : String) -> Result[String, PathError] {
+pub fn normalize_path(raw : String) -> String raise PathError {
   let segments : Array[String] = []
   for segment in raw.split("/") {
     // `for` 迭代 StringView：比较与判空都在 view 上做，避免临时 String
@@ -39,7 +39,7 @@ pub fn normalize_path(raw : String) -> Result[String, PathError] {
     }
     if segment == ".." {
       if segments.is_empty() {
-        return Err(Escape(raw))
+        raise Escape(raw)
       }
       segments.pop() |> ignore
     } else {
@@ -47,9 +47,9 @@ pub fn normalize_path(raw : String) -> Result[String, PathError] {
     }
   }
   if segments.is_empty() {
-    return Ok("/")
+    return "/"
   }
-  Ok("/" + segments.join("/"))
+  "/" + segments.join("/")
 }
 
 ///|
@@ -57,9 +57,8 @@ pub fn normalize_path(raw : String) -> Result[String, PathError] {
 ///
 /// 用于 `parent` / `join` 等内部组合，此时输入必然来自已规范化的父路径。
 fn normalize_path_lossy(raw : String) -> String {
-  match normalize_path(raw) {
-    Ok(path) => path
-    Err(_) => "/"
+  normalize_path(raw) catch {
+    _ => "/"
   }
 }
 

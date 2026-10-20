@@ -94,6 +94,6 @@ pub fn Manifest::layers_with_media_type(
 ///|
 /// 按 config 的 digest 打开 config：调用方拿到的是「manifest 说 config 长啥样」，
 /// 真正的 config 内容由 P2/P3 从 registry 或本地镜像里取。
-pub fn Manifest::config_digest(self : Manifest) -> Result[Digest, DigestError] {
+pub fn Manifest::config_digest(self : Manifest) -> Digest raise DigestError {
   Digest::parse(self.config.digest)
 }

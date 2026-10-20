@@ -79,14 +79,12 @@ pub fn apply_layer(
   // opaque 目录要在本层所有 entry 应用完后才清空，否则同层后续写入会被误删
   let opaque_dirs : Array[String] = []
   while true {
-    let entry = match reader.next() {
-      None => break
-      Some(entry) => entry
+    // 读完（`NotFound`）就是正常出口，其它错误照旧往上抛
+    let entry = reader.next() catch {
+      err => if err is NotFound { break } else { raise err }
     }
-    let path = match normalize_path(entry.path) {
-      Err(_) => continue // 逃逸出根的 entry 直接丢弃，不污染树
-      Ok(path) => path
-    }
+    // 逃逸出根的 entry 直接丢弃，不污染树
+    let path = normalize_path(entry.path) catch { _ => continue }
     match whiteout_kind(path) {
       Some(WhiteoutKind::Entry(name)) => {
         let target = join_path(parent_path(path), name)
@@ -183,9 +181,8 @@ fn resolve_hardlink_target(path : String, linkname : String) -> String {
     return path
   }
   if linkname.has_prefix("/") {
-    match normalize_path(linkname) {
-      Ok(target) => target
-      Err(_) => linkname
+    normalize_path(linkname) catch {
+      _ => linkname
     }
   } else {
     join_path(parent_path(path), linkname)

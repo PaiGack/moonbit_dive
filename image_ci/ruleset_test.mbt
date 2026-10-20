@@ -85,9 +85,13 @@ test "config errors are distinguished" {
   for item in cases {
     let name = item.0
     let text = item.1
-    let failed = match parse_as_result(text) {
-      Ok(_) => false
-      Err(_) => true
+    let failed = try {
+      parse_result(text) |> ignore
+      false
+    } catch {
+      _ => true
+    } noraise {
+      _ => false
     }
     if !failed {
       fail("\{name} should have failed")
@@ -97,7 +101,6 @@ test "config errors are distinguished" {
 
 ///|
 /// 把 `raise` 风格的解析包成 `Result`，方便测试里判分支。
-fn parse_as_result(text : String) -> Result[Ruleset, ConfigError] {
-  let ruleset = Ruleset::parse(text) catch { err => return Err(err) }
-  Ok(ruleset)
+fn parse_result(text : String) -> Ruleset raise ConfigError {
+  Ruleset::parse(text)
 }

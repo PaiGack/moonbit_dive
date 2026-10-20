@@ -22,7 +22,7 @@ fn upper(input : String) -> String {
 
 ///|
 test "Digest::parse accepts a well-formed sha256 digest" {
-  let digest = @oci_spec.Digest::parse(sha256_digest).unwrap()
+  let digest = @oci_spec.Digest::parse(sha256_digest)
   assert_eq(digest.algorithm, "sha256")
   assert_eq(digest.encoded, sha256_hex)
   assert_eq(digest.to_string(), sha256_digest)
@@ -31,37 +31,68 @@ test "Digest::parse accepts a well-formed sha256 digest" {
 ///|
 test "Digest::parse accepts sha512" {
   let hex = "a".repeat(128)
-  let digest = @oci_spec.Digest::parse("sha512:\{hex}").unwrap()
+  let digest = @oci_spec.Digest::parse("sha512:\{hex}")
   assert_eq(digest.algorithm, "sha512")
   assert_eq(digest.encoded.length(), 128)
 }
 
 ///|
 test "Digest::parse rejects empty input" {
-  assert_true(@oci_spec.Digest::parse("") is Err(EmptyDigest))
+  assert_true(
+    (try @oci_spec.Digest::parse("") catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    })
+    is EmptyDigest,
+  )
 }
 
 ///|
 test "Digest::parse rejects a digest without a colon" {
-  assert_true(@oci_spec.Digest::parse(sha256_hex) is Err(MissingSeparator(_)))
+  assert_true(
+    (try @oci_spec.Digest::parse(sha256_hex) catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    })
+    is MissingSeparator(_),
+  )
 }
 
 ///|
 test "Digest::parse rejects a missing algorithm part" {
   assert_true(
-    @oci_spec.Digest::parse(":\{sha256_hex}") is Err(MissingAlgorithm(_)),
+    (try @oci_spec.Digest::parse(":\{sha256_hex}") catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    })
+    is MissingAlgorithm(_),
   )
 }
 
 ///|
 test "Digest::parse rejects a missing encoded part" {
-  assert_true(@oci_spec.Digest::parse("sha256:") is Err(EmptyEncoded(_)))
+  assert_true(
+    (try @oci_spec.Digest::parse("sha256:") catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    })
+    is EmptyEncoded(_),
+  )
 }
 
 ///|
 test "Digest::parse rejects an unknown algorithm" {
-  match @oci_spec.Digest::parse("sha1:\{sha256_hex}") {
-    Err(@oci_spec.UnsupportedAlgorithm(algorithm, supported)) => {
+  let error = try @oci_spec.Digest::parse("sha1:\{sha256_hex}") catch {
+    err => err
+  } noraise {
+    _ => abort("expected a digest error")
+  }
+  match error {
+    @oci_spec.UnsupportedAlgorithm(algorithm, supported) => {
       assert_eq(algorithm, "sha1")
       assert_eq(supported, ["sha256", "sha512"])
     }
@@ -71,8 +102,13 @@ test "Digest::parse rejects an unknown algorithm" {
 
 ///|
 test "Digest::parse rejects wrong encoded length" {
-  match @oci_spec.Digest::parse("sha256:abc") {
-    Err(@oci_spec.InvalidLength(algorithm, expected, actual)) => {
+  let error = try @oci_spec.Digest::parse("sha256:abc") catch {
+    err => err
+  } noraise {
+    _ => abort("expected a digest error")
+  }
+  match error {
+    @oci_spec.InvalidLength(algorithm, expected, actual) => {
       assert_eq(algorithm, "sha256")
       assert_eq(expected, 64)
       assert_eq(actual, 3)
@@ -84,8 +120,13 @@ test "Digest::parse rejects wrong encoded length" {
 ///|
 test "Digest::parse rejects non-hex characters" {
   let bad = "sha256:" + "z".repeat(63) + "0"
-  match @oci_spec.Digest::parse(bad) {
-    Err(@oci_spec.InvalidHexChar(algorithm, ch, index)) => {
+  let error = try @oci_spec.Digest::parse(bad) catch {
+    err => err
+  } noraise {
+    _ => abort("expected a digest error")
+  }
+  match error {
+    @oci_spec.InvalidHexChar(algorithm, ch, index) => {
       assert_eq(algorithm, "sha256")
       assert_eq(ch, 'z')
       assert_eq(index, 0)
@@ -97,19 +138,33 @@ test "Digest::parse rejects non-hex characters" {
 ///|
 test "Digest::parse rejects uppercase and mixed-case hex" {
   assert_true(
-    @oci_spec.Digest::parse("sha256:\{upper(sha256_hex)}")
-    is Err(NotLowercase(_)),
+    (try @oci_spec.Digest::parse("sha256:\{upper(sha256_hex)}") catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    })
+    is NotLowercase(_),
   )
   let mixed = upper(sha256_hex[:2].to_owned()) + sha256_hex[2:].to_owned()
   assert_true(
-    @oci_spec.Digest::parse("sha256:\{mixed}") is Err(NotLowercase(_)),
+    (try @oci_spec.Digest::parse("sha256:\{mixed}") catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    })
+    is NotLowercase(_),
   )
 }
 
 ///|
 test "Digest::parse reports the algorithm error before hex errors" {
   assert_true(
-    @oci_spec.Digest::parse("sha1:zzzz") is Err(UnsupportedAlgorithm(_, _)),
+    (try @oci_spec.Digest::parse("sha1:zzzz") catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    })
+    is UnsupportedAlgorithm(_, _),
   )
 }
 
@@ -164,7 +219,7 @@ test "Digest::from_sha256 matches the known sha256 of hello" {
 
 ///|
 test "Digest round-trips through JSON" {
-  let digest = @oci_spec.Digest::parse(sha256_digest).unwrap()
+  let digest = @oci_spec.Digest::parse(sha256_digest)
   let json = @json.to_json(digest)
   assert_eq(json.stringify(), "\"\{sha256_digest}\"")
   let parsed : @oci_spec.Digest = @json.from_json(json)

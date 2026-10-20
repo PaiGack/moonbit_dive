@@ -1,6 +1,6 @@
 ///|
 test "ImageConfig parses created, author and platform" {
-  let document = @oci_spec.parse_document(fixture("config.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("config.json"))
   match document {
     ImageConfig(config) => {
       assert_eq(config.os, Some("linux"))
@@ -18,7 +18,7 @@ test "ImageConfig parses created, author and platform" {
 
 ///|
 test "ImageConfig parses rootfs diff_ids" {
-  let document = @oci_spec.parse_document(fixture("config.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("config.json"))
   match document {
     ImageConfig(config) => {
       assert_eq(config.rootfs.fs_type, "layers")
@@ -34,7 +34,7 @@ test "ImageConfig parses rootfs diff_ids" {
 
 ///|
 test "ImageConfig history keeps empty_layer flags" {
-  let document = @oci_spec.parse_document(fixture("config.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("config.json"))
   match document {
     ImageConfig(config) => {
       assert_eq(config.history.length(), 3)
@@ -48,7 +48,7 @@ test "ImageConfig history keeps empty_layer flags" {
 
 ///|
 test "ImageConfig::layers pairs diff_ids with history commands" {
-  let document = @oci_spec.parse_document(fixture("config.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("config.json"))
   match document {
     ImageConfig(config) => {
       let layers = config.layers()
@@ -67,7 +67,7 @@ test "ImageConfig::layers pairs diff_ids with history commands" {
 
 ///|
 test "ContainerConfig exposes common runtime keys" {
-  let document = @oci_spec.parse_document(fixture("config.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("config.json"))
   match document {
     ImageConfig(config) => {
       let runtime = config.config.unwrap()
@@ -84,8 +84,13 @@ test "ContainerConfig exposes common runtime keys" {
 test "ImageConfig rootfs is required" {
   let text =
     #|{"schemaVersion": 2, "os": "linux"}
-  match @oci_spec.parse_document(text) {
-    Err(DecodeFailed(message)) => {
+  let result = try @oci_spec.parse_document(text) catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  match result {
+    DecodeFailed(message) => {
       assert_true(message.contains("rootfs"))
       assert_true(message.contains("missing required field"))
     }
@@ -97,9 +102,13 @@ test "ImageConfig rootfs is required" {
 test "ImageConfig rejects a wrong diff_ids element type" {
   let text =
     #|{"schemaVersion": 2, "rootfs": {"type": "layers", "diff_ids": ["ok", 42]}}
-  match @oci_spec.parse_document(text) {
-    Err(DecodeFailed(message)) =>
-      assert_true(message.contains("expected string"))
+  let result = try @oci_spec.parse_document(text) catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  match result {
+    DecodeFailed(message) => assert_true(message.contains("expected string"))
     _ => fail("expected DecodeFailed")
   }
 }
@@ -109,7 +118,7 @@ test "ImageConfig history defaults to empty when absent" {
   let text =
     #|{"schemaVersion": 2, "rootfs": {"type": "layers", "diff_ids": []}, "history": []}
   match @oci_spec.parse_document(text) {
-    Ok(ImageConfig(config)) => {
+    ImageConfig(config) => {
       assert_eq(config.history.length(), 0)
       assert_eq(config.config, None)
     }
@@ -119,7 +128,7 @@ test "ImageConfig history defaults to empty when absent" {
 
 ///|
 test "ImageConfig round-trips through JSON" {
-  let document = @oci_spec.parse_document(fixture("config.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("config.json"))
   match document {
     ImageConfig(config) => {
       let encoded = @json.to_json(config).stringify()
@@ -134,7 +143,7 @@ test "ImageConfig round-trips through JSON" {
 
 ///|
 test "Platform matching treats unset fields as wildcards" {
-  let document = @oci_spec.parse_document(fixture("index.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("index.json"))
   match document {
     IndexDoc(index) => {
       let platform = index.find_platform("linux", "amd64").unwrap().platform.unwrap()

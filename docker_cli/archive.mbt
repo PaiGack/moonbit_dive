@@ -60,14 +60,16 @@ fn read_tar_entry_text(
 ) -> String? raise @layer_tree.TarError {
   let reader = @layer_tree.TarReader::new(archive)
   while true {
-    let entry = match reader.next() {
-      None => break
-      Some(entry) => entry
+    // 读完（`NotFound`）就是正常出口，其它错误照旧往上抛
+    let entry = reader.next() catch {
+      err =>
+        if err is @layer_tree.TarError::NotFound {
+          break
+        } else {
+          raise err
+        }
     }
-    let name = match @layer_tree.normalize_path(entry.path) {
-      Ok(name) => name
-      Err(_) => continue
-    }
+    let name = @layer_tree.normalize_path(entry.path) catch { _ => continue }
     if name == path || name == "/\{path}" {
       let data = entry.data(archive)
       return Some(bytes_to_text(data))

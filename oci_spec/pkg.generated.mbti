@@ -71,11 +71,11 @@ pub fn optional_string_array(Map[String, Json], String, JsonLoc) -> Array[String
 
 pub fn parse_descriptor_array(Map[String, Json], String, JsonLoc) -> Array[Descriptor] raise @json.JsonDecodeError
 
-pub fn parse_document(String) -> Result[OciDocument, OciParseError]
+pub fn parse_document(String) -> OciDocument raise OciParseError
 
-pub fn parse_document_json(Json) -> Result[OciDocument, OciParseError]
+pub fn parse_document_json(Json) -> OciDocument raise OciParseError
 
-pub fn parse_image_config_lenient(String) -> Result[ImageConfig, OciParseError]
+pub fn parse_image_config_lenient(String) -> ImageConfig raise OciParseError
 
 pub fn[T : @json.FromJson] parse_nested(Map[String, Json], String, JsonLoc) -> T raise @json.JsonDecodeError
 
@@ -159,7 +159,7 @@ pub fn Descriptor::output(Self, &Logger) -> Unit
 pub fn Descriptor::to_json(Self) -> Json
 pub fn Descriptor::to_repr(Self) -> @debug.Repr
 pub fn Descriptor::to_string(Self) -> String
-pub fn Descriptor::validated_digest(Self) -> Result[Digest, DigestError]
+pub fn Descriptor::validated_digest(Self) -> Digest raise DigestError
 pub impl Show for Descriptor
 pub impl ToJson for Descriptor
 pub impl @json.FromJson for Descriptor
@@ -174,7 +174,7 @@ pub fn Digest::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeErr
 pub fn Digest::from_sha256(BytesView) -> Self
 pub fn Digest::not_equal(Self, Self) -> Bool
 pub fn Digest::output(Self, &Logger) -> Unit
-pub fn Digest::parse(String) -> Result[Self, DigestError]
+pub fn Digest::parse(String) -> Self raise DigestError
 pub fn Digest::to_json(Self) -> Json
 pub fn Digest::to_repr(Self) -> @debug.Repr
 pub fn Digest::to_string(Self) -> String
@@ -284,7 +284,7 @@ pub(all) struct Manifest {
   subject : Descriptor?
   annotations : Map[String, String]?
 } derive(Eq, @debug.Debug)
-pub fn Manifest::config_digest(Self) -> Result[Digest, DigestError]
+pub fn Manifest::config_digest(Self) -> Digest raise DigestError
 pub fn Manifest::equal(Self, Self) -> Bool
 pub fn Manifest::from_json(Json, @json.JsonPath) -> Self raise @json.JsonDecodeError
 pub fn Manifest::is_index(Self) -> Bool

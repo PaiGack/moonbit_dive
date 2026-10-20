@@ -86,11 +86,7 @@ pub fn ImageSource::load(path : String) -> ImageSource raise ImageError {
     }
     read_archive(data, "<stdin>")
   } else if is_directory(path) {
-    let index_text = match read_utf8(path + "/index.json", "index") {
-      Ok(text) => text
-      Err(error) => raise error
-    }
-    read_oci_layout(path, index_text)
+    read_oci_layout(path, read_utf8(path + "/index.json", "index"))
   } else {
     let data = match read_bytes(path) {
       Ok(data) => data
@@ -117,9 +113,8 @@ pub fn ImageSource::from_oci_layout(
   config_json : String,
   layer_blobs : Array[Bytes],
 ) -> ImageSource raise ImageError {
-  let config = match @oci_spec.parse_image_config_lenient(config_json) {
-    Ok(config) => config
-    Err(err) => raise Malformed("config.json: \{err.to_string()}")
+  let config = @oci_spec.parse_image_config_lenient(config_json) catch {
+    err => raise Malformed("config.json: \{err.to_string()}")
   }
   let diff_ids = config.rootfs.diff_ids
   let layers = []
@@ -177,10 +172,7 @@ fn read_docker_archive(
   let json = @json.parse(text) catch {
     err => raise Malformed("\{name}: manifest.json: \{err.to_string()}")
   }
-  let record = match first_manifest_record(json, name) {
-    Ok(record) => record
-    Err(error) => raise error
-  }
+  let record = first_manifest_record(json, name)
   let config_text = match record.1 {
     Some(config_path) => {
       let raw = @layer_tree.read_file_from_tar(data, config_path) catch {
@@ -202,9 +194,8 @@ fn read_docker_archive(
   let config = match config_text {
     Some(text) =>
       Some(
-        match @oci_spec.parse_image_config_lenient(text) {
-          Ok(config) => config
-          Err(err) => raise Malformed("\{name}: config: \{err.to_string()}")
+        @oci_spec.parse_image_config_lenient(text) catch {
+          err => raise Malformed("\{name}: config: \{err.to_string()}")
         },
       )
     None => None
@@ -241,22 +232,21 @@ fn read_docker_archive(
 fn first_manifest_record(
   json : Json,
   name : String,
-) -> Result[(Array[String], String?), ImageError] {
+) -> (Array[String], String?) raise ImageError {
   let items = match json {
     Json::Array(items) => items
-    _ => return Err(Malformed("\{name}: manifest.json must be an array"))
+    _ => raise Malformed("\{name}: manifest.json must be an array")
   }
   if items.is_empty() {
-    return Err(Malformed("\{name}: manifest.json is empty"))
+    raise Malformed("\{name}: manifest.json is empty")
   }
   let fields = match items[0] {
     Json::Object(fields) => fields
-    _ => return Err(Malformed("\{name}: manifest.json[0] must be an object"))
+    _ => raise Malformed("\{name}: manifest.json[0] must be an object")
   }
   let layer_values = match fields.get("Layers") {
     Some(Json::Array(layers)) => layers
-    _ =>
-      return Err(Malformed("\{name}: manifest.json[0].Layers must be an array"))
+    _ => raise Malformed("\{name}: manifest.json[0].Layers must be an array")
   }
   let layers = layer_values.map(fn(item) {
     match item {
@@ -265,17 +255,15 @@ fn first_manifest_record(
     }
   })
   if layers.any(fn(path) { path.is_empty() }) {
-    return Err(
-      Malformed("\{name}: manifest.json[0].Layers must contain strings"),
-    )
+    raise Malformed("\{name}: manifest.json[0].Layers must contain strings")
   }
   let config = match fields.get("Config") {
     Some(Json::String(path)) => Some(path)
     Some(_) =>
-      return Err(Malformed("\{name}: manifest.json[0].Config must be a string"))
+      raise Malformed("\{name}: manifest.json[0].Config must be a string")
     None => None
   }
-  Ok((layers, config))
+  (layers, config)
 }
 
 ///|
@@ -290,32 +278,25 @@ fn read_oci_layout(
   let json = @json.parse(index_text) catch {
     err => raise Malformed("\{directory}/index.json: \{err.to_string()}")
   }
-  let manifest_digest = match first_manifest_digest(json, directory) {
-    Ok(digest) => digest
-    Err(error) => raise error
-  }
+  let manifest_digest = first_manifest_digest(json, directory)
   let manifest_path = blob_path(directory, manifest_digest)
-  let manifest_text = match read_utf8(manifest_path, "manifest") {
-    Ok(text) => text
-    Err(error) => raise error
+  let manifest_text = read_utf8(manifest_path, "manifest")
+  let document = try @oci_spec.parse_document(manifest_text) catch {
+    err => raise Malformed("\{manifest_path}: \{err.to_string()}")
+  } noraise {
+    document => document
   }
-  let manifest = match @oci_spec.parse_document(manifest_text) {
-    Ok(@oci_spec.OciDocument::Manifest(manifest)) => manifest
-    Ok(other) =>
+  let manifest = match document {
+    @oci_spec.OciDocument::Manifest(manifest) => manifest
+    other =>
       raise Malformed(
         "\{manifest_path}: expected a manifest, got \{other.to_string()}",
       )
-    Err(err) => raise Malformed("\{manifest_path}: \{err.to_string()}")
   }
   let config_digest = manifest.config.digest
-  let config_text = match
-    read_utf8(blob_path(directory, config_digest), "config") {
-    Ok(text) => text
-    Err(error) => raise error
-  }
-  let config = match @oci_spec.parse_image_config_lenient(config_text) {
-    Ok(config) => config
-    Err(err) => raise Malformed("\{config_digest}: \{err.to_string()}")
+  let config_text = read_utf8(blob_path(directory, config_digest), "config")
+  let config = @oci_spec.parse_image_config_lenient(config_text) catch {
+    err => raise Malformed("\{config_digest}: \{err.to_string()}")
   }
   let diff_ids = config.rootfs.diff_ids
   let layers = []
@@ -343,16 +324,15 @@ fn read_oci_layout(
 fn first_manifest_digest(
   json : Json,
   directory : String,
-) -> Result[String, ImageError] {
+) -> String raise ImageError {
   let index = match index_from_json(json) {
     Ok(index) => index
-    Err(err) =>
-      return Err(Malformed("\{directory}/index.json: \{err.to_string()}"))
+    Err(err) => raise Malformed("\{directory}/index.json: \{err.to_string()}")
   }
   if index.manifests.is_empty() {
-    return Err(Malformed("\{directory}/index.json contains no manifest"))
+    raise Malformed("\{directory}/index.json contains no manifest")
   }
-  Ok(index.manifests[0].digest)
+  index.manifests[0].digest
 }
 
 ///|
@@ -370,12 +350,12 @@ fn blob_path(directory : String, digest : String) -> String {
 
 ///|
 /// 读一个 utf-8 文件，失败时带上用途。
-fn read_utf8(path : String, what : String) -> Result[String, ImageError] {
+fn read_utf8(path : String, what : String) -> String raise ImageError {
   let data = match read_bytes(path) {
     Ok(data) => data
-    Err(reason) => return Err(Io("cannot read \{what} \{path}: \{reason}"))
+    Err(reason) => raise Io("cannot read \{what} \{path}: \{reason}")
   }
-  Ok(utf8_text(data))
+  utf8_text(data)
 }
 
 ///|
@@ -448,10 +428,14 @@ fn strip_dot_slash(path : String) -> String {
 ///|
 /// 解析 index.json，错误转成人话。
 fn index_from_json(json : Json) -> Result[@oci_spec.Index, String] {
-  match @oci_spec.parse_document_json(json) {
-    Ok(@oci_spec.OciDocument::IndexDoc(index)) => Ok(index)
-    Ok(other) => Err("expected an image index, got \{other.to_string()}")
-    Err(err) => Err(err.to_string())
+  let document = try @oci_spec.parse_document_json(json) catch {
+    err => return Err(err.to_string())
+  } noraise {
+    document => document
+  }
+  match document {
+    @oci_spec.OciDocument::IndexDoc(index) => Ok(index)
+    other => Err("expected an image index, got \{other.to_string()}")
   }
 }
 

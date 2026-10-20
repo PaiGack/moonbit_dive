@@ -83,9 +83,8 @@ pub impl FromJson for Digest with fn from_json(json, path) {
   let raw = @json.from_json(json) catch {
     error => raise decode_error(loc, error.to_string())
   }
-  match Digest::parse(raw) {
-    Ok(digest) => digest
-    Err(err) => raise decode_error(loc, err.to_string())
+  Digest::parse(raw) catch {
+    err => raise decode_error(loc, err.to_string())
   }
 }
 
@@ -109,39 +108,38 @@ pub let supported_digest_algorithms : Array[String] = ["sha256", "sha512"]
 /// 解析并校验 `algorithm:encoded` 形式的 digest。
 ///
 /// 校验项：非空、含冒号、算法受支持、encoded 非空、长度正确、全为 hex、全为小写。
-pub fn Digest::parse(raw : String) -> Result[Digest, DigestError] {
+pub fn Digest::parse(raw : String) -> Digest raise DigestError {
   if raw.is_empty() {
-    return Err(EmptyDigest)
+    raise EmptyDigest
   }
   let (algorithm, encoded) = match raw.find(":") {
-    None => return Err(MissingSeparator(raw))
+    None => raise MissingSeparator(raw)
     Some(index) => (raw[:index].to_owned(), raw[index + 1:].to_owned())
   }
   if algorithm.is_empty() {
-    return Err(MissingAlgorithm(raw))
+    raise MissingAlgorithm(raw)
   }
   if encoded.is_empty() {
-    return Err(EmptyEncoded(raw))
+    raise EmptyEncoded(raw)
   }
   let expected_length = match digest_hex_length(algorithm) {
-    None =>
-      return Err(UnsupportedAlgorithm(algorithm, supported_digest_algorithms))
+    None => raise UnsupportedAlgorithm(algorithm, supported_digest_algorithms)
     Some(length) => length
   }
   if encoded.length() != expected_length {
-    return Err(InvalidLength(algorithm, expected_length, encoded.length()))
+    raise InvalidLength(algorithm, expected_length, encoded.length())
   }
   for index, ch in encoded {
     match hex_value(ch) {
-      None => return Err(InvalidHexChar(algorithm, ch, index))
+      None => raise InvalidHexChar(algorithm, ch, index)
       Some(_) => ()
     }
     // 大写 hex 单独一类错误：调用方多半只想提示「改用小写」
     if ch >= 'A' && ch <= 'F' {
-      return Err(NotLowercase(raw))
+      raise NotLowercase(raw)
     }
   }
-  Ok({ algorithm, encoded, })
+  { algorithm, encoded, }
 }
 
 ///|
@@ -163,16 +161,17 @@ fn ascii_lowercase(input : String) -> String {
 ///
 /// `Digest::parse` 本身拒绝大写，规范化只用于处理外部来源的宽松输入。
 pub fn normalize_digest(raw : String) -> String {
-  match Digest::parse(raw) {
-    Ok(_) => raw
-    Err(_) => {
-      let lowered = ascii_lowercase(raw)
-      match Digest::parse(lowered) {
-        Ok(_) => lowered
-        Err(_) => raw
-      }
-    }
-  }
+  // 原样就合法（已经小写）时不必再试一次
+  let _ = Digest::parse(raw) catch { _ => return normalize_digest_lowered(raw) }
+  raw
+}
+
+///|
+/// `normalize_digest` 的后半段：原样解析失败时再试小写，仍不行就原样返回。
+fn normalize_digest_lowered(raw : String) -> String {
+  let lowered = ascii_lowercase(raw)
+  let _ = Digest::parse(lowered) catch { _ => return raw }
+  lowered
 }
 
 ///|
@@ -226,10 +225,7 @@ pub fn Digest::from_bytes(
 /// 算法不受支持、digest 格式不对都算「校验不通过」——调用方要的是
 /// 「这段字节是不是这个 digest」这一个答案。
 pub fn verify_digest(data : BytesView, digest : String) -> Bool {
-  let parsed = match Digest::parse(digest) {
-    Ok(parsed) => parsed
-    Err(_) => return false
-  }
+  let parsed = Digest::parse(digest) catch { _ => return false }
   if parsed.algorithm != "sha256" {
     return false
   }

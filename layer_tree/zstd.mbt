@@ -61,20 +61,18 @@ fn is_zstd_frame_magic(data : BytesView) -> Bool {
 ///|
 /// 把解码器的错误翻成一句能贴进报告的话。
 fn zstd_error_message(err : @zstd.ZstdError) -> String {
-  match err {
-    @zstd.ZstdError(kind, detail) =>
-      match kind {
-        @zstd.Truncated => "truncated zstd frame: \{detail}"
-        @zstd.Corrupt => "corrupt zstd frame: \{detail}"
-        @zstd.ChecksumMismatch => "zstd checksum mismatch: \{detail}"
-        @zstd.WindowTooLarge =>
-          "zstd frame needs an oversized window: \{detail}"
-        @zstd.DictionaryUnsupported =>
-          "zstd frame needs a dictionary (OCI layers never carry one): \{detail}"
-        @zstd.OutputLimitExceeded =>
-          "zstd frame expands past \{zstd_max_output} bytes: \{detail}"
-        _ => detail
-      }
+  let @zstd.ZstdError(kind, detail) = err
+  match kind {
+    @zstd.Truncated => "truncated zstd frame: \{detail}"
+    @zstd.Corrupt => "corrupt zstd frame: \{detail}"
+    @zstd.ChecksumMismatch => "zstd checksum mismatch: \{detail}"
+    @zstd.WindowTooLarge => "zstd frame needs an oversized window: \{detail}"
+    @zstd.DictionaryUnsupported =>
+      "zstd frame needs a dictionary (OCI layers never carry one): \{detail}"
+    @zstd.OutputLimitExceeded =>
+      "zstd frame expands past \{zstd_max_output} bytes: \{detail}"
+    // 解码库以后可能加新错误码，未知的照样把原文透给用户
+    @zstd.ZstdErrorKind::.. => detail
   }
 }
 
@@ -102,7 +100,7 @@ pub fn zstd_compress(data : BytesView) -> Bytes {
       "zstd_compress is a fixture helper: single-segment frames cap out at 255 bytes",
     )
   }
-  let output = @buffer.new(size_hint=length + 16)
+  let output = Buffer()
   output.write_bytes(b"\x28\xb5\x2f\xfd")
   output.write_byte(b'\x20')
   output.write_byte(length.to_byte())

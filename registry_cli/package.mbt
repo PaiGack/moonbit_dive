@@ -109,9 +109,8 @@ fn package_oci_layout(image : RemoteImage) -> ArchiveBundle raise RegistryError 
 ///|
 /// `blobs/sha256/<hex>`；其它算法按 OCI 规范放 `blobs/<algo>/<hex>`。
 fn blob_path(digest : String) -> String raise RegistryError {
-  let parsed = match @oci_spec.Digest::parse(digest) {
-    Ok(parsed) => parsed
-    Err(err) => raise Unsupported(err.to_string())
+  let parsed = @oci_spec.Digest::parse(digest) catch {
+    err => raise Unsupported(err.to_string())
   }
   "blobs/\{parsed.algorithm}/\{parsed.encoded}"
 }
@@ -197,10 +196,8 @@ fn package_docker_archive(
   image : RemoteImage,
 ) -> ArchiveBundle raise RegistryError {
   let config_text = @encoding.decoder(UTF8).decode_lossy(image.config.data)
-  let config = match @oci_spec.parse_image_config_lenient(config_text) {
-    Ok(config) => config
-    Err(err) =>
-      raise Unsupported("image config is not readable: \{err.to_string()}")
+  let config = @oci_spec.parse_image_config_lenient(config_text) catch {
+    err => raise Unsupported("image config is not readable: \{err.to_string()}")
   }
   let diff_ids = config.rootfs.diff_ids
   let writer = @layer_tree.TarWriter::new()

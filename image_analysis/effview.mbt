@@ -106,10 +106,7 @@ fn under_prefix(path : String, prefix : String?) -> Bool {
     None => true
     Some(raw) => {
       // 输入是用户手写的路径，可能带 `./` 或重复斜杠，先规范化再比
-      let normalized = match @layer_tree.normalize_path(raw) {
-        Ok(path) => path
-        Err(_) => "/"
-      }
+      let normalized = @layer_tree.normalize_path(raw) catch { _ => "/" }
       @layer_tree.path_is_under(path, normalized)
     }
   }

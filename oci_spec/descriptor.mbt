@@ -78,7 +78,7 @@ pub extend Descriptor with Show::{to_string, output}
 /// 解析并校验 descriptor 的 digest，返回规范化后的 `Digest`。
 pub fn Descriptor::validated_digest(
   self : Descriptor,
-) -> Result[Digest, DigestError] {
+) -> Digest raise DigestError {
   Digest::parse(self.digest)
 }
 

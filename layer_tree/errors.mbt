@@ -4,6 +4,9 @@ pub(all) suberror TarError {
   Truncated(String)
   BadHeader(String)
   InvalidNumber(String, String)
+  /// 流已读完（零块或尾部填充）：给 `TarReader::next` 当循环出口用，
+  /// 不是错误，是「没有下一条」的信号
+  NotFound
 } derive(Eq, Debug)
 
 ///|
@@ -19,6 +22,7 @@ pub impl Show for TarError with fn to_string(self) {
     BadHeader(reason) => "invalid tar header: \{reason}"
     InvalidNumber(field, raw) =>
       "invalid \{field} field in tar header: \"\{raw}\""
+    NotFound => "end of tar stream"
   }
 }
 
