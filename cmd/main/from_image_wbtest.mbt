@@ -69,21 +69,23 @@ async test "from-image wires docker_cli output into the analysis path" {
 }
 
 ///|
-/// 无 daemon / 无 CLI：探测全失败要抛 `CommandError::Docker`，
-/// 人话里带上安装提示，而不是 IO 层面的「读不到文件」。
-async test "from-image without any backend reports a docker error" {
+/// 无 daemon / 无 CLI：探测全失败，`--no-pull` 下直接报 `CommandError::Docker`，
+/// 人话里带上安装提示，而不是 IO 层面的「读不到文件」，也不会偷偷去连 registry。
+///
+/// 不给 `--no-pull` 的那一半见下一条用例：那时要回退到 registry（issue #109）。
+async test "from-image without any backend reports a docker error under --no-pull" {
   // 给一个空目录当 PATH（里面没有任何 docker / podman / nerdctl）
   let (empty, _probe) = @docker_cli.write_fake_cli_named(
     "not-docker", "#!/bin/sh\n",
   )
   let options = Options::from_matches(
-    cli().parse(argv=["nginx:latest", "--from-image"]) catch {
+    cli().parse(argv=["nginx:latest", "--from-image", "--no-pull"]) catch {
       err => fail("should parse: \{err}")
     },
   )
-  let env = { "PATH": empty }
+  assert_true(options.no_pull)
   let error : CommandError = try {
-    load_source(options, env~, candidates=cli_only()) |> ignore
+    load_source(options, env={ "PATH": empty }, candidates=cli_only()) |> ignore
     Image("expected an error, got a source")
   } catch {
     Docker(message) => Docker(message)
@@ -99,6 +101,88 @@ async test "from-image without any backend reports a docker error" {
   assert_true(message.contains("docker / podman / nerdctl"))
 
   @docker_cli.remove_fake_cli_dir(empty)
+}
+
+///|
+/// 没有 docker 就自己连 registry：issue #109 的主要诉求。
+///
+/// 这里用一个必然连不上的 registry（`127.0.0.1:1` 上没人监听）来证明
+/// **回退真的发生了**：报出来的错变成 registry 的，不再是 docker 的。
+/// 「回退之后能拉成功」由 `registry_cli` 自己的用例保证，不必在这叠网络。
+async test "from-image falls back to the registry when there is no docker" {
+  let (empty, _probe) = @docker_cli.write_fake_cli_named(
+    "not-docker", "#!/bin/sh\n",
+  )
+  let options = Options::from_matches(
+    cli().parse(argv=[
+      "127.0.0.1:1/demo:latest", "--from-image", "--timeout", "1",
+    ]) catch {
+      err => fail("should parse: \{err}")
+    },
+  )
+  assert_false(options.no_pull)
+  let error : CommandError = try {
+    load_source(options, env={ "PATH": empty }, candidates=cli_only()) |> ignore
+    Image("expected an error, got a source")
+  } catch {
+    Docker(message) => Docker(message)
+    Image(message) => Image(message)
+    Analysis(message) => Analysis(message)
+    Registry(message) => Registry(message)
+  }
+  // 报的必须是 registry 的错：回退发生了
+  assert_true(error is Registry(_))
+  @docker_cli.remove_fake_cli_dir(empty)
+}
+
+///|
+/// 有 docker 但取不到归档时**不**回退：那是「这条路推不动」，不是「没有 docker」。
+///
+/// 拿一次注定失败的 registry 拉取盖住真正的错，是这次改动最该防的回归。
+async test "from-image does not fall back when a docker backend was probed" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let archive = @docker_cli.build_docker_archive(
+    [("cafe", layer)],
+    config="cafe.json",
+    config_json=(
+      #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:cafe"] } }
+    ),
+  )
+  let archive_path = @docker_cli.write_temp_bytes("no-fallback.tar", archive)
+  let dir = @async_fs.tmpdir(prefix="dive-from-image-no-fallback-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let log = "\{dir}/calls.log"
+  // inspect 说本地有，save 却非零退出：后端是活的，只是这个镜像导不出来
+  let script = @docker_cli.fake_recording_cli(
+    log,
+    archive_path,
+    "[{\"Id\":\"sha256:cafe\"}]",
+    save_code=1,
+  )
+  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+
+  let options = Options::from_matches(
+    cli().parse(argv=["example:latest", "--from-image"]) catch {
+      err => fail("should parse: \{err}")
+    },
+  )
+  let error : CommandError = try {
+    load_source(options, env={ "PATH": bin }, candidates=cli_only()) |> ignore
+    Image("expected an error, got a source")
+  } catch {
+    Docker(message) => Docker(message)
+    Image(message) => Image(message)
+    Analysis(message) => Analysis(message)
+    Registry(message) => Registry(message)
+  }
+  assert_true(error is Docker(_))
+
+  @docker_cli.remove_fake_cli_dir(bin)
+  @docker_cli.remove_temp_bytes(archive_path)
+  @docker_cli.remove_fake_cli_dir(dir)
 }
 
 ///|

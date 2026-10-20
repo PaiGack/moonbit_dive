@@ -91,6 +91,20 @@ OCI layout 直接把它抄过去、docker-archive 再读回来解压；
 `docker pull` 一次。要完全离线（绝不发起网络请求、`inspect` 说没有就直接 `save`）
 加 `--no-pull`。
 
+这台机器上**一个 docker 后端都没有**（没装 docker / podman / nerdctl，也没有可用的
+daemon socket）时，`--from-image` 会自己连 registry，走的就是 `--from-registry` 那条路
+（[#109](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/109)）：
+
+```bash
+# 没有 docker 也能跑：自动从 registry 拉
+moon run --target native cmd/main -- docker.cnb.cool/owner/repo:tag --from-image
+# --no-pull 关掉这个兜底：不上网就是不上网，直接报错并给安装提示
+```
+
+只有「一条能走的路都没有」才兜底。docker 在、只是这个镜像导不出来（daemon 挂着、
+权限不够、镜像不在本地且拉取失败）时仍然报 docker 的错——拿一场注定失败的 registry
+拉取盖住真原因是最坏的选择。
+
 单次 docker 调用有 **30 秒默认空闲超时**（`--timeout` 调大）：这里的钟量的是
 「多久没有任何输出」，不是总时长——`docker pull` 拉大镜像时进度一直在刷，
 不会被误砍；真卡在 socket 上半死不动的，才会被收掉。后端探测与降级见

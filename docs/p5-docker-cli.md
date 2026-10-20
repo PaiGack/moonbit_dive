@@ -137,6 +137,18 @@ docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都�
   取到归档后走既有的 `ImageSource::from_tar_bytes`，**不新开分析链路**。
   探测失败（`NoBackend` / `ExecutableNotFound` / `InvalidReference` / `Backend`）
   打人话 + 安装提示，不吞 docker 的 stderr，按「入参/环境不对」退 exit 2。
+
+- **没有 docker 时自动改走 registry**（[#109](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/109)）：
+  一台机器上既没有可用的 daemon socket、PATH 上也没有 docker / podman / nerdctl 时，
+  `--from-image` 不再直接失败，而是把同一个位置参数交给 `registry_cli` 直连拉取
+  （`--from-registry` 的那条路，落临时文件再走 `ImageSource::load`）。
+
+  判据是**探测记录里有没有 `[ok]` 的候选**（`docker_cli.no_backend_at_all`），
+  不是「错误类型是不是 `NoBackend`」：后端序列会在取归档阶段继续往下试，
+  某个候选探活了却取不到（socket 通了、对端不认识这个镜像）时主错误同样是
+  `NoBackend`——那种情况 docker 是**在**的，回退只会拿一场注定失败的 registry
+  拉取盖住真正的原因。`--no-pull` 关掉这个兜底：那个开关的语义是「不上网」，
+  而直连 registry 是最彻底的上网。
 - **不做自动魔数嗅探**：只认显式 `--from-image`，避免「给个文件却去连 daemon」这种意外行为。
   原先设想的「探测顺序里自动识别镜像名」不再做。
 - **本地缺镜像默认就拉**（对齐原版 dive，见 issue #44）：Go 版没有 `--pull` 开关，

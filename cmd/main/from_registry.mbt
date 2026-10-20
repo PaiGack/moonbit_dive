@@ -18,6 +18,28 @@ priv struct RegistryOptions {
 }
 
 ///|
+/// 远端 registry → 内存里的镜像来源：落盘到临时目录，再走既有 `ImageSource::load`。
+///
+/// 落成文件再读回来是**故意的**：三种输入格式（docker-archive / OCI layout /
+/// 单层 tar）的识别逻辑只有一份，不该为「内存里的镜像」再写一套。
+/// 临时产物无论成败都要收掉：失败时留着只会攒垃圾。
+async fn load_from_registry(
+  options : Options,
+) -> @image_ci.ImageSource raise CommandError {
+  let registry_options = registry_options(options)
+  let (result, _) = save_remote(registry_options)
+  if options.verbose {
+    eprintln("[registry] parsing \{result.path}...")
+  }
+  errdefer cleanup_remote(registry_options, result)
+  let source = @image_ci.ImageSource::load(result.path) catch {
+    err => raise CommandError::Image(err.to_string())
+  }
+  cleanup_remote(registry_options, result)
+  source
+}
+
+///|
 /// 拉一次远端镜像并落盘，返回落盘结果。
 ///
 /// 落盘位置在**临时目录**里：分析链路只认「路径」这个入口（`ImageSource::load`），

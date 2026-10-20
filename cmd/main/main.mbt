@@ -12,6 +12,10 @@
 /// 那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就 `docker pull` 一次。
 /// 想完全离线（不给任何网络请求）就用 `--no-pull`。
 ///
+/// 这台机器上**一个 docker 后端都没有**时，`--from-image` 会自己连 registry
+/// （issue #109）：位置参数本来就是镜像名，没道理因为少装一个 docker 就停在这里。
+/// 回退走的是 `--from-registry` 同一条路，`--no-pull` 能把它关掉。
+///
 /// `--layer` / `--path` / `--aggregate` / `--efficiency` 是 dive 交互界面的只读替身：
 /// 没有 TUI，但能逐层看文件树、按目录下钻、按「多写了几份」看哪条路径拖了效率。
 /// 给了 `--layer` / `--aggregate` 或 `--efficiency` 就不做门禁判定，只打印对应的那张表。
@@ -197,7 +201,7 @@ fn cli() -> @argparse.Command {
       ),
       @argparse.FlagArg(
         "from-image",
-        about="treat the positional as an image reference (docker/podman/nerdctl or docker socket)",
+        about="treat the positional as an image reference: docker/podman/nerdctl or the docker socket, falling back to the registry when there is no docker at all",
       ),
       @argparse.FlagArg(
         "from-registry",
@@ -209,7 +213,7 @@ fn cli() -> @argparse.Command {
       ),
       @argparse.FlagArg(
         "no-pull",
-        about="with --from-image, do not pull a missing image (offline: never touch the network)",
+        about="with --from-image, do not pull a missing image and do not fall back to the registry (offline: never touch the network)",
       ),
       @argparse.FlagArg(
         "verbose",
@@ -249,7 +253,8 @@ struct Options {
   efficiency : Bool
   /// 把位置参数当镜像名，走 `docker_cli` 取归档
   from_image : Bool
-  /// `--no-pull`：`--from-image` 时本地缺镜像也不拉，绝不发起网络请求
+  /// `--no-pull`：`--from-image` 时本地缺镜像也不拉、探测不到 docker 也不回退 registry，
+  /// 绝不发起网络请求
   no_pull : Bool
   /// 打 `docker_cli` 的后端探测记录
   verbose : Bool
@@ -524,21 +529,7 @@ async fn load_source(
   candidates? : Array[@docker_cli.BackendCandidate],
 ) -> @image_ci.ImageSource raise CommandError {
   if options.from_registry {
-    // 远端 registry → 临时目录里的 tar / layout → 既有 `ImageSource::load`。
-    // 落成文件再读回来是**故意的**：三种输入格式（docker-archive / OCI layout /
-    // 单层 tar）的识别逻辑只有一份，不该为「内存里的镜像」再写一套。
-    let registry_options = registry_options(options)
-    let (result, _) = save_remote(registry_options)
-    if options.verbose {
-      eprintln("[registry] parsing \{result.path}...")
-    }
-    // 临时产物无论成败都要收掉：失败时留着只会攒垃圾
-    errdefer cleanup_remote(registry_options, result)
-    let source = @image_ci.ImageSource::load(result.path) catch {
-      err => raise CommandError::Image(err.to_string())
-    }
-    cleanup_remote(registry_options, result)
-    return source
+    return load_from_registry(options)
   }
   if !options.from_image {
     return @image_ci.ImageSource::load(options.image) catch {
@@ -568,9 +559,16 @@ async fn load_source(
     pull_if_missing=!options.no_pull,
     on_stage=fn(stage) { describe_stage(options, stage) },
   ) catch {
-    // NoBackend / ExecutableNotFound / InvalidReference / Backend 都归到 Docker：
-    // `Show` 已经把这些转成人话（含安装提示与子进程 stderr）
-    err => raise CommandError::Docker(err.to_string())
+    // 没有 docker 就自己连 registry：`--from-image` 的语义是「这是镜像名」，
+    // 不是「必须走 docker」（issue #109 的兜底）
+    err => {
+      if !options.no_pull && @docker_cli.no_backend_at_all(err) {
+        return fallback_to_registry(options, err)
+      }
+      // 其余（有 docker 但取不到、`--no-pull`、名字非法）都归到 Docker：
+      // `Show` 已经把这些转成人话（含安装提示与子进程 stderr）
+      raise CommandError::Docker(err.to_string())
+    }
   }
   // 探测记录走 stderr，别混进报告：报告还可能被 `-o` / 管道消费
   if options.verbose {
@@ -591,6 +589,37 @@ async fn load_source(
   ) catch {
     err => raise CommandError::Image(err.to_string())
   }
+}
+
+///|
+/// `--from-image` 探测不到任何 docker 后端时的兜底：改走 `--from-registry`。
+///
+/// 触发条件只有「这台机器上没有一条能走的路」（见 `no_backend_at_all`），
+/// 而且 `--no-pull` 在场就不兜——那个开关的意思是「不许上网」，
+/// 而直连 registry 是最彻底的上网。两种情况下错误原样抛出去，
+/// 由 `Docker(message)` 带着安装提示说话。
+///
+/// 探测记录照旧走 stderr：回退之后，「为什么没用 docker」仍然是排查时
+/// 第一个要看的东西，而报告还可能被 `-o` / 管道消费，不能混进去。
+///
+/// token 按位置参数的原样引用去 `$DIVE_REGISTRY_TOKEN` 取（见 `registry_cli`）：
+/// 被回退的多半是 CNB 这类带 `docker.cnb.cool/` 前缀的镜像名，
+/// 而那个环境里正好是这个变量装着凭据。
+async fn fallback_to_registry(
+  options : Options,
+  err : @docker_cli.DockerCliError,
+) -> @image_ci.ImageSource raise CommandError {
+  let probed = match err {
+    @docker_cli.NoBackend(_, probed) => probed
+    _ => ""
+  }
+  if options.verbose && !probed.is_empty() {
+    eprintln(probed)
+  }
+  eprintln(
+    "no docker backend here, pulling \{options.image} straight from its registry",
+  )
+  load_from_registry(options)
 }
 
 ///|

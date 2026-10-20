@@ -63,7 +63,8 @@ pub fn fake_inspect_and_save(
 /// `inspect` / `save` / `pull` 分别吐 `inspect_json` / 归档 / `pull_output`，
 /// 用来验证「本地有没有镜像 → 要不要 pull → pull 之后才 save」这条策略：
 /// 光看最终产物分不清中间做过什么，得看日志里的**调用顺序**。
-/// `inspect_code` 非 0 时 inspect 走失败分支，模拟「本地没有这个镜像」。
+/// `inspect_code` 非 0 时 inspect 走失败分支，模拟「本地没有这个镜像」；
+/// `save_code` 非 0 时 save 吐完归档再非零退出，模拟「后端活着但这个镜像导不出来」。
 ///
 /// 命令名靠 `basename "$0"` 取，测 `podman` / `nerdctl` 时可以换个文件名。
 pub fn fake_recording_cli(
@@ -72,6 +73,7 @@ pub fn fake_recording_cli(
   inspect_json : String,
   pull_output~ : String = "Pull complete\n",
   inspect_code~ : Int32 = 0,
+  save_code~ : Int32 = 0,
 ) -> String {
   let script =
     #|#!/bin/sh
@@ -86,6 +88,7 @@ pub fn fake_recording_cli(
     #|    ;;
     #|  save)
     #|    cat 'ARCHIVE_PATH'
+    #|    exit SAVE_CODE
     #|    ;;
     #|  pull)
     #|    printf '%s' 'PULL_OUTPUT'
@@ -102,6 +105,7 @@ pub fn fake_recording_cli(
   .replace(old="INSPECT_JSON", new=inspect_json)
   .replace(old="PULL_OUTPUT", new=pull_output)
   .replace(old="CODE_PLACEHOLDER", new=inspect_code.to_string())
+  .replace(old="SAVE_CODE", new=save_code.to_string())
   // `String::replace` 只换第一处，两个占位符得分开写
   .replace(
     old="INSPECT_CODE_IS_ZERO",
