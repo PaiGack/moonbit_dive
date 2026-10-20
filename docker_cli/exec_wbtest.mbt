@@ -125,3 +125,28 @@ async test "child stdin is an immediate EOF, not a device path" {
   assert_eq(@utf8.decode(stdout).trim(), "0")
   remove_fake_cli(program)
 }
+
+///|
+/// 超时的 `Cancelled` 必须带上「预算 vs 实际耗时」，不能只说一句「被取消了」。
+///
+/// 守的是 issue #94 的最后一层：用户拿到 `docker was cancelled` 时，
+/// 手上没有任何东西能判断「是 30 秒的预算真的用完了，还是子进程一秒就被拆了」。
+/// 两种情况的处置完全相反——前者该调大 `--timeout`，后者是上层任务组
+/// 提前把子进程带走了（`docker pull` 正常不会 1 秒就结束）。
+/// 把两个数并排写出来，一眼就能分辨。
+async test "timed-out cancellation reports the budget and the actual wait" {
+  let program = write_fake_cli("#!/bin/sh\nsleep 5\n")
+  let error = try {
+    run_cli(program, ["pull", "x"], 300) |> ignore
+    fail("run_cli should time out")
+  } catch {
+    err => err
+  }
+  let text = error.to_string()
+  assert_true(text.contains("was cancelled"))
+  // 预算原样报出来：用户能据此判断「该不该调大 --timeout」
+  assert_true(text.contains("300ms budget"))
+  // 实际耗时也报出来：与预算相当 = 真超时；远小于预算 = 被上层拆掉
+  assert_true(text.contains("gave up after"))
+  remove_fake_cli(program)
+}

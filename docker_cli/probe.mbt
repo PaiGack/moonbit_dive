@@ -389,10 +389,11 @@ fn strip_path_prefix(path : String, text : String) -> String {
     let rest = text[failed.length():].to_owned()
     return if rest.has_prefix(": ") { rest[2:].to_owned() } else { rest }
   }
-  // `Cancelled` 形态：`<path> was cancelled`，整串的重心就是「被取消了」
+  // `Cancelled` 形态：`<path> was cancelled: <reason>`，去掉路径、留原因
   let cancelled = "\{path} was cancelled"
   if text.has_prefix(cancelled) {
-    return "was cancelled"
+    let rest = text[cancelled.length():].to_owned()
+    return if rest.has_prefix(": ") { rest[2:].to_owned() } else { rest }
   }
   text
 }

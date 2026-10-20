@@ -88,12 +88,16 @@ pub async fn http_over_unix(
     // `Show` 再渲染一次，用户看到的是
     // 「/var/run/docker.sock failed: /var/run/docker.sock failed: connect failed: errno 2」。
     // 一次失败被描述两遍，排查的人只能猜。
+    let started = @async.now()
     let result = @async.with_timeout_opt(timeout_ms, () => work()) catch {
       err => raise preserve(err)
     }
     match result {
       Some(response) => response
-      None => raise Cancelled(socket_path)
+      None => {
+        let elapsed = (@async.now() - started).to_int()
+        raise Cancelled(socket_path, elapsed_report(timeout_ms, elapsed))
+      }
     }
   } else {
     work() catch {
@@ -115,7 +119,7 @@ fn preserve(err : Error) -> DockerCliError {
     DockerCliError::NoBackend(detail) => NoBackend(detail)
     DockerCliError::Backend(name, code, detail) => Backend(name, code, detail)
     DockerCliError::ExecutableNotFound(name) => ExecutableNotFound(name)
-    DockerCliError::Cancelled(name) => Cancelled(name)
+    DockerCliError::Cancelled(name, reason) => Cancelled(name, reason)
     DockerCliError::Archive(detail) => Archive(detail)
     DockerCliError::InvalidReference(detail) => InvalidReference(detail)
     DockerCliError::ImageNotFound(reference) => ImageNotFound(reference)

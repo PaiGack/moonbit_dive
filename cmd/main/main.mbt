@@ -577,8 +577,11 @@ fn describe_stage(options : Options, stage : @docker_cli.FetchStage) -> Unit {
       eprintln(
         "[docker] trying \{@docker_cli.ImageBackend::to_string(backend)}...",
       )
+    // 开始新的等待：打一句带时刻的，结束再由下一句（或最终结果）收尾。
+    // 用户能据此判断「卡在哪一步、已经卡了多久」——这正是 issue #94 里
+    // 一句 `was cancelled` 提供不了的信息。
     Pulling(reference) =>
-      eprintln("[docker] no local image, pulling \{reference}")
+      eprintln("[docker] no local image, pulling \{reference}...")
     Saving(reference) => eprintln("[docker] saving \{reference}...")
   }
 }
