@@ -89,8 +89,9 @@ moon run --target native cmd/main -- --save --from-registry --insecure-registry 
 `docker pull` 一次。要完全离线（绝不发起网络请求、`inspect` 说没有就直接 `save`）
 加 `--no-pull`。
 
-单次 docker 调用有 **30 秒默认超时**（`--timeout` 调大）：socket 半死时不给超时
-就会静默挂住，啥也看不到。后端探测与降级见
+单次 docker 调用有 **30 秒默认空闲超时**（`--timeout` 调大）：这里的钟量的是
+「多久没有任何输出」，不是总时长——`docker pull` 拉大镜像时进度一直在刷，
+不会被误砍；真卡在 socket 上半死不动的，才会被收掉。后端探测与降级见
 [`docker_cli/README.mbt.md`](docker_cli/README.mbt.md)。
 
 `--timeout` 只包住 docker 调用。**取到归档之后的解压与叠树是纯本地计算，不受它约束**，

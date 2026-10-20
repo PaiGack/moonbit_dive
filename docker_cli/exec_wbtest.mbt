@@ -127,14 +127,12 @@ async test "child stdin is an immediate EOF, not a device path" {
 }
 
 ///|
-/// 超时的 `Cancelled` 必须带上「预算 vs 实际耗时」，不能只说一句「被取消了」。
+/// 超时的 `Cancelled` 必须带上「多久没输出 / 预算 / 总共跑了多久」。
 ///
 /// 守的是 issue #94 的最后一层：用户拿到 `docker was cancelled` 时，
-/// 手上没有任何东西能判断「是 30 秒的预算真的用完了，还是子进程一秒就被拆了」。
-/// 两种情况的处置完全相反——前者该调大 `--timeout`，后者是上层任务组
-/// 提前把子进程带走了（`docker pull` 正常不会 1 秒就结束）。
-/// 把两个数并排写出来，一眼就能分辨。
-async test "timed-out cancellation reports the budget and the actual wait" {
+/// 手上没有任何东西能判断到底发生了什么。三个数并排写出来，
+/// 一眼就能分辨「一句话都没有」和「一直在动、只是最后卡住了」。
+async test "timed-out cancellation reports the idle budget and the total run" {
   let program = write_fake_cli("#!/bin/sh\nsleep 5\n")
   let error = try {
     run_cli(program, ["pull", "x"], 300) |> ignore
@@ -144,9 +142,54 @@ async test "timed-out cancellation reports the budget and the actual wait" {
   }
   let text = error.to_string()
   assert_true(text.contains("was cancelled"))
-  // 预算原样报出来：用户能据此判断「该不该调大 --timeout」
-  assert_true(text.contains("300ms budget"))
-  // 实际耗时也报出来：与预算相当 = 真超时；远小于预算 = 被上层拆掉
-  assert_true(text.contains("gave up after"))
+  // 预算原样报出来：用户能据此判断该不该调大 --timeout
+  assert_true(text.contains("300ms"))
+  // 「多久没动静」单独报：这才是这次钟真正量的东西
+  assert_true(text.contains("no output for"))
+  assert_true(text.contains("ran"))
+  remove_fake_cli(program)
+}
+
+///|
+/// **有输出就不该超时**（issue #94 的直接回归）。
+///
+/// 这条钟量的是空闲，不是总时长：子进程一直往外吐字节就不算「卡住」，
+/// 哪怕总共跑得比预算久得多。修之前 `docker pull` 拉一个正经镜像
+/// （几十秒、进度一直在刷）会被 30 秒的总时长硬砍，日志停在
+/// `pulling ...` 上，看起来像网络挂了。
+///
+/// 脚本每 0.1 秒吐一行、连吐 20 次（≈2 秒），预算只给 400ms：
+/// 旧的「总时长」语义下这条半秒内就炸；新语义下必须正常跑完。
+///
+/// 间隔（0.1s）要明显小于预算（0.4s），否则测的就不是「有输出不超时」，
+/// 而是「偶尔抖一下算不算卡死」——那是另一件事，别混进来。
+async test "a child that keeps writing is never treated as timed out" {
+  let program = write_fake_cli(
+    "#!/bin/sh\ni=0\nwhile [ $i -lt 20 ]; do echo \"chunk $i\"; sleep 0.1; i=$((i+1)); done\n",
+  )
+  let (code, stdout, _stderr) = run_cli(program, ["pull", "x"], 400) catch {
+    err => fail("steady output must not be cancelled: \{err}")
+  }
+  assert_eq(code, 0)
+  // 20 行都在，说明中途没有被拆掉
+  let lines = @utf8.decode(stdout).trim().split("\n").collect()
+  assert_eq(lines.length(), 20)
+  remove_fake_cli(program)
+}
+
+///|
+/// 反过来说，吐了几口之后就彻底没动静的那次，仍然要按空闲超时收掉。
+///
+/// 两条一起看才算把语义钉住：`docker pull` 刷完进度行卡在别处、
+/// 对端不写也不关，正是这条钟该管的事。
+async test "silence after some output still times out" {
+  let program = write_fake_cli("#!/bin/sh\necho started\nsleep 10\n")
+  let error = try {
+    run_cli(program, ["pull", "x"], 400) |> ignore
+    fail("silence should time out")
+  } catch {
+    err => err
+  }
+  assert_true(error.to_string().contains("was cancelled"))
   remove_fake_cli(program)
 }
