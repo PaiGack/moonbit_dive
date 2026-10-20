@@ -46,6 +46,8 @@ pub fn diff_aggregate(FileTree, FileTree, Array[Diff], Int32, Int32) -> Diff
 
 pub fn diff_snapshots(FileTree, FileTree, Int32, Int32) -> Diff
 
+pub fn find_tar_entry(MappedReader, String) -> TarEntry? raise TarError
+
 pub fn gzip_compress(BytesView) -> Bytes
 
 pub async fn gzip_decompress(BytesView) -> Bytes raise DecompressError
@@ -70,6 +72,8 @@ pub fn parent_path(String) -> String
 
 pub fn parse_tar_entries(BytesView) -> Array[TarEntry] raise TarError
 
+pub fn parse_tar_entries_from(MappedReader) -> Array[TarEntry] raise TarError
+
 pub fn path_depth(String) -> Int32
 
 pub fn path_is_under(String, String) -> Bool
@@ -81,6 +85,8 @@ pub fn permission_string(Int32, NodeKind) -> String
 pub let plnk_marker : String
 
 pub fn read_file_from_tar(BytesView, String) -> BytesView? raise TarError
+
+pub fn read_mapped_file(MappedReader, String) -> Bytes? raise TarError
 
 pub fn remove_subtree(FileTree, String, Int32) -> Int32
 
@@ -310,6 +316,24 @@ pub fn LayerWrite::to_repr(Self) -> @debug.Repr
 pub fn LayerWrite::to_string(Self) -> String
 pub impl Show for LayerWrite
 
+pub struct MappedReader {
+  length : Int64
+  read_at : (Int64, Int32) -> Bytes
+  mut cached_from : Int64
+  mut cache : Bytes
+}
+pub fn MappedReader::length(Self) -> Int64
+pub fn MappedReader::new(length~ : Int64, read_at~ : (Int64, Int32) -> Bytes) -> Self
+pub fn MappedReader::read_exactly(Self, Int64, Int32) -> Bytes raise TarError
+pub fn MappedReader::read_some(Self, Int64, Int32) -> Bytes
+
+pub struct MappedTarReader {
+  reader : MappedReader
+  mut cursor : Int64
+}
+pub fn MappedTarReader::new(MappedReader) -> Self
+pub fn MappedTarReader::next(Self) -> TarEntry raise TarError
+
 pub(all) struct Node {
   path : String
   mut kind : NodeKind
@@ -395,6 +419,7 @@ pub(all) struct TarEntry {
   mtime : Int32
   link_target : String
   data_offset : Int32
+  data_offset_64 : Int64
 } derive(Eq, @debug.Debug)
 pub fn TarEntry::data(Self, BytesView) -> BytesView
 pub fn TarEntry::equal(Self, Self) -> Bool
@@ -454,12 +479,14 @@ pub fn TarWriteEntry::not_equal(Self, Self) -> Bool
 pub fn TarWriteEntry::to_repr(Self) -> @debug.Repr
 
 pub struct TarWriter {
-  trailer : FixedArray[Byte]
+  // private fields
 } derive(@debug.Debug)
 pub async fn TarWriter::begin(Self, &@io.Writer, TarWriteEntry) -> Unit
 pub async fn TarWriter::finish(Self, &@io.Writer) -> Unit
+pub fn TarWriter::header_bytes(Self, TarWriteEntry) -> Bytes
 pub fn TarWriter::new() -> Self
 pub async fn TarWriter::pad(Self, &@io.Writer, Int32) -> Unit
+pub fn TarWriter::padding_bytes(Self, Int32) -> Bytes
 pub fn TarWriter::to_repr(Self) -> @debug.Repr
 pub async fn TarWriter::write_entry(Self, &@io.Writer, TarWriteEntry, BytesView) -> Unit
 

@@ -420,3 +420,30 @@ async test "packing a big layer streams instead of buffering it" {
   assert_eq(entries[0].path, "payload.bin")
   assert_eq(entries[0].size, size)
 }
+
+///|
+/// 单遍打包：层只解压一次，两边（目录名里的 sha256 与 tar 里的字节）必须自洽。
+///
+/// issue #113 前的写法先整层解压一遍只为拿 `diff id`，再解压一遍写 tar——
+/// 大镜像上这一项就是双倍 CPU。这里钉住的是「一遍也对」：
+/// 名字里的摘要与写进 tar 的字节算出来的是同一个值。
+async test "docker-archive is packed in a single pass" {
+  let image = sample_image()
+  let tar = pack_docker_archive(image)
+  let config_text = @encoding.decoder(UTF8).decode(
+    image.config.bytes() catch {
+      err => fail("config should be readable: \{err.to_string()}")
+    },
+  )
+  let config = @oci_spec.parse_image_config_lenient(config_text)
+  // 每层都按「tar 里的字节」重算一遍摘要，与目录名（也就是 diff id）对齐
+  for diff_id in config.rootfs.diff_ids {
+    let path = "\{diff_id[7:]}/layer.tar"
+    let layer = match @layer_tree.read_file_from_tar(tar, path) {
+      Some(layer) => layer
+      None => fail("layer \{path} is missing from the archive")
+    }
+    // 名字与字节必须自洽：一笔写出来的摘要是同一个值
+    assert_eq(@oci_spec.Digest::from_sha256(layer).to_string(), diff_id)
+  }
+}

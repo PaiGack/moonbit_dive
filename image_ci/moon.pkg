@@ -2,6 +2,7 @@ import {
   "PaiGack/dive/image_analysis",
   "PaiGack/dive/layer_tree",
   "PaiGack/dive/oci_spec",
+  "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
   "moonbitlang/x/encoding",
@@ -19,4 +20,12 @@ import {
 
 warnings = "-test_unqualified_package"
 
-supported_targets = "wasm-gc+native"
+// 层按需读要 `fopen`/`fseek`/`fread` 一层薄 FFI（见 `file_reader.mbt`）。
+// wasm 上没有文件可读，本包因此只声明 native——与 `docker_cli` /
+// `registry_cli` 一致。
+
+supported_targets = "-all+native"
+
+options(
+  "native-stub": [ "file_stub.c" ],
+)
