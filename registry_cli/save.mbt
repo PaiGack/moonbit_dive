@@ -9,8 +9,10 @@ pub(all) struct SaveRequest {
   platform : String?
   insecure : Bool
   token : String?
-  /// 打一行进度（写 stderr 由调用方决定）
-  on_progress : ((String) -> Unit)?
+  /// 拉取进度（写 stderr / 画进度条由调用方决定）
+  on_progress : ((PullEvent) -> Unit)?
+  /// 每次报完进度后「立刻画一下」的钩子，见 `PullOptions::on_tick`
+  on_tick : (() -> Unit noraise)?
 }
 
 ///|
@@ -21,9 +23,19 @@ pub fn SaveRequest::new(
   platform~ : String? = None,
   insecure~ : Bool = false,
   token~ : String? = None,
-  on_progress~ : ((String) -> Unit)? = None,
+  on_progress~ : ((PullEvent) -> Unit)? = None,
+  on_tick~ : (() -> Unit noraise)? = None,
 ) -> SaveRequest {
-  { reference, output, format, platform, insecure, token, on_progress, }
+  {
+    reference,
+    output,
+    format,
+    platform,
+    insecure,
+    token,
+    on_progress,
+    on_tick,
+  }
 }
 
 ///|
@@ -82,10 +94,21 @@ pub async fn save_image(
     insecure=request.insecure,
     token=request.token,
     on_progress=request.on_progress,
+    on_tick=request.on_tick,
   )
-  notify_option(request.on_progress, "pulling \{reference.canonical()}")
+
   let image = pull_image(reference, options~)
+  // 打包这一步在大镜像上并不便宜（docker-archive 要把每层解压再套 tar），
+  // 进度条停在 100% 之后先说明一句，免得「网络好了又卡住」
+  notify_option(
+    request.on_progress,
+    Packing(note="packing the archive (decompress + tar)"),
+  )
   let bundle = package_image(image, format=request.format)
+  notify_option(
+    request.on_progress,
+    Writing(path=request.output, bytes=bundle.total_size().to_int64()),
+  )
   let written = write_bundle(bundle, request.output)
   {
     path: written.path,
@@ -97,9 +120,9 @@ pub async fn save_image(
 }
 
 ///|
-fn notify_option(callback : ((String) -> Unit)?, message : String) -> Unit {
+fn notify_option(callback : ((PullEvent) -> Unit)?, event : PullEvent) -> Unit {
   match callback {
-    Some(callback) => callback(message)
+    Some(callback) => callback(event)
     None => ()
   }
 }

@@ -13,7 +13,6 @@ priv struct RegistryOptions {
   platform : String?
   insecure : Bool
   token : String?
-  verbose : Bool
 }
 
 ///|
@@ -37,6 +36,12 @@ async fn save_remote(
   } else {
     options.output
   }
+  // 进度**默认就显示**：拉一个 700MB 的镜像时一声不吭，用户只会以为程序死了
+  // （issue #97）。`--verbose` 管的是后端探测之类的调试信息，
+  // 不该同时决定「看不看得到进度」。
+  let reporter = @registry_cli.PullReporter::new()
+  // 回调是同步的、写终端也是同步的（走 C 的 write(2)），所以这里直接刷
+  let tick : () -> Unit = fn() { reporter.flush() }
   let request = @registry_cli.SaveRequest::new(
     reference=options.reference,
     output~,
@@ -44,15 +49,17 @@ async fn save_remote(
     platform=options.platform,
     insecure=options.insecure,
     token=options.token,
-    on_progress=if options.verbose {
-      Some(fn(message) { eprintln("[registry] \{message}") })
-    } else {
-      None
-    },
+    on_progress=Some(reporter.handle()),
+    on_tick=Some(tick),
   )
   let result = @registry_cli.save_image(request) catch {
-    err => raise CommandError::Registry(err.to_string())
+    err => {
+      // 报错前把半行进度收个尾，否则错误信息会接在进度条后面
+      reporter.flush()
+      raise CommandError::Registry(err.to_string())
+    }
   }
+  reporter.flush()
   (result, directory)
 }
 

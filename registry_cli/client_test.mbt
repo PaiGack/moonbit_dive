@@ -5,7 +5,7 @@ fn reply_of(status : Int32, location : String?) -> @registry_cli.HttpReply {
     Some(location) => headers.set("location", location)
     None => ()
   }
-  { status, headers, body: b"", }
+  { status, headers, body: b"", source: None, }
 }
 
 ///|
@@ -63,7 +63,12 @@ test "path-relative location is rejected with a readable message" {
 ///|
 test "show of a reply keeps header lookup case-insensitive" {
   let headers : Map[String, String] = Map([("content-type", "application/json")])
-  let reply : @registry_cli.HttpReply = { status: 200, headers, body: b"", }
+  let reply : @registry_cli.HttpReply = {
+    status: 200,
+    headers,
+    body: b"",
+    source: None,
+  }
   assert_eq(reply.header("Content-Type"), Some("application/json"))
   assert_eq(reply.header("content-type"), Some("application/json"))
   assert_true(reply.header("etag") is None)

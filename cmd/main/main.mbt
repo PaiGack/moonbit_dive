@@ -402,7 +402,6 @@ fn registry_options(options : Options) -> RegistryOptions {
     platform: options.platform,
     insecure: options.registry_insecure,
     token: options.registry_token,
-    verbose: options.verbose,
   }
 }
 
