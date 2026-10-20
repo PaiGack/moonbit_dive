@@ -55,11 +55,11 @@ async fn save_remote(
   let result = @registry_cli.save_image(request) catch {
     err => {
       // 报错前把半行进度收个尾，否则错误信息会接在进度条后面
-      reporter.flush()
+      reporter.finish(failed=true)
       raise CommandError::Registry(err.to_string())
     }
   }
-  reporter.flush()
+  reporter.finish(failed=false)
   (result, directory)
 }
 

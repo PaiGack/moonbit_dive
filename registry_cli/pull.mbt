@@ -149,8 +149,10 @@ pub async fn pull_with_client(
     0,
     kind=ConfigBlob,
     options~,
+    plan_total_bytes=plan_bytes,
   )
   let layers : Array[PulledBlob] = []
+  let mut done_bytes : Int64 = 0L
   for index, descriptor in manifest.layers {
     let blob = fetch_blob(
       client,
@@ -159,7 +161,10 @@ pub async fn pull_with_client(
       index,
       kind=LayerBlob,
       options~,
+      plan_done_bytes=done_bytes,
+      plan_total_bytes=plan_bytes,
     )
+    done_bytes = done_bytes + blob.data.length().to_int64()
     layers.push(blob)
   }
   {
@@ -365,6 +370,10 @@ async fn fetch_blob(
   index : Int32,
   kind~ : BlobKind,
   options~ : PullOptions = PullOptions::new(),
+  /// 已经下完的层加起来有多少字节（整体进度用）
+  plan_done_bytes~ : Int64 = 0L,
+  /// 整个镜像要下多少字节（整体进度用）
+  plan_total_bytes~ : Int64 = 0L,
 ) -> PulledBlob raise RegistryError {
   let digest = descriptor.digest
   let path = "/v2/\{reference.repository}/blobs/\{digest}"
@@ -376,6 +385,8 @@ async fn fetch_blob(
   }
   // 边下边报进度：回调直接给 `get`，正文就在那里读（config 一般几十 KB，
   // 报进度只会把行刷乱，所以它是唯一不带回调的那种）
+  // 层内的字节数要报，**整体**字节数更要报：渲染层靠「完成层之和 + 当前层」
+  // 自己推算整体进度，多层并发时必然算错，所以把事实报全，让它只做减法。
   let progress = match (kind, options.on_progress) {
     (LayerBlob, Some(callback)) =>
       Some((received : Int64, length : Int64?) => {
@@ -385,6 +396,12 @@ async fn fetch_blob(
           _ => total
         }
         callback(LayerProgress(index~, received~, total~))
+        callback(
+          Progress(
+            received=plan_done_bytes + received,
+            total=plan_total_bytes,
+          ),
+        )
       })
     _ => None
   }

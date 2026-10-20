@@ -191,6 +191,7 @@ async fn read_chunks(
   }
   match on_progress {
     Some(callback) => {
+      // 收尾再报一次：小于一个步长的层也要有「下完了」这一格
       callback(received, length)
       match on_tick {
         Some(tick) => tick()

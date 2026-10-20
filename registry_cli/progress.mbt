@@ -14,6 +14,9 @@ pub(all) enum PullEvent {
   LayerProgress(index~ : Int32, received~ : Int64, total~ : Int64)
   /// 一层结束
   LayerDone(index~ : Int32, bytes~ : Int64)
+  /// 整体已经拿到多少（压缩后字节）。并发拉取时它是唯一可信的整体口径：
+  /// 渲染层靠「完成层之和 + 当前层」自己推算，多层交错时必然算错。
+  Progress(received~ : Int64, total~ : Int64)
   /// 解压 + 打包（docker-archive 要把层解压开再套 tar，大镜像上这一步不便宜）
   Packing(note~ : String)
   /// 落盘
@@ -45,6 +48,14 @@ pub impl Show for PullEvent with fn to_string(self) {
     }
     LayerDone(index~, bytes~) =>
       "layer \{index + 1} done (\{human_bytes(bytes)})"
+    Progress(received~, total~) => {
+      let percent = if total > 0L {
+        " (\{(received * 100L / total).to_int()}%)"
+      } else {
+        ""
+      }
+      "overall \{human_bytes(received)} / \{human_bytes(total)}\{percent}"
+    }
     Packing(note~) => note
     Writing(path~, bytes~) => "writing \{path} (\{human_bytes(bytes)})"
   }
@@ -56,10 +67,13 @@ pub extend PullEvent with Show::{to_string, output}
 ///|
 /// 每收满这么多字节报一次进度。
 ///
-/// 1 MiB 是有意的：700MB 的镜像按这个步长大约 700 次回调，
-/// 每次只做几个整数除法与一次 `\r` 刷新，开销可以忽略；
-/// 再小就变成「刷屏比下载还忙」，再大则肉眼觉得进度条卡住。
-let progress_step : Int64 = 1024 * 1024
+/// 256 KiB 是有意的：分块读就是 64 KiB，正好 4 块报一次；
+/// 更小的步长只是把回调变密，而真正决定「终端刷多快」的是渲染侧的限频
+/// （见 `PullReporter` 的 `min_repaint_millis`）。
+///
+/// 老值是 1 MiB，代价是**小于 1 MiB 的层一个进度事件都不发**：
+/// issue #97 现场那些 `layer 2: 0 B / 3.2 KiB (0%)` 不是卡住，是报不出来。
+let progress_step : Int64 = 256 * 1024
 
 ///|
 /// `1048576` -> `1.0 MiB`。进度行的宽度按人眼来，不按字节来。
@@ -80,6 +94,36 @@ pub fn human_bytes(bytes : Int64) -> String {
     let tenths = (value * 10.0).round().to_int()
     "\{tenths / 10}.\{tenths % 10} \{units[unit]}"
   }
+}
+
+///|
+/// `8600000.0` -> `8.6 MiB/s`。速度比字节更该带小数：
+/// 「8 MiB/s」和「8.9 MiB/s」在用户眼里差一档。
+pub fn human_rate(bytes_per_second : Double) -> String {
+  if bytes_per_second < 1.0 {
+    return "0 B/s"
+  }
+  let units : Array[String] = ["B", "KiB", "MiB", "GiB", "TiB"]
+  let mut value = bytes_per_second
+  let mut unit = 0
+  while value >= 1024.0 && unit < units.length() - 1 {
+    value = value / 1024.0
+    unit = unit + 1
+  }
+  if unit == 0 {
+    "\{value.round().to_int()} \{units[unit]}/s"
+  } else if value >= 100.0 {
+    "\{value.round().to_int()} \{units[unit]}/s"
+  } else {
+    let tenths = (value * 10.0).round().to_int()
+    "\{tenths / 10}.\{tenths % 10} \{units[unit]}/s"
+  }
+}
+
+///|
+/// 每收满这么多字节报一次进度（给测试与调用方看，见上面的注释）。
+pub fn progress_step_bytes() -> Int64 {
+  progress_step
 }
 
 ///|

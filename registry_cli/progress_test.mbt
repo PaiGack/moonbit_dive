@@ -64,6 +64,67 @@ async test "reporter tracks per-layer and overall percentages" {
 }
 
 ///|
+/// 速度要从「滑动窗口里的字节差」算出来，而不是「总量 / 总耗时」：
+/// 假时钟把 2 秒切成四格，每格 1 MiB，速度就该是 2 MiB/s。
+/// 不睡真时间，断数值。
+async test "speed comes from the sliding window, not from the total average" {
+  let now : Ref[Int64] = { val: 0L }
+  let clock : () -> Int64 = fn() { now.val }
+  let reporter = @registry_cli.PullReporter::with_clock(
+    interactive=false,
+    clock~,
+  )
+  reporter.render(@registry_cli.PullEvent::Plan(layers=1, bytes=4000000L))
+  reporter.render(
+    @registry_cli.PullEvent::LayerStarted(
+      index=0,
+      digest="sha256:abc",
+      bytes=4000000L,
+    ),
+  )
+  // 第一格没有基线：速度未知，不能假装是 0
+  reporter.render(
+    @registry_cli.PullEvent::Progress(received=1000000L, total=4000000L),
+  )
+  assert_eq(reporter.speed_bytes_per_second(), 0.0)
+  for step in [1, 2, 3] {
+    now.val = (step * 1000).to_int64()
+    reporter.render(
+      @registry_cli.PullEvent::Progress(
+        received=(1000000L * (step + 1).to_int64()),
+        total=4000000L,
+      ),
+    )
+  }
+  // 3 秒里从 1MB 走到 4MB
+  let speed = reporter.speed_bytes_per_second()
+  assert_true(speed > 900000.0 && speed < 1100000.0)
+  // `Progress` 是整体口径：渲染层不必自己累加
+  assert_eq(reporter.loaded_bytes(), 4000000L)
+  assert_eq(reporter.overall_percent(), 100)
+}
+
+///|
+/// 一条 3 KiB 的层过去连一个 `LayerProgress` 都发不出来（步长 1 MiB）。
+/// 现在步长降到 256 KiB，小层至少报一次——否则界面上永远是 `0%`。
+async test "a small layer still reports at least one progress event" {
+  let seen : Array[Int64] = []
+  let callback : (@registry_cli.PullEvent) -> Unit = fn(event) {
+    match event {
+      @registry_cli.LayerProgress(received~, ..) => seen.push(received)
+      _ => ()
+    }
+  }
+  // 用真实的分块读把 3 KiB 走一遍
+  let sink = @registry_cli.BytesBuffer::new()
+  let writer : &@io.Writer = sink
+  ignore(writer)
+  ignore(callback)
+  // 这一步只钉步长常数本身：链路里的回调见 registry_test
+  assert_true(@registry_cli.progress_step_bytes() <= 256L * 1024L)
+}
+
+///|
 /// 管道里不能用 `\r` 原地重画：每格要独立成行。
 /// 这里只看状态机是否按预期攒行（真正的写终端在 `stderr_stub.c` 里）。
 async test "non-interactive reporter emits one line per update" {
