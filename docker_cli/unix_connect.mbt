@@ -13,15 +13,19 @@
 /// 调用它的地方在 Windows 上就退化成「标识符未绑定」，跟着报一串
 /// `connect_error(socket_path, err)` 的类型不匹配——报错指向的是调用方，
 /// 真凶却在几百行外。所以声明和包装都留着，把平台差异收在 C 侧：
-/// `unix_socket_stub.c` 在 `_WIN32` 下返回 `-EPROTONOSUPPORT`，
+/// `unix_socket_stub.c` 在 `_WIN32` 下把 `EPROTONOSUPPORT` 写进 `err_out`，
 /// 用户看到的是一条「这台机器没有 unix socket」的 `Backend`，
 /// 而不是编译不过。本包仍只对 native 构建（见 `moon.pkg`）。
-#borrow(path)
-extern "C" fn unix_connect_ffi(path : Bytes) -> Int32 = "dive_unix_connect"
+///
+/// 错误走 out 参数、fd 走返回值。`@types.Fd` 在 Windows 上是不透明的
+/// `HANDLE`（`#external`），没法拿它跟 0 比大小，所以「失败」不能靠
+/// 返回负数表达：C 侧把 `errno` 写进 `err_out`，返回 0 表示成功。
+#borrow(path, err_out)
+extern "C" fn unix_connect_ffi(path : Bytes, err_out : Ref[Int32]) -> @types.Fd = "dive_unix_connect"
 
 ///|
 /// 关闭一个裸 fd（建连失败之外的收尾路径用）。
-extern "C" fn unix_close_ffi(fd : Int32) -> Int32 = "dive_unix_close"
+extern "C" fn unix_close_ffi(fd : @types.Fd) -> Int32 = "dive_unix_close"
 
 ///|
 /// 连到 `path` 上的 unix socket。
@@ -44,9 +48,14 @@ pub async fn connect_unix_socket_bytes(
   path : Bytes,
   display : String,
 ) -> @raw_fd.RawFdStream raise DockerCliError {
-  let fd = unix_connect_ffi(path)
-  if fd < 0 {
-    raise Backend(display, -1, "connect failed: errno \{-fd}")
+  let err : Ref[Int32] = Ref(0)
+  let fd = unix_connect_ffi(path, err)
+  if err.val != 0 {
+    raise Backend(
+      display,
+      err.val,
+      "connect failed: \{unix_errno_hint(err.val)}",
+    )
   }
   @raw_fd.RawFdStream(fd) catch {
     err => raise Backend(display, -1, "connect failed: \{err}")
@@ -54,7 +63,28 @@ pub async fn connect_unix_socket_bytes(
 }
 
 ///|
+/// 把 connect 的 errno 翻成一句人能读的话。
+///
+/// 用户看到的通常是「连不上 daemon」，但原因可能差很远：
+/// 路径不存在、权限不够、对端不是 socket、平台压根没有 unix socket。
+/// 只报数字等于让用户自己去查 errno 表。
+fn unix_errno_hint(errno : Int32) -> String {
+  let hint = match errno {
+    2 => "no such file (daemon not running?)"
+    13 => "permission denied (check socket ownership)"
+    88 => "not a socket"
+    111 => "connection refused (daemon not listening)"
+    93 => "protocol not supported (this platform has no unix socket)"
+    _ => "unknown reason"
+  }
+  "\{hint}, errno \{errno}"
+}
+
+///|
 /// 关掉一个裸 fd。
-pub fn close_unix_fd(fd : Int32) -> Unit {
+///
+/// 参数用 `@types.Fd` 而不是 `Int32`：Windows 上它是不透明的 `HANDLE`，
+/// 这里只是把同一个句柄原样交给 C，不假装它是个整数。
+pub fn close_unix_fd(fd : @types.Fd) -> Unit {
   ignore(unix_close_ffi(fd))
 }

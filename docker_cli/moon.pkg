@@ -4,12 +4,12 @@ import {
   "moonbitlang/async/fs",
   "moonbitlang/async/io",
   "moonbitlang/async/raw_fd",
+  "moonbitlang/async/types",
   "moonbitlang/core/buffer",
   "moonbitlang/core/env",
   "moonbitlang/async/process",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
-  "moonbitlang/core/cmp",
   "moonbitlang/core/encoding/utf8",
 }
 

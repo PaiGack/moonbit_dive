@@ -5,7 +5,9 @@
  * 走 DNS 解析，永远连不上 unix socket 路径。Engine 后端要连
  * `/var/run/docker.sock`，只能绕过它自己收口 socket(2) / connect(2)。
  *
- * 返回约定：>= 0 是 fd，< 0 是 -errno。调用方拿到 fd 后交给
+ * 返回约定：fd 走返回值，失败时返回值无意义，errno 写进 `err_out`
+ * （0 表示成功）。不用「返回负数表示错误」是因为 Windows 上
+ * `@types.Fd` 是不透明的 `HANDLE`，没法比大小。调用方拿到 fd 后交给
  * `@raw_fd.RawFdStream`（它实现 `@io.Reader` / `@io.Writer`），
  * 后续读写走事件循环，不再需要 FFI。
  *
@@ -20,6 +22,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <moonbit.h>
 
 /*|
@@ -37,7 +40,7 @@ static void dive_unix_set_nonblocking(int fd) {
 建一个 AF_UNIX socket 并连到 `path`，返回连接 fd。
 */
 MOONBIT_FFI_EXPORT
-int32_t dive_unix_connect(const char *path) {
+intptr_t dive_unix_connect(const char *path, int32_t *err_out) {
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
@@ -46,18 +49,21 @@ int32_t dive_unix_connect(const char *path) {
   显式挡掉，免得后面看到莫名其妙的连接失败。
   */
   if (strlen(path) >= sizeof(addr.sun_path)) {
-    return -ENAMETOOLONG;
+    *err_out = ENAMETOOLONG;
+    return 0;
   }
   strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) {
-    return -errno;
+    *err_out = errno;
+    return 0;
   }
   dive_unix_set_nonblocking(fd);
   if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
     int err = errno;
     close(fd);
-    return -err;
+    *err_out = err;
+    return 0;
   }
   return fd;
 }
@@ -66,8 +72,8 @@ int32_t dive_unix_connect(const char *path) {
 关掉一个 fd。
 */
 MOONBIT_FFI_EXPORT
-int32_t dive_unix_close(int32_t fd) {
-  return close(fd);
+int32_t dive_unix_close(intptr_t fd) {
+  return close((int)fd);
 }
 
 #else
@@ -76,13 +82,14 @@ Windows 分支：符号得在，行为要明确。
 
 MoonBit 侧的 FFI 声明（`unix_connect.mbt`）不按平台裁剪——裁掉之后调用方
 会报「标识符未绑定」，那串报错的落点离真凶很远。所以平台差异收在这里：
-返回 `-EPROTONOSUPPORT`，调用方把它渲染成一条能读懂的 `Backend`。
+把 `EPROTONOSUPPORT` 写进 `err_out`，调用方把它渲染成一条能读懂的 `Backend`。
 Windows 上本来也没有 `/var/run/docker.sock`，报「这台机器没有 unix socket」
 比报「编译不过」更接近事实。
 
 `WSASocket(AF_UNIX)` 是 Win10 1803 之后才有的东西，不走它：
 Engine 后端在 Windows 上是 CLI 子进程那条路，不走 socket。
 */
+#include <stdint.h>
 #include <moonbit.h>
 
 #ifndef EPROTONOSUPPORT
@@ -90,13 +97,14 @@ Engine 后端在 Windows 上是 CLI 子进程那条路，不走 socket。
 #endif
 
 MOONBIT_FFI_EXPORT
-int32_t dive_unix_connect(const char *path) {
+intptr_t dive_unix_connect(const char *path, int32_t *err_out) {
   (void)path;
-  return -EPROTONOSUPPORT;
+  *err_out = EPROTONOSUPPORT;
+  return 0;
 }
 
 MOONBIT_FFI_EXPORT
-int32_t dive_unix_close(int32_t fd) {
+int32_t dive_unix_close(intptr_t fd) {
   (void)fd;
   return -1;
 }
