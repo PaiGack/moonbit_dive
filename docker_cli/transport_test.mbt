@@ -622,9 +622,11 @@ async test "a socket that stalls mid-body surfaces a timeout, not a mangled errn
       err => err
     }
     // 超时是 `Cancelled`：一句「超时」，不是「connect failed: errno 2」
-    assert_true(error is @docker_cli.Cancelled(_))
+    assert_true(error is @docker_cli.Cancelled(_, _))
     let text = Show::to_string(error)
     assert_true(text.contains("was cancelled"))
+    // 原因位要带预算与实际耗时：只说「被取消了」等于没说
+    assert_true(text.contains("200ms budget"))
     // 路径只出现一次：不再是把渲染过的错误再包一层
     assert_eq(count_occurrences(text, server.path), 1)
   })

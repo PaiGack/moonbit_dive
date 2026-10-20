@@ -8,8 +8,12 @@ pub(all) suberror DockerCliError {
   Backend(String, Int32, String)
   /// 找不到可执行文件
   ExecutableNotFound(String)
-  /// 子进程被取消（超时或主动 cancel）
-  Cancelled(String)
+  /// 子进程被取消（超时或主动 cancel）。
+  ///
+  /// 两个字段分开，是因为两件事要分开说：**谁**被取消（`name`），
+  /// 以及**为什么/等了多久**（`reason`）。合并成一个字符串的话，
+  /// `Show` 只能原样吐出，调用方想在日志里只取路径、或只取耗时，都做不到。
+  Cancelled(String, String)
   /// 归档格式解析失败
   Archive(String)
   /// 输入本身不合法（空镜像名等）
@@ -50,7 +54,13 @@ pub impl Show for DockerCliError with fn to_string(self) {
       }
     }
     ExecutableNotFound(name) => "executable not found: \{name}"
-    Cancelled(name) => "\{name} was cancelled"
+    // `reason` 空着时别在句尾留一个孤零零的冒号
+    Cancelled(name, reason) =>
+      if reason.trim().is_empty() {
+        "\{name} was cancelled"
+      } else {
+        "\{name} was cancelled: \{reason}"
+      }
     Archive(detail) => "not a readable image archive: \{detail}"
     InvalidReference(detail) => "invalid image reference: \{detail}"
     ImageNotFound(reference) => "no such image locally: \{reference}"

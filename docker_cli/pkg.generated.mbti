@@ -93,7 +93,7 @@ pub(all) suberror DockerCliError {
   NoBackend(String)
   Backend(String, Int, String)
   ExecutableNotFound(String)
-  Cancelled(String)
+  Cancelled(String, String)
   Archive(String)
   InvalidReference(String)
 } derive(Eq, @debug.Debug)

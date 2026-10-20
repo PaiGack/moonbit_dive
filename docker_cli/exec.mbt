@@ -28,18 +28,38 @@ async fn[X] with_timeout(
   action : async () -> X,
 ) -> X raise DockerCliError {
   if timeout_ms > 0 {
+    let started = @async.now()
     let finished = @async.with_timeout_opt(timeout_ms, action) catch {
       err => raise Backend(program, -1, err.to_string())
     }
     match finished {
       Some(result) => result
-      None => raise Cancelled(program)
+      None => {
+        let elapsed = (@async.now() - started).to_int()
+        raise Cancelled(program, elapsed_report(timeout_ms, elapsed))
+      }
     }
   } else {
     action() catch {
       err => raise Backend(program, -1, err.to_string())
     }
   }
+}
+
+///|
+/// 超时那一刻，把「给了多少预算、实际花了多久」写进 `Cancelled` 的原因位。
+///
+/// `Cancelled(name)` 原来只装一个程序名，`Show` 出来就是一句
+/// `<program> was cancelled`。用户看这句的时候手上没有任何可用于判断的信息：
+/// 是 30 秒的预算真的用完了，还是子进程一秒钟就被拆了？
+/// issue #94 里那条 `docker was cancelled` 就是卡在这里——
+/// 它看起来像超时，实际可能根本不是，而日志里没有任何东西能反驳这个猜测。
+///
+/// 把预算和实际耗时并排放出来，一眼就能分辨：
+/// - 实际 ≈ 预算 → 真是超时，该加 `--timeout`
+/// - 实际 ≪ 预算 → 不是超时，是上层（任务组拆掉、进程被杀）把子进程带走了
+fn elapsed_report(budget_ms : Int32, elapsed_ms : Int32) -> String {
+  "gave up after \{elapsed_ms}ms of a \{budget_ms}ms budget"
 }
 
 ///|
