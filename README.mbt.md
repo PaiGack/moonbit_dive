@@ -56,6 +56,8 @@ moon run --target native cmd/main -- --from-registry library/nginx:1.27
 # 多架构选平台 / 自建 http registry / 私有仓库
 moon run --target native cmd/main -- --save --from-registry --platform linux/arm64 -o x.tar ghcr.io/owner/repo:tag
 moon run --target native cmd/main -- --save --from-registry --insecure-registry -o x.tar localhost:5000/team/app:dev
+# 同时在途的层数（默认 4；1 = 逐层串行，排障用）
+moon run --target native cmd/main -- --save --from-registry --jobs 8 -o nginx.tar library/nginx:1.27
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
@@ -76,13 +78,13 @@ moon run --target native cmd/main -- --save --from-registry --insecure-registry 
 `token → manifest(index 按平台选) → blobs` 三段 HTTP，把镜像直接拉下来落成 tar 或 OCI layout，
 全程不碰 daemon。`--save` 表示「只拉不分析」，`-o` 是落盘位置
 （docker-archive 写文件，`--archive-format oci` 写目录）；不给 `--save` 就落临时目录、
-分析完即删。细节见 [`docs/p7-registry-cli.md`](docs/p7-registry-cli.md)。
+分析完即删。
 
-`--from-registry` 走的是**另一条数据源**：自己当 registry 客户端，
-`token → manifest(index 按平台选) → blobs` 三段 HTTP，把镜像直接拉下来落成 tar 或 OCI layout，
-全程不碰 daemon。`--save` 表示「只拉不分析」，`-o` 是落盘位置
-（docker-archive 写文件，`--archive-format oci` 写目录）；不给 `--save` 就落临时目录、
-分析完即删。细节见 [`docs/p7-registry-cli.md`](docs/p7-registry-cli.md)。
+拉取默认**边下边写盘**：层先落到临时文件（内存峰值是一块 64 KiB），
+OCI layout 直接把它抄过去、docker-archive 再读回来解压；
+`--jobs` 控制在途层数（默认 4），`--jobs 1` 退回逐层串行。
+进度行在 stderr，带整体字节、滑动窗口速度，失败时交代断在第几层。
+细节见 [`docs/p7-registry-cli.md`](docs/p7-registry-cli.md)。
 
 `--from-image` 把位置参数当镜像名：本地缺这个镜像时**默认先拉一次**再取，
 对齐原版 dive（Go）——那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就

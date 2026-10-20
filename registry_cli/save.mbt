@@ -13,6 +13,10 @@ pub(all) struct SaveRequest {
   on_progress : ((PullEvent) -> Unit)?
   /// 每次报完进度后「立刻画一下」的钩子，见 `PullOptions::on_tick`
   on_tick : (() -> Unit noraise)?
+  /// 同时在途的层数（1 = 逐层串行），见 `PullOptions::concurrency`
+  jobs : Int32
+  /// 边下边写盘（层先进临时文件），见 `PullOptions::stream_to_disk`
+  stream_to_disk : Bool
 }
 
 ///|
@@ -25,6 +29,8 @@ pub fn SaveRequest::new(
   token~ : String? = None,
   on_progress~ : ((PullEvent) -> Unit)? = None,
   on_tick~ : (() -> Unit noraise)? = None,
+  jobs~ : Int32 = 4,
+  stream_to_disk~ : Bool = true,
 ) -> SaveRequest {
   {
     reference,
@@ -35,6 +41,8 @@ pub fn SaveRequest::new(
     token,
     on_progress,
     on_tick,
+    jobs,
+    stream_to_disk,
   }
 }
 
@@ -95,8 +103,11 @@ pub async fn save_image(
     token=request.token,
     on_progress=request.on_progress,
     on_tick=request.on_tick,
+    concurrency=request.jobs,
+    stream_to_disk=request.stream_to_disk,
   )
 
+  // 拉取中途失败：`pull_image` 自己会收掉临时目录，这里只管「拉到了之后」
   let image = pull_image(reference, options~)
   // 打包这一步在大镜像上并不便宜（docker-archive 要把每层解压再套 tar），
   // 进度条停在 100% 之后先说明一句，免得「网络好了又卡住」
@@ -104,7 +115,10 @@ pub async fn save_image(
     request.on_progress,
     Packing(note="packing the archive (decompress + tar)"),
   )
+  // 打包失败也要收掉流式落盘的临时目录：它跟这次 save 一起生、一起死
+  errdefer discard_image(image)
   let written = write_image(image, request.output, format=request.format)
+  discard_image(image)
   notify_option(
     request.on_progress,
     Writing(path=request.output, bytes=written.bytes),

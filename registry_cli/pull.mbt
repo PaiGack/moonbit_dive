@@ -12,6 +12,16 @@ pub struct PullOptions {
   /// 每次报完进度后的「立刻画一下」：回调是同步的、写终端是 async 的，
   /// 不把这一格送到 async 上下文里，进度条就只能等下一层才动
   on_tick : (() -> Unit noraise)?
+  /// 边下边写盘：层落到 `@fs.tmpdir` 下的临时文件里，内存不随镜像体积涨。
+  ///
+  /// 代价是「一次磁盘写 + 一次磁盘读」——OCI layout 直接把它抄过去，
+  /// docker-archive 则要读回来解压。换来的是 700MB 的层不再要求一整块内存。
+  stream_to_disk : Bool
+  /// 同时在途的层数。1 = 老行为（逐层串行），0 也按 1 处理。
+  ///
+  /// 并发只对「多层小层」有收益：单层镜像一点不快，
+  /// 省下来的大头是 CDN 的每连接限速与首字节延迟，不是带宽。
+  concurrency : Int32
 }
 
 ///|
@@ -22,13 +32,23 @@ pub fn PullOptions::new(
   token~ : String? = None,
   on_progress~ : ((PullEvent) -> Unit)? = None,
   on_tick~ : (() -> Unit noraise)? = None,
+  concurrency~ : Int32 = 4,
+  stream_to_disk~ : Bool = true,
 ) -> PullOptions {
-  { platform, insecure, token, on_progress, on_tick, }
+  {
+    platform,
+    insecure,
+    token,
+    on_progress,
+    on_tick,
+    concurrency,
+    stream_to_disk,
+  }
 }
 
 ///|
 pub impl Show for PullOptions with fn to_string(self) {
-  "PullOptions(insecure=\{self.insecure}, token=\{self.token is Some(_)})"
+  "PullOptions(insecure=\{self.insecure}, concurrency=\{self.concurrency}, stream_to_disk=\{self.stream_to_disk})"
 }
 
 ///|
@@ -36,11 +56,66 @@ pub extend PullOptions with Show::{to_string, output}
 
 ///|
 /// 拉下来的一个 blob：`digest` 是它自称的身份，`data` 是校验过的字节。
+///
+/// `data` 是**可选**的：走流式落盘时字节直接进了 `path` 上的文件，
+/// 内存里只留 digest 与大小。这样 700MB 的层不会再要求一整块连续内存，
+/// 下游（打包、分析）改成按路径流式读。
 pub(all) struct PulledBlob {
   media_type : String
   digest : String
-  data : Bytes
+  /// 读进内存的那份字节；`None` 表示字节在 `path` 上
+  data : Bytes?
+  /// 压缩后的大小（manifest 里报的那个）
+  size : Int64
+  /// 流式落盘时字节所在的文件；`None` 表示在 `data` 里。
+  /// 生命周期跟着 `RemoteImage`：`discard_image` 会把它删掉
+  path : String?
 } derive(Eq, Debug)
+
+///|
+/// 一个「字节都在内存里」的 blob（测试、小 blob、老调用方的写法）。
+pub fn PulledBlob::in_memory(
+  media_type~ : String,
+  digest~ : String,
+  data~ : Bytes,
+) -> PulledBlob {
+  {
+    media_type,
+    digest,
+    data: Some(data),
+    size: data.length().to_int64(),
+    path: None,
+  }
+}
+
+///|
+/// 这个 blob 的字节：内存里那份，或者从 `path` 上按需读回来。
+///
+/// 只在「小 blob」与测试里用：真按这个读 700MB 的层，等于把流式落盘又退回内存。
+pub async fn PulledBlob::bytes(self : PulledBlob) -> Bytes raise RegistryError {
+  match self.data {
+    Some(data) => data
+    None =>
+      match self.path {
+        Some(path) => {
+          let data = @fs.read_file(path) catch {
+            err => raise Io("\{path}: \{err.to_string()}")
+          }
+          data.binary()
+        }
+        None => raise Io("blob \{self.digest} has neither bytes nor a file")
+      }
+  }
+}
+
+///|
+/// 压缩后的大小。流式落盘的 blob 由 `size` 记着，内存里的由 `data` 量出来。
+pub fn PulledBlob::compressed_size(self : PulledBlob) -> Int64 {
+  match self.data {
+    Some(data) => data.length().to_int64()
+    None => self.size
+  }
+}
 
 ///|
 pub extend PulledBlob with Eq::{equal, not_equal}
@@ -63,6 +138,8 @@ pub(all) struct RemoteImage {
   layers : Array[PulledBlob]
   /// 选中的平台（index 里有落到哪一项）
   platform : @oci_spec.Platform?
+  /// 流式落盘时层所在的临时目录；`None` 表示字节都在内存里，无需清理
+  staging : String?
 } derive(Eq, Debug)
 
 ///|
@@ -141,27 +218,28 @@ pub async fn pull_with_client(
     plan_bytes = plan_bytes + descriptor.size.to_int64()
   }
   notify(options, Plan(layers=manifest.layers.length(), bytes=plan_bytes))
-  // config 不是层：它不占层号，事件里单独说一声，进度条只算层
-  let config = fetch_blob(
+  // 流式落盘的落点：放在临时目录，生命周期跟 `RemoteImage` 绑死
+  let staging = if options.stream_to_disk {
+    let directory = @fs.tmpdir(prefix="dive-blobs-") catch {
+      err => raise Io("cannot create a staging directory: \{err}")
+    }
+    Some(directory)
+  } else {
+    None
+  }
+  // 拉一半失败：临时目录里的半截 blob 不能留着
+  errdefer (match staging {
+    Some(directory) => discard_directory(directory)
+    None => ()
+  })
+  let (config, layers) = fetch_all(
     client,
     reference,
-    manifest.config,
-    0,
-    kind=ConfigBlob,
+    manifest,
     options~,
+    plan_bytes~,
+    staging~,
   )
-  let layers : Array[PulledBlob] = []
-  for index, descriptor in manifest.layers {
-    let blob = fetch_blob(
-      client,
-      reference,
-      descriptor,
-      index,
-      kind=LayerBlob,
-      options~,
-    )
-    layers.push(blob)
-  }
   {
     reference,
     media_type,
@@ -171,6 +249,25 @@ pub async fn pull_with_client(
     // 只有从 index 里挑出来的才算「平台已知」：直接给 manifest 时
     // 服务端没说是哪个平台，硬记成请求参数只会让报告说谎（见 `choose_manifest`）
     platform: picked_platform,
+    staging,
+  }
+}
+
+///|
+/// 把流式落盘的临时目录删掉；删不掉就算了，它本来就在 `/tmp` 下。
+pub async fn discard_image(image : RemoteImage) -> Unit noraise {
+  match image.staging {
+    Some(directory) => discard_directory(directory)
+    None => ()
+  }
+}
+
+///|
+async fn discard_directory(directory : String) -> Unit noraise {
+  try @fs.rmdir(directory, recursive=true) catch {
+    _ => ()
+  } noraise {
+    _ => ()
   }
 }
 
@@ -344,6 +441,234 @@ fn describe_platforms(index : @oci_spec.Index) -> String {
 }
 
 ///|
+/// 拉 config 与所有层，**层序与 manifest 一致**（那是叠层顺序，属于语义，不能乱）。
+///
+/// 并发借的是 `@async` 的结构化并发：每层一个 `spawn` 拿到 `Task`，
+/// 「并发跑、按原顺序取」正好对上「层序不能乱」；`Semaphore` 卡住在途层数，
+/// 任务组退出时保证所有子任务都收尾，不留野连接。
+///
+/// **并发的是「谁在拉」，不是「一层的字节怎么读」**：真并行的前提是每条在途的层
+/// 各占一条连接。`RegistryClient` 背后是一个 `@http.Client`，一次只服务一个请求
+/// （单连接），两个任务共用它发请求会读到已经失效的 fd —— issue #97 的
+/// `Bad file descriptor` 就是这个形状。所以并发时每层自己开一条，用完就关。
+///
+/// `concurrency <= 1` 时走原来的串行循环：共用一条连接，也是「怀疑并发」的退路。
+async fn fetch_all(
+  client : RegistryClient,
+  reference : ImageReference,
+  manifest : @oci_spec.Manifest,
+  options~ : PullOptions,
+  plan_bytes~ : Int64,
+  staging~ : String? = None,
+) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
+  let in_flight = if options.concurrency < 1 { 1 } else { options.concurrency }
+  if in_flight <= 1 {
+    return fetch_all_serially(
+      client,
+      reference,
+      manifest,
+      options~,
+      plan_bytes~,
+      staging~,
+    )
+  }
+  return fetch_all_concurrently(
+    client,
+    reference,
+    manifest,
+    options~,
+    plan_bytes~,
+    in_flight~,
+    staging~,
+  )
+}
+
+///|
+/// 串行：一层下完再下一层，共用一个客户端（与老行为一致）。
+async fn fetch_all_serially(
+  client : RegistryClient,
+  reference : ImageReference,
+  manifest : @oci_spec.Manifest,
+  options~ : PullOptions,
+  plan_bytes~ : Int64,
+  staging~ : String? = None,
+) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
+  // config 不是层：它不占层号，只报整体字节
+  let config = fetch_blob(
+    client,
+    reference,
+    manifest.config,
+    0,
+    kind=ConfigBlob,
+    options~,
+    staging~,
+    plan_total_bytes=plan_bytes,
+  )
+  let layers : Array[PulledBlob] = []
+  let mut done_bytes : Int64 = 0L
+  for index, descriptor in manifest.layers {
+    let blob = fetch_blob(
+      client,
+      reference,
+      descriptor,
+      index,
+      kind=LayerBlob,
+      options~,
+      staging~,
+      plan_done_bytes=done_bytes,
+      plan_total_bytes=plan_bytes,
+    )
+    done_bytes = done_bytes + blob.compressed_size()
+    layers.push(blob)
+  }
+  (config, layers)
+}
+
+///|
+/// 并发：`in_flight` 层同时在途，结果按 manifest 顺序排回去。
+///
+/// 每一层（以及 config）都在自己的连接上跑：token 是同一个，
+/// 但连接不共享——共享的 `@http.Client` 一次只服务一个请求。
+///
+/// 失败时不往上抛：`spawn` 里抛出去只会把同组其他层一起取消，而取消中的任务
+/// 连在途名额都放不掉，收尾就成了「谁先死看运气」。这里把错误塞进数组，
+/// 等所有层都停下来之后再统一报第一件出错的事。
+async fn fetch_all_concurrently(
+  client : RegistryClient,
+  reference : ImageReference,
+  manifest : @oci_spec.Manifest,
+  options~ : PullOptions,
+  plan_bytes~ : Int64,
+  in_flight~ : Int32,
+  staging~ : String? = None,
+) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
+  let gate = @semaphore.Semaphore(in_flight)
+  let failures : Array[RegistryError] = []
+  // 「已经下完多少」只能由调度这边记：各层自己算出来的是层内字节
+  let finished_bytes : Ref[Int64] = { val: 0L, }
+  let grouped = @async.with_task_group(group => {
+    // config 不占在途名额：它是几十 KB 的一块，跟第一层挤在一起下最划算
+    let config_task = group.spawn(() => {
+      let outcome = Some(
+        fetch_on_own_connection(client, reference, own => {
+          fetch_blob(
+            own,
+            reference,
+            manifest.config,
+            0,
+            kind=ConfigBlob,
+            options~,
+            staging~,
+            plan_total_bytes=plan_bytes,
+          )
+        }),
+      ) catch {
+        err => {
+          failures.push(err)
+          None
+        }
+      }
+      outcome
+    })
+    let tasks : Array[@async.Task[PulledBlob?]] = []
+    for index, descriptor in manifest.layers {
+      gate.acquire()
+      tasks.push(
+        group.spawn(() => {
+          let outcome = Some(
+            fetch_on_own_connection(client, reference, own => {
+              let blob = fetch_blob(
+                own,
+                reference,
+                descriptor,
+                index,
+                kind=LayerBlob,
+                options~,
+                staging~,
+                plan_done_bytes=finished_bytes.val,
+                plan_total_bytes=plan_bytes,
+              )
+              finished_bytes.val = finished_bytes.val + blob.compressed_size()
+              // 层与层之间有空窗：报一次整体进度，进度行就不会定住
+              match options.on_progress {
+                Some(callback) =>
+                  callback(
+                    Progress(received=finished_bytes.val, total=plan_bytes),
+                  )
+                None => ()
+              }
+              blob
+            }),
+          ) catch {
+            err => {
+              failures.push(err)
+              None
+            }
+          }
+          gate.release()
+          outcome
+        }),
+      )
+    }
+    // 按创建顺序取结果：`tasks` 的顺序就是 manifest 的顺序，层序因此不会乱
+    let layers : Array[PulledBlob] = []
+    for task in tasks {
+      match task.wait() {
+        Some(blob) => layers.push(blob)
+        None => ()
+      }
+    }
+    (config_task.wait(), layers)
+  }) catch {
+    err =>
+      raise Network(
+        "\{reference.canonical()}: pulling the layers failed: \{err.to_string()}",
+      )
+  }
+  match failures {
+    [first, ..] => raise first
+    [] =>
+      match grouped {
+        (Some(config), layers) => (config, layers)
+        // config 的失败本该被记进 `failures`；走到这里说明状态没对上，保守报一句
+        (None, _) =>
+          raise Network(
+            "\{reference.canonical()}: the config blob was never fetched",
+          )
+      }
+  }
+}
+
+///|
+/// 在一条**专属**连接上跑一次取 blob。
+///
+/// `template` 只是用来抄 base 与 token：真正拨号的是这里新开的那个，
+/// 用完必关（连接断了不会有人替它收 fd）。同一层要跟一次 307 到 CDN，
+/// 那是 `get_following_redirects` 自己的事，与这里的「一条连接」不冲突。
+async fn fetch_on_own_connection(
+  template : RegistryClient,
+  reference : ImageReference,
+  action : async (RegistryClient) -> PulledBlob raise RegistryError,
+) -> PulledBlob raise RegistryError {
+  let own = RegistryClient::connect(
+    strip_scheme(template.base),
+    insecure=template.base.has_prefix("http://"),
+    token=template.token,
+  ) catch {
+    _ =>
+      raise Network(
+        "cannot open a connection to \{template.base} for \{reference.canonical()}",
+      )
+  }
+  let blob = {
+    errdefer own.close()
+    action(own)
+  }
+  own.close()
+  blob
+}
+
+///|
 /// 这个 blob 是 config 还是层。
 ///
 /// 只影响进度显示：config 通常几十 KB，把它算成「第 1 层」会让层号整体错位，
@@ -365,6 +690,13 @@ async fn fetch_blob(
   index : Int32,
   kind~ : BlobKind,
   options~ : PullOptions = PullOptions::new(),
+  /// 字节落到哪个目录（`None` = 读进内存）。层大了、镜像大了，
+  /// 内存不该跟体积一起涨——这是流式落盘的开关
+  staging~ : String? = None,
+  /// 已经下完的层加起来有多少字节（整体进度用）
+  plan_done_bytes~ : Int64 = 0L,
+  /// 整个镜像要下多少字节（整体进度用）
+  plan_total_bytes~ : Int64 = 0L,
 ) -> PulledBlob raise RegistryError {
   let digest = descriptor.digest
   let path = "/v2/\{reference.repository}/blobs/\{digest}"
@@ -374,26 +706,101 @@ async fn fetch_blob(
     ConfigBlob => ()
     LayerBlob => notify(options, LayerStarted(index~, digest~, bytes=total))
   }
-  // 边下边报进度：回调直接给 `get`，正文就在那里读（config 一般几十 KB，
-  // 报进度只会把行刷乱，所以它是唯一不带回调的那种）
-  let progress = match (kind, options.on_progress) {
-    (LayerBlob, Some(callback)) =>
+  // 边下边报进度：回调直接给读正文的那一段（config 一般几十 KB，
+  // 报层号只会把行刷乱，所以它只报整体）。
+  // 层内的字节数要报，**整体**字节数更要报：渲染层靠「完成层之和 + 当前层」
+  // 自己推算整体进度，多层并发时必然算错，所以把事实报全，让它只做减法。
+  let progress = match options.on_progress {
+    Some(callback) =>
       Some((received : Int64, length : Int64?) => {
         // 有 content-length 用它：重定向到 CDN 后可能与 descriptor 报的不同
-        let total = match length {
+        let reported_total = match length {
           Some(length) if length > 0 => length
           _ => total
         }
-        callback(LayerProgress(index~, received~, total~))
+        // config 不占层号（那是 `dive --layer N` 要对上的），但它的字节要算进整体
+        match kind {
+          ConfigBlob => ()
+          LayerBlob =>
+            callback(LayerProgress(index~, received~, total=reported_total))
+        }
+        callback(
+          Progress(received=plan_done_bytes + received, total=plan_total_bytes),
+        )
       })
-    _ => None
+    None => None
   }
+  let landed = match staging {
+    Some(directory) =>
+      download_to_file(
+        client,
+        path,
+        reference,
+        directory,
+        digest~,
+        declared=descriptor.size.to_int64(),
+        options~,
+        progress?,
+      )
+    None =>
+      download_to_memory(
+        client,
+        path,
+        reference,
+        digest~,
+        progress?,
+        on_tick?=options.on_tick,
+      )
+  }
+  // 字节数先对一遍：对不上就是截断，没必要再算 sha256（流式那边已经对过了）
+  if descriptor.size > 0 && landed.size != descriptor.size.to_int64() {
+    raise DigestMismatch(
+      "blob \{digest}: descriptor says \{descriptor.size} bytes, got \{landed.size}",
+    )
+  }
+  if landed.digest != digest {
+    raise DigestMismatch(
+      "blob \{digest}: content hash \{landed.digest} does not match",
+    )
+  }
+  match kind {
+    ConfigBlob => ()
+    LayerBlob => notify(options, LayerDone(index~, bytes=landed.size))
+  }
+  {
+    media_type: descriptor.media_type,
+    digest,
+    data: landed.data,
+    size: landed.size,
+    path: landed.path,
+  }
+}
+
+///|
+/// 一个 blob 落地的结果：字节在内存（`data`）或在文件（`path`），以及它的摘要。
+priv struct LandedBlob {
+  digest : String
+  size : Int64
+  data : Bytes?
+  path : String?
+}
+
+///|
+/// 读进内存。小 blob（config、测试里的层）走这条。
+async fn download_to_memory(
+  client : RegistryClient,
+  path : String,
+  reference : ImageReference,
+  digest~ : String,
+  progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
+) -> LandedBlob raise RegistryError {
   let reply = get_following_redirects(
     client,
     path,
     reference,
     on_progress?=progress,
-    on_tick?=options.on_tick,
+    on_tick?,
   )
   if reply.status == 404 {
     raise NotFound("\{reference.canonical()}: blob \{digest} is missing")
@@ -402,23 +809,195 @@ async fn fetch_blob(
     raise Network("blob \{digest} answered \{reply.status}")
   }
   let data = reply.body
-  // 字节数先对一遍：对不上就是截断，没必要再算 sha256
-  if descriptor.size > 0 && data.length() != descriptor.size {
-    raise DigestMismatch(
-      "blob \{digest}: descriptor says \{descriptor.size} bytes, got \{data.length()}",
+  {
+    digest: @oci_spec.Digest::from_sha256(data).to_string(),
+    size: data.length().to_int64(),
+    data: Some(data),
+    path: None,
+  }
+}
+
+///|
+/// 边读边写盘，中途不留整段字节。
+///
+/// 先写 `*.partial` 再 rename：正文是流式的，断了就只剩半截文件；
+/// 而下游（OCI layout 的 blob、docker-archive 的临时层）都只认「名字对 = 内容对」，
+/// 半截的东西留着比删掉更难查。
+async fn download_to_file(
+  client : RegistryClient,
+  path : String,
+  reference : ImageReference,
+  directory : String,
+  digest~ : String,
+  declared~ : Int64,
+  options~ : PullOptions,
+  progress? : (Int64, Int64?) -> Unit,
+) -> LandedBlob raise RegistryError {
+  guard declared > 0L else {
+    // 没有大小就没法预估进度，也没法对账：退回内存，让上层照旧校验 digest
+    return download_to_memory(
+      client,
+      path,
+      reference,
+      digest~,
+      progress?,
+      on_tick?=options.on_tick,
     )
   }
-  if !@oci_spec.verify_digest(data, digest) {
+  let target = staged_blob_path(directory, digest)
+  let partial = "\{target}.partial"
+  // `tmpdir` 已经把目录建好了；这里只是兜住「调用方自己给了个目录」的情况
+  @fs.mkdir(directory, recursive=true, allow_exist=true) catch {
+    err => raise Io("\{directory}: \{err}")
+  }
+  // 连不上 / 读到一半断了：临时文件不该留在 staging 目录里
+  errdefer remove_quietly(partial)
+  let reply = get_stream_following_redirects(
+    client,
+    path,
+    reference,
+    partial,
+    progress?,
+    on_tick?=options.on_tick,
+  )
+  if reply.received != declared {
+    remove_quietly(partial)
     raise DigestMismatch(
-      "blob \{digest}: content hash \{@oci_spec.Digest::from_sha256(data)} does not match",
+      "blob \{digest}: content-length says \{declared} bytes, got \{reply.received}",
     )
   }
-  match kind {
-    ConfigBlob => ()
-    LayerBlob =>
-      notify(options, LayerDone(index~, bytes=data.length().to_int64()))
+  @fs.rename(partial, target, replace=true) catch {
+    err => raise Io("\{target}: \{err}")
   }
-  { media_type: descriptor.media_type, digest, data, }
+  {
+    digest: reply.digest,
+    size: reply.received,
+    data: None,
+    path: Some(target),
+  }
+}
+
+///|
+/// 删文件，删不掉就算了：这里已经在报错的路上，再抛一个只会盖住真正的原因。
+async fn remove_quietly(path : String) -> Unit noraise {
+  try @fs.remove(path) catch {
+    _ => ()
+  } noraise {
+    _ => ()
+  }
+}
+
+///|
+/// staging 目录里一个 blob 的文件名。用 digest 的 hex 当名字：不同层不会撞，
+/// 出事时一眼能看出这半个文件是谁的。
+fn staged_blob_path(directory : String, digest : String) -> String {
+  let colon = digest.find(":")
+  let hex = match colon {
+    Some(index) => digest[index + 1:].to_owned()
+    None => digest
+  }
+  "\{directory}/\{hex}.blob"
+}
+
+///|
+/// 与 `get_following_redirects` 同构，但正文边读边写盘。
+///
+/// 状态判定必须在**开写之前**：先拿头，判 307 / 404 / 200，再决定要不要写。
+/// 现在的内存版是「拿到整块应答再判 307」，顺序反过来了——流式没有这个余地，
+/// 开了写就没有「退回内存重试」这一说。
+async fn get_stream_following_redirects(
+  client : RegistryClient,
+  path : String,
+  reference : ImageReference,
+  destination : String,
+  progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
+) -> StreamedBody raise RegistryError {
+  let head = client.get_head(path)
+  if head.status == 401 && !client.has_token() {
+    // 换票必须发生在**开写之前**：一旦往盘上写了一半，
+    // 就没有「换个 token 重来」的余地了
+    let challenge_text = head.header("www-authenticate").unwrap_or("")
+    let challenge = match parse_challenge(challenge_text) {
+      Some(challenge) => challenge
+      None =>
+        raise Auth(
+          "\{reference.canonical()}: 401 without a usable WWW-Authenticate header (\{challenge_text})",
+        )
+    }
+    client.skip_body()
+    client.set_token(fetch_token(client, challenge, reference))
+    return get_stream_following_redirects(
+      client,
+      path,
+      reference,
+      destination,
+      progress?,
+      on_tick?,
+    )
+  }
+  if head.is_redirect() {
+    let location = head.header("location").unwrap_or("")
+    if location.is_empty() {
+      raise Network(
+        "blob \{path} answered \{head.status} without a Location header",
+      )
+    }
+    // 这条应答的正文不会再读了：丢掉它，连接才能接着用
+    client.skip_body()
+    let (origin, target) = resolve_location(client.base, location)
+    let mirror = RegistryClient::connect(
+      strip_scheme(origin),
+      insecure=origin.has_prefix("http://"),
+    ) catch {
+      _ => raise Network("cannot create an HTTP client for \{origin}")
+    }
+    // 重定向的目标可能是几百 MB 的层：正文在这条连接上边读边写。
+    // CDN 那边还可能再跳一次（S3、CloudFront 都会），所以这里先拿头再判。
+    // 中间那条连接**没有**交给 `errdefer`：`mirror.close()` 必须在 return 之前
+    // 真的执行到，否则每跳一次泄漏一条连接。
+    errdefer mirror.close()
+    let streamed = get_stream_following_redirects(
+      mirror,
+      target,
+      reference,
+      destination,
+      progress?,
+      on_tick?,
+    )
+    mirror.close()
+    return streamed
+  }
+  if head.status == 404 {
+    client.skip_body()
+    raise NotFound("\{reference.canonical()}: blob \{path} is missing")
+  }
+  if head.status != 200 {
+    client.skip_body()
+    raise Network("blob \{path} answered \{head.status}")
+  }
+  // 200：正文接着在这条连接上读，不跳过
+  stream_body(client, path, destination, progress?, on_tick?)
+}
+
+///|
+/// 把这一条应答的正文写进 `destination`（先写 `.partial`，调用方负责 rename）。
+async fn stream_body(
+  client : RegistryClient,
+  path : String,
+  destination : String,
+  progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
+) -> StreamedBody raise RegistryError {
+  let file = @fs.create(destination) catch {
+    err => raise Io("\{destination}: \{err}")
+  }
+  let sink : &@io.Writer = file
+  errdefer file.close()
+  let streamed = client.read_stream(sink, on_progress?=progress, on_tick?)
+  file.close()
+  ignore(path)
+  streamed
 }
 
 ///|

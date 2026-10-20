@@ -2,6 +2,8 @@ import {
   "PaiGack/dive/layer_tree",
   "PaiGack/dive/oci_spec",
   "moonbitlang/async/fs",
+  "moonbitlang/async/semaphore",
+  "moonbitlang/async",
   "moonbitlang/async/http",
   "moonbitlang/async/io",
   "moonbitlang/async/tls",

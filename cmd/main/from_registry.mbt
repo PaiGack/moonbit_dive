@@ -13,6 +13,8 @@ priv struct RegistryOptions {
   platform : String?
   insecure : Bool
   token : String?
+  /// 同时在途的层数（1 = 逐层串行）
+  jobs : Int32
 }
 
 ///|
@@ -51,15 +53,16 @@ async fn save_remote(
     token=options.token,
     on_progress=Some(reporter.handle()),
     on_tick=Some(tick),
+    jobs=options.jobs,
   )
   let result = @registry_cli.save_image(request) catch {
     err => {
       // 报错前把半行进度收个尾，否则错误信息会接在进度条后面
-      reporter.flush()
+      reporter.finish(failed=true)
       raise CommandError::Registry(err.to_string())
     }
   }
-  reporter.flush()
+  reporter.finish(failed=false)
   (result, directory)
 }
 

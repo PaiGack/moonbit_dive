@@ -142,6 +142,220 @@ pub async fn RegistryClient::get(
 }
 
 ///|
+/// 取一个应答的**头**，正文留给调用方自己读（或自己写进文件）。
+///
+/// 这是流式落盘的入口：`get` 会把整段正文攒成一块 `Bytes`，几百 MB 的层
+/// 等于把「网络字节」和「内存里的副本」叠在一起。这里只拿到响应头，
+/// 正文由 `read_stream` 一段一段交给落盘端，内存恒定。
+///
+/// 与 `get` 一样，只剩「这一条应答」的生命周期问题：`HttpStreamReply` 带着
+/// 还在读的连接，**不能跨过任务边界**。调用方要在同一个任务里把它读完。
+pub async fn RegistryClient::get_head(
+  self : RegistryClient,
+  path : String,
+  headers~ : Map[String, String] = Map([]),
+) -> HttpStreamReply raise RegistryError {
+  let merged = http_headers(headers, self.token)
+  let response = self.client.get(path, extra_headers=merged) catch {
+    err => raise Network("\{self.base}\{path}: \{err}")
+  }
+  let fields : Map[String, String] = Map([])
+  for name, value in response.headers {
+    fields.set(name.to_string().to_lower().to_string(), value)
+  }
+  let declared = match fields.get("content-length") {
+    Some(text) =>
+      match parse_decimal_length(text) {
+        Some(value) if value >= 0 => Some(value.to_int64())
+        _ => None
+      }
+    None => None
+  }
+  { status: response.code, headers: fields, declared, }
+}
+
+///|
+/// 把「只拿了头、正文还没读」的应答丢掉，好让这条连接能接着服务下一个请求。
+///
+/// `get_head` 之后一定要调它：正文没读完的直接再发请求，读到的是同一条连接上
+/// 上一个应答的残留（症状是「content-length 说 577，拿到 0」）。
+/// 真正要读正文的调用方（`read_stream`）不要调，它自己读到 EOF。
+pub async fn RegistryClient::skip_body(self : RegistryClient) -> Unit noraise {
+  try self.client.skip_response_body() catch {
+    _ => ()
+  } noraise {
+    _ => ()
+  }
+}
+
+///|
+/// 只有头、正文还没读的应答。
+///
+/// 带上 `declared`（`content-length`）是给落盘端对账用的：流写完了要能判断
+/// 「是不是真的写全了」，而 `content-length` 缺失时只能说「不知道」。
+pub(all) struct HttpStreamReply {
+  status : Int32
+  headers : Map[String, String]
+  declared : Int64?
+}
+
+///|
+pub impl Eq for HttpStreamReply with fn equal(self, other) {
+  self.status == other.status &&
+  self.headers == other.headers &&
+  self.declared == other.declared
+}
+
+///|
+pub extend HttpStreamReply with Eq::{equal, not_equal}
+
+///|
+pub impl @debug.Debug for HttpStreamReply with fn to_repr(self) {
+  @debug.Repr::ctor("HttpStreamReply", [
+    (
+      None,
+      @debug.Repr::record(
+        Map([
+          ("status", @debug.Repr::integer(self.status.to_string())),
+          (
+            "declared",
+            @debug.Repr::integer(self.declared.unwrap_or(-1L).to_string()),
+          ),
+        ]),
+      ),
+    ),
+  ])
+}
+
+///|
+pub extend HttpStreamReply with @debug.Debug::{to_repr}
+
+///|
+pub fn HttpStreamReply::header(
+  self : HttpStreamReply,
+  name : String,
+) -> String? {
+  self.headers.get(name.to_lower().to_string())
+}
+
+///|
+pub fn HttpStreamReply::is_redirect(self : HttpStreamReply) -> Bool {
+  self.status == 301 ||
+  self.status == 302 ||
+  self.status == 303 ||
+  self.status == 307 ||
+  self.status == 308
+}
+
+///|
+/// 一次流式读取的结果：拿到多少字节、算出来的摘要。
+pub(all) struct StreamedBody {
+  received : Int64
+  /// `sha256:<hex>`，与 `@oci_spec.Digest` 同一种写法
+  digest : String
+}
+
+///|
+pub impl Eq for StreamedBody with fn equal(self, other) {
+  self.received == other.received && self.digest == other.digest
+}
+
+///|
+pub extend StreamedBody with Eq::{equal, not_equal}
+
+///|
+pub impl @debug.Debug for StreamedBody with fn to_repr(self) {
+  @debug.Repr::ctor("StreamedBody", [
+    (
+      None,
+      @debug.Repr::record(
+        Map([
+          ("received", @debug.Repr::integer(self.received.to_string())),
+          ("digest", @debug.Repr::string(self.digest)),
+        ]),
+      ),
+    ),
+  ])
+}
+
+///|
+pub extend StreamedBody with @debug.Debug::{to_repr}
+
+///|
+/// 把这**一条**应答的正文一段一段读出来写进 `sink`，边写边算 sha256。
+///
+/// 与 `get` 的分工：`get` 是「读完再给」，这里是「读到哪写到哪」。
+/// 两者都必须在**同一个任务**里把正文读完——native 后端的事件循环只保证
+/// 当前任务手里的连接是活的，留到下一个挂起点就是失效 fd（issue #97）。
+///
+/// 不在中途留 chunk 列表、也不拼最后一块：内存峰值就是一次 `64 KiB` 的读。
+pub async fn RegistryClient::read_stream(
+  self : RegistryClient,
+  sink : &@io.Writer,
+  on_progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
+) -> StreamedBody raise RegistryError {
+  read_stream_into(self.client, self.base, sink, on_progress?, on_tick?)
+}
+
+///|
+async fn read_stream_into(
+  client : @http.Client,
+  base : String,
+  sink : &@io.Writer,
+  on_progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
+) -> StreamedBody raise RegistryError {
+  let chunk_size = 65536
+  let hasher = @crypto.SHA256::new()
+  let mut received : Int64 = 0L
+  let mut reported : Int64 = 0L
+  while true {
+    let chunk = client.read_some(max_len=chunk_size) catch {
+      err => raise Network("\{base}: reading the response body: \{err}")
+    }
+    let data = match chunk {
+      None => break
+      Some(data) => data
+    }
+    hasher.update(data)
+    // 先落盘再报进度：报出去的字节数必须是**已经安全写下去**的那些，
+    // 否则失败时日志里会留下「下了这么多」而磁盘上一个字节都没有
+    sink.write(data) catch {
+      err => raise Io("\{base}: writing the response body: \{err.to_string()}")
+    }
+    received = received + data.length().to_int64()
+    match on_progress {
+      Some(callback) =>
+        if received - reported >= progress_step {
+          reported = received
+          callback(received, None)
+          match on_tick {
+            Some(tick) => tick()
+            None => ()
+          }
+        }
+      None => ()
+    }
+  }
+  match on_progress {
+    Some(callback) => {
+      // 收尾再报一次：小于一个步长的正文也要有「下完了」这一格
+      callback(received, None)
+      match on_tick {
+        Some(tick) => tick()
+        None => ()
+      }
+    }
+    None => ()
+  }
+  {
+    received,
+    digest: "sha256:\{@crypto.bytes_to_hex_string(hasher.finalize())}",
+  }
+}
+
+///|
 /// 取正文。正文在 `get` 里就按调用方给的回调读齐了（见那里的注释），
 /// 所以这里既不等 IO 也不会失败；保留成方法只是为了读起来顺手。
 pub fn HttpReply::read_body(self : HttpReply) -> Bytes {
@@ -191,6 +405,7 @@ async fn read_chunks(
   }
   match on_progress {
     Some(callback) => {
+      // 收尾再报一次：小于一个步长的层也要有「下完了」这一格
       callback(received, length)
       match on_tick {
         Some(tick) => tick()
