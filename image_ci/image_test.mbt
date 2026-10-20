@@ -67,10 +67,7 @@ test "load plain layer tar" {
 test "malformed archive reports an error" {
   let cases : Array[Bytes] = [b"this is not a tar"]
   for data in cases {
-    let failed = match load_tar_as_result(data) {
-      Ok(_) => false
-      Err(_) => true
-    }
+    let failed = loaded_badly(fn() raise ImageError { load_tar_result(data) })
     if !failed {
       fail("bad tar should not load")
     }
@@ -84,10 +81,7 @@ test "manifest without layers is malformed" {
   builder.add_file("manifest.json", "[ { \"Config\": \"config.json\" } ]")
   builder.add_file("config.json", "{}")
   let data = builder.finish()
-  let failed = match load_tar_as_result(data) {
-    Ok(_) => false
-    Err(_) => true
-  }
+  let failed = loaded_badly(fn() raise ImageError { load_tar_result(data) })
   if !failed {
     fail("manifest without Layers should not load")
   }
@@ -131,10 +125,14 @@ test "load oci layout from disk" {
 ///|
 /// 找不到目录时是 `Io` 而不是崩。
 test "missing input reports io error" {
-  let failed = match load_path_as_result("target/definitely-not-here.tar") {
-    Ok(_) => false
-    Err(ImageError::Io(_)) => true
-    Err(_) => false
+  let failed = try {
+    load_path_result("target/definitely-not-here.tar") |> ignore
+    false
+  } catch {
+    ImageError::Io(_) => true
+    _ => false
+  } noraise {
+    _ => false
   }
   if !failed {
     fail("missing file should report Io")
@@ -175,16 +173,25 @@ fn write_fixture_bytes(path : String, content : Bytes) -> Unit raise {
 }
 
 ///|
-/// 把 `raise` 风格的加载包成 `Result`，测试里好判分支。
-fn load_tar_as_result(data : Bytes) -> Result[ImageSource, ImageError] {
-  let source = ImageSource::from_tar_bytes(data, name="bad.tar") catch {
-    err => return Err(err)
+/// 只要「加载失败」这一个答案，不关心具体错误。
+fn loaded_badly(load : () -> ImageSource raise ImageError) -> Bool noraise {
+  try {
+    load() |> ignore
+    false
+  } catch {
+    _ => true
+  } noraise {
+    _ => false
   }
-  Ok(source)
 }
 
 ///|
-fn load_path_as_result(path : String) -> Result[ImageSource, ImageError] {
-  let source = ImageSource::load(path) catch { err => return Err(err) }
-  Ok(source)
+/// 把 `raise` 风格的加载包成 `Result`，测试里好判分支。
+fn load_tar_result(data : Bytes) -> ImageSource raise ImageError {
+  ImageSource::from_tar_bytes(data, name="bad.tar")
+}
+
+///|
+fn load_path_result(path : String) -> ImageSource raise ImageError {
+  ImageSource::load(path)
 }

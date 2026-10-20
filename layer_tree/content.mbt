@@ -21,11 +21,13 @@ pub fn content_scan(raw : BytesView) -> ContentScan {
   let reader = TarReader::new(raw)
   while true {
     // 摘要只服务于比对：入口已经校验过 tar，残缺流在这里不值得把整个比对打断
-    let entry = try reader.next() catch {
-      err => abort("content scan failed: \{err.to_string()}")
-    } noraise {
-      None => break
-      Some(entry) => entry
+    let entry = reader.next() catch {
+      err => {
+        if err is NotFound {
+          break
+        }
+        abort("content scan failed: \{err.to_string()}")
+      }
     }
     let path = match entry.entry_type {
       Meta | Other(_) => continue
@@ -38,10 +40,8 @@ pub fn content_scan(raw : BytesView) -> ContentScan {
     }
     // 键统一成树内绝对路径（`/etc/hosts`）：tar 里写的是相对路径，
     // 直接拿它当键会让「同一条路径」在扫描表与文件树里对不上号
-    match normalize_path(path) {
-      Ok(normalized) => hashes.set(normalized, hash)
-      Err(_) => continue
-    }
+    let normalized = normalize_path(path) catch { _ => continue }
+    hashes.set(normalized, hash)
   }
   { hashes, }
 }

@@ -62,12 +62,13 @@ async fn main {
     }
     exit_process(@image_ci.exit_ok)
   }
-  match run(options, source) {
-    Ok(code) => exit_process(code)
-    Err(error) => {
+  try run(options, source) catch {
+    error => {
       report_error(error)
       exit_process(@image_ci.exit_config_error)
     }
+  } noraise {
+    code => exit_process(code)
   }
 }
 
@@ -587,15 +588,15 @@ fn describe_stage(options : Options, stage : @docker_cli.FetchStage) -> Unit {
 fn run(
   options : Options,
   source : @image_ci.ImageSource,
-) -> Result[Int32, CommandError] noraise {
+) -> Int32 raise CommandError {
   if source.layers.is_empty() {
-    return Err(CommandError::Image("image has no layers"))
+    raise CommandError::Image("image has no layers")
   }
   let tree = @layer_tree.FileTree::new()
   let layers : Array[BytesView] = []
   for layer in source.layers {
     let raw = layer.raw_bytes() catch {
-      err => return Err(CommandError::Image(err.to_string()))
+      err => raise CommandError::Image(err.to_string())
     }
     layers.push(raw)
   }
@@ -606,7 +607,7 @@ fn run(
     return run_layer_view(options, layers)
   }
   let analysis = @image_analysis.analyze_layers(tree, layers) catch {
-    err => return Err(CommandError::Analysis(err.to_string()))
+    err => raise CommandError::Analysis(err.to_string())
   }
   let report = @image_analysis.build_report(analysis, tree)
   let ruleset = load_rules(options)
@@ -621,7 +622,7 @@ fn run(
       println(result.to_text())
     }
   }
-  Ok(@image_ci.exit_code_of(result))
+  @image_ci.exit_code_of(result)
 }
 
 ///|
@@ -658,9 +659,9 @@ fn write_report_output(options : Options, text : String) -> Unit {
 fn run_layer_view(
   options : Options,
   layers : Array[BytesView],
-) -> Result[Int32, CommandError] noraise {
+) -> Int32 raise CommandError {
   let views = @layer_tree.browse_layers(layers) catch {
-    err => return Err(CommandError::Analysis(err.to_string()))
+    err => raise CommandError::Analysis(err.to_string())
   }
   let wanted = match options.layer {
     Some(layer) => layer
@@ -668,10 +669,8 @@ fn run_layer_view(
     None => views.length() - 1
   }
   if wanted < 0 || wanted >= views.length() {
-    return Err(
-      CommandError::Analysis(
-        "layer \{wanted} is out of range: image has \{views.length()} layer(s) (0..\{views.length() - 1})",
-      ),
+    raise CommandError::Analysis(
+      "layer \{wanted} is out of range: image has \{views.length()} layer(s) (0..\{views.length() - 1})",
     )
   }
   let view = views[wanted]
@@ -684,7 +683,7 @@ fn run_layer_view(
       )
     _ => println(render_layer_view(view, options, views.length()))
   }
-  Ok(@image_ci.exit_ok)
+  @image_ci.exit_ok
 }
 
 ///|
@@ -781,10 +780,10 @@ fn layer_view_to_json(
 fn run_efficiency_view(
   options : Options,
   layers : Array[BytesView],
-) -> Result[Int32, CommandError] noraise {
+) -> Int32 raise CommandError {
   let tree = @layer_tree.FileTree::new()
   let analysis = @image_analysis.analyze_layers(tree, layers) catch {
-    err => return Err(CommandError::Analysis(err.to_string()))
+    err => raise CommandError::Analysis(err.to_string())
   }
   let report = analysis.efficiency()
   let view = @image_analysis.EfficiencyViewOptions::new(
@@ -797,7 +796,7 @@ fn run_efficiency_view(
       println(@image_analysis.efficiency_view_to_json_string(report, view))
     _ => println(@image_analysis.render_efficiency_view(report, view))
   }
-  Ok(@image_ci.exit_ok)
+  @image_ci.exit_ok
 }
 
 ///|

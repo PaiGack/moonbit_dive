@@ -1,19 +1,29 @@
 ///|
 test "normalize_path collapses redundant segments" {
-  assert_eq(normalize_path("/usr/./local//bin/").unwrap(), "/usr/local/bin")
-  assert_eq(normalize_path("usr/local/bin").unwrap(), "/usr/local/bin")
-  assert_eq(normalize_path("/a/b/../c").unwrap(), "/a/c")
-  assert_eq(normalize_path("/").unwrap(), "/")
-  assert_eq(normalize_path("./").unwrap(), "/")
-  assert_eq(normalize_path("//").unwrap(), "/")
+  assert_eq(normalize_path("/usr/./local//bin/"), "/usr/local/bin")
+  assert_eq(normalize_path("usr/local/bin"), "/usr/local/bin")
+  assert_eq(normalize_path("/a/b/../c"), "/a/c")
+  assert_eq(normalize_path("/"), "/")
+  assert_eq(normalize_path("./"), "/")
+  assert_eq(normalize_path("//"), "/")
 }
 
 ///|
 test "normalize_path rejects escapes above the root" {
-  assert_eq(normalize_path("../etc/passwd"), Err(Escape("../etc/passwd")))
-  assert_eq(normalize_path("/a/../../b"), Err(Escape("/a/../../b")))
+  let escaped = try normalize_path("../etc/passwd") catch {
+    err => err
+  } noraise {
+    _ => abort("expected Escape")
+  }
+  assert_true(escaped is Escape(_))
+  let escaped = try normalize_path("/a/../../b") catch {
+    err => err
+  } noraise {
+    _ => abort("expected Escape")
+  }
+  assert_true(escaped is Escape(_))
   // 回退到根是允许的，只有越过根才报错
-  assert_eq(normalize_path("/a/../b").unwrap(), "/b")
+  assert_eq(normalize_path("/a/../b"), "/b")
 }
 
 ///|

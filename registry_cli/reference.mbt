@@ -86,10 +86,10 @@ pub fn parse_reference(raw : String) -> ImageReference raise RegistryError {
   let (rest, reference) = match original.find("@") {
     Some(index) => {
       let digest = original[index + 1:].to_owned()
-      match @oci_spec.Digest::parse(digest) {
-        Ok(_) => (original[:index].to_owned(), digest)
-        Err(err) => raise InvalidReference(err.to_string())
+      let _ = @oci_spec.Digest::parse(digest) catch {
+        err => raise InvalidReference(err.to_string())
       }
+      (original[:index].to_owned(), digest)
     }
     None => split_tag(original)
   }

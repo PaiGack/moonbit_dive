@@ -95,18 +95,16 @@ test "tar reader exposes data offsets into the original stream" {
   let archive = build_tar([File("a.txt", "0123456789")])
   let reader = TarReader::new(archive)
   let entry = reader.next() catch { _ => fail("expected an entry") }
-  let data = match entry {
-    Some(entry) => entry.data(archive)
-    None => fail("expected an entry")
-  }
+  let data = entry.data(archive)
   assert_eq(data.length(), 10)
   assert_eq(data[0], b'0')
+  // 到底了：第二次取应当抛 `NotFound`（这就是循环出口）
   let exhausted = try reader.next() catch {
-    e => Err(e)
+    err => err
   } noraise {
-    entry => Ok(entry)
+    _ => abort("expected end of stream")
   }
-  assert_true(exhausted == Ok(None))
+  assert_true(exhausted is NotFound)
 }
 
 ///|

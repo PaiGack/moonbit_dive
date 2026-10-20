@@ -26,7 +26,7 @@ test {
     #|    }
     #|  ]
     #|}
-  let document = @oci_spec.parse_document(text).unwrap()
+  let document = @oci_spec.parse_document(text)
   let manifest = match document {
     Manifest(manifest) => manifest
     _ => fail("expected a manifest")
@@ -54,7 +54,7 @@ test {
   // 解析并校验：algorithm:hex，hex 必须小写、长度与算法匹配
   let digest = @oci_spec.Digest::parse(
     "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-  ).unwrap()
+  )
   inspect(
     digest.to_string(),
     content="sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
@@ -65,7 +65,11 @@ test {
 
   // 非法输入有明确报错
   inspect(
-    @oci_spec.Digest::parse("").unwrap_err().to_string(),
+    (try @oci_spec.Digest::parse("") catch {
+      err => err
+    } noraise {
+      _ => abort("expected a digest error")
+    }).to_string(),
     content="digest is empty",
   )
 }

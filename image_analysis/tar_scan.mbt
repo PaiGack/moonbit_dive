@@ -28,14 +28,16 @@ fn scan_layer(raw : BytesView) -> LayerPlan raise @layer_tree.TarError {
   let written : Map[String, Bool] = Map([])
   let reader = @layer_tree.TarReader::new(raw)
   while true {
-    let entry = match reader.next() {
-      None => break
-      Some(entry) => entry
+    // 读完（`NotFound`）就是正常出口，其它错误照旧往上抛
+    let entry = reader.next() catch {
+      err =>
+        if err is @layer_tree.TarError::NotFound {
+          break
+        } else {
+          raise err
+        }
     }
-    let path = match @layer_tree.normalize_path(entry.path) {
-      Ok(path) => path
-      Err(_) => continue
-    }
+    let path = @layer_tree.normalize_path(entry.path) catch { _ => continue }
     match @layer_tree.whiteout_kind(path) {
       Some(@layer_tree.WhiteoutKind::Entry(name)) => {
         let target = @layer_tree.join_path(@layer_tree.parent_path(path), name)

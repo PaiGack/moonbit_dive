@@ -1,6 +1,6 @@
 ///|
 test "Index lists manifests and platforms" {
-  let document = @oci_spec.parse_document(fixture("index.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("index.json"))
   match document {
     IndexDoc(index) => {
       assert_eq(index.manifests.length(), 3)
@@ -17,7 +17,7 @@ test "Index lists manifests and platforms" {
 
 ///|
 test "Index::find_platform matches os and architecture" {
-  let document = @oci_spec.parse_document(fixture("index.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("index.json"))
   match document {
     IndexDoc(index) => {
       let arm64 = index.find_platform("linux", "arm64").unwrap()
@@ -37,7 +37,7 @@ test "Index::find_platform matches os and architecture" {
 
 ///|
 test "Index keeps os.version for windows entries" {
-  let document = @oci_spec.parse_document(fixture("index.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("index.json"))
   match document {
     IndexDoc(index) => {
       let windows = index.find_platform("windows", "amd64").unwrap()
@@ -49,7 +49,7 @@ test "Index keeps os.version for windows entries" {
 
 ///|
 test "Index round-trips through JSON" {
-  let document = @oci_spec.parse_document(fixture("index.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("index.json"))
   match document {
     IndexDoc(index) => {
       let encoded = @json.to_json(index).stringify()
@@ -64,8 +64,13 @@ test "Index round-trips through JSON" {
 test "Index rejects a descriptor without a platform-independent digest" {
   let text =
     #|{"schemaVersion": 2, "manifests": [{"mediaType": "x", "size": 1}]}
-  match @oci_spec.parse_document(text) {
-    Err(DecodeFailed(message)) => assert_true(message.contains("digest"))
+  let result = try @oci_spec.parse_document(text) catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  match result {
+    DecodeFailed(message) => assert_true(message.contains("digest"))
     _ => fail("expected DecodeFailed")
   }
 }
@@ -75,7 +80,7 @@ test "Index::platforms skips descriptors without a platform" {
   let text =
     #|{"schemaVersion": 2, "manifests": [{"mediaType": "x", "digest": "sha256:a", "size": 1}]}
   match @oci_spec.parse_document(text) {
-    Ok(IndexDoc(index)) => assert_eq(index.platforms().length(), 0)
+    IndexDoc(index) => assert_eq(index.platforms().length(), 0)
     _ => fail("expected an index")
   }
 }

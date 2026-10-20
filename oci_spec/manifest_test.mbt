@@ -1,6 +1,6 @@
 ///|
 test "Manifest parses config and layers from a real-shaped manifest" {
-  let document = @oci_spec.parse_document(fixture("manifest.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("manifest.json"))
   match document {
     Manifest(manifest) => {
       assert_eq(
@@ -29,7 +29,7 @@ test "Manifest parses config and layers from a real-shaped manifest" {
 
 ///|
 test "Manifest tolerates unknown fields but keeps known annotations" {
-  let document = @oci_spec.parse_document(fixture("manifest.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("manifest.json"))
   match document {
     Manifest(manifest) => {
       let annotations = manifest.annotations.unwrap()
@@ -45,10 +45,10 @@ test "Manifest tolerates unknown fields but keeps known annotations" {
 
 ///|
 test "Manifest config digest validates" {
-  let document = @oci_spec.parse_document(fixture("manifest.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("manifest.json"))
   match document {
     Manifest(manifest) => {
-      let digest = manifest.config_digest().unwrap()
+      let digest = manifest.config_digest()
       assert_eq(digest.algorithm, "sha256")
       assert_eq(
         digest.encoded,
@@ -63,15 +63,27 @@ test "Manifest config digest validates" {
 test "Manifest rejects a missing required config field" {
   let text =
     #|{"schemaVersion": 2, "layers": []}
-  assert_true(@oci_spec.parse_document(text) is Err(DecodeFailed(_)))
+  assert_true(
+    (try @oci_spec.parse_document(text) catch {
+      err => err
+    } noraise {
+      _ => abort("expected a parse error")
+    })
+    is DecodeFailed(_),
+  )
 }
 
 ///|
 test "Manifest rejects a wrong-typed layers field" {
   let text =
     #|{"schemaVersion": 2, "config": {"mediaType": "x", "digest": "d", "size": 1}, "layers": {"not": "an array"}}
-  match @oci_spec.parse_document(text) {
-    Err(DecodeFailed(message)) => {
+  let result = try @oci_spec.parse_document(text) catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  match result {
+    DecodeFailed(message) => {
       assert_true(message.contains("/layers"))
       assert_true(message.contains("expected array"))
     }
@@ -84,14 +96,14 @@ test "Manifest::is_index distinguishes index media types" {
   let manifest_text =
     #|{"schemaVersion": 2, "config": {"mediaType": "x", "digest": "d", "size": 1}, "layers": []}
   match @oci_spec.parse_document(manifest_text) {
-    Ok(Manifest(manifest)) => assert_false(manifest.is_index())
+    Manifest(manifest) => assert_false(manifest.is_index())
     _ => fail("expected a manifest")
   }
 }
 
 ///|
 test "Manifest round-trips through JSON" {
-  let document = @oci_spec.parse_document(fixture("manifest.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("manifest.json"))
   match document {
     Manifest(manifest) => {
       let encoded = @json.to_json(manifest).stringify()
@@ -104,7 +116,7 @@ test "Manifest round-trips through JSON" {
 
 ///|
 test "docker media types are recognized" {
-  let document = @oci_spec.parse_document(fixture("docker_manifest.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("docker_manifest.json"))
   match document {
     Manifest(manifest) => {
       assert_eq(

@@ -159,14 +159,18 @@ async fn choose_manifest(
   let header_digest = reply.header("docker-content-digest").unwrap_or("")
   let body_digest = @oci_spec.Digest::from_sha256(reply.body).to_string()
   if @oci_spec.is_index_media_type(content_type) {
-    let index = match @oci_spec.parse_document(text) {
-      Ok(IndexDoc(index)) => index
-      Ok(other) =>
+    let document = try @oci_spec.parse_document(text) catch {
+      err =>
+        raise Unsupported("index body is not valid JSON: \{err.to_string()}")
+    } noraise {
+      document => document
+    }
+    let index = match document {
+      IndexDoc(index) => index
+      other =>
         raise Unsupported(
           "server said index but the body is \{other.to_string()}",
         )
-      Err(err) =>
-        raise Unsupported("index body is not valid JSON: \{err.to_string()}")
     }
     let chosen = select_platform(index, platform)
     // 子 manifest 一律按 digest 取：tag 会漂，digest 不会
@@ -234,12 +238,14 @@ fn manifest_media_type_of(manifest : @oci_spec.Manifest) -> String {
 
 ///|
 fn parse_manifest(text : String) -> @oci_spec.Manifest raise RegistryError {
-  match @oci_spec.parse_document(text) {
-    Ok(@oci_spec.Manifest(manifest)) => manifest
-    Ok(other) =>
-      raise Unsupported("expected a manifest, got \{other.to_string()}")
-    Err(err) =>
-      raise Unsupported("manifest is not valid JSON: \{err.to_string()}")
+  let document = try @oci_spec.parse_document(text) catch {
+    err => raise Unsupported("manifest is not valid JSON: \{err.to_string()}")
+  } noraise {
+    document => document
+  }
+  match document {
+    @oci_spec.Manifest(manifest) => manifest
+    other => raise Unsupported("expected a manifest, got \{other.to_string()}")
   }
 }
 

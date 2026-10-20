@@ -1,6 +1,6 @@
 ///|
 test "parse_document recognizes an OCI manifest" {
-  let document = @oci_spec.parse_document(fixture("manifest.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("manifest.json"))
   match document {
     Manifest(manifest) => {
       assert_eq(manifest.schema_version, 2)
@@ -16,7 +16,7 @@ test "parse_document recognizes an OCI manifest" {
 
 ///|
 test "parse_document recognizes an OCI index" {
-  let document = @oci_spec.parse_document(fixture("index.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("index.json"))
   match document {
     IndexDoc(index) => {
       assert_eq(index.manifests.length(), 3)
@@ -29,7 +29,7 @@ test "parse_document recognizes an OCI index" {
 ///|
 test "parse_document recognizes an image config even without a leading mediaType" {
   // config.json 的 mediaType 在末尾，判别仍应命中 config
-  let document = @oci_spec.parse_document(fixture("config.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("config.json"))
   match document {
     ImageConfig(config) => {
       assert_eq(config.os, Some("linux"))
@@ -41,7 +41,7 @@ test "parse_document recognizes an image config even without a leading mediaType
 
 ///|
 test "parse_document recognizes a docker manifest by media type" {
-  let document = @oci_spec.parse_document(fixture("docker_manifest.json")).unwrap()
+  let document = @oci_spec.parse_document(fixture("docker_manifest.json"))
   match document {
     Manifest(manifest) => {
       assert_true(
@@ -55,13 +55,23 @@ test "parse_document recognizes a docker manifest by media type" {
 
 ///|
 test "parse_document reports JSON syntax errors" {
-  assert_true(@oci_spec.parse_document("{not json") is Err(ParseFailed(_)))
+  let error = try @oci_spec.parse_document("{not json") catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  assert_true(error is ParseFailed(_))
 }
 
 ///|
 test "parse_document rejects a non-object top level" {
-  match @oci_spec.parse_document("[1, 2, 3]") {
-    Err(NotAnObject(actual)) => inspect(actual, content="[1,2,3]")
+  let error = try @oci_spec.parse_document("[1, 2, 3]") catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  match error {
+    NotAnObject(actual) => inspect(actual, content="[1,2,3]")
     _ => fail("expected NotAnObject")
   }
 }
@@ -70,13 +80,18 @@ test "parse_document rejects a non-object top level" {
 test "parse_document reports the offending field path" {
   let text =
     #|{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {}, "layers": []}
-  match @oci_spec.parse_document(text) {
-    Err(DecodeFailed(message)) => {
+  let error = try @oci_spec.parse_document(text) catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  match error {
+    DecodeFailed(message) => {
       // config 里缺 mediaType/digest/size
       assert_true(message.contains("mediaType"))
       assert_true(message.contains("missing required field"))
     }
-    other => assert_true(other is Err(_))
+    _ => fail("expected DecodeFailed")
   }
 }
 
@@ -84,12 +99,17 @@ test "parse_document reports the offending field path" {
 test "parse_document rejects a wrong field type" {
   let text =
     #|{"schemaVersion": "two", "mediaType": "application/vnd.oci.image.manifest.v1+json"}
-  match @oci_spec.parse_document(text) {
-    Err(DecodeFailed(message)) => {
+  let error = try @oci_spec.parse_document(text) catch {
+    err => err
+  } noraise {
+    _ => abort("expected an error")
+  }
+  match error {
+    DecodeFailed(message) => {
       assert_true(message.contains("expected integer"))
       assert_true(message.contains("/schemaVersion"))
     }
-    other => assert_true(other is Err(_))
+    _ => fail("expected DecodeFailed")
   }
 }
 
@@ -97,7 +117,7 @@ test "parse_document rejects a wrong field type" {
 test "parse_image_config_lenient fills in a missing schemaVersion" {
   let text =
     #|{"os": "linux", "architecture": "amd64", "rootfs": {"type": "layers", "diff_ids": []}, "history": []}
-  let config = @oci_spec.parse_image_config_lenient(text).unwrap()
+  let config = @oci_spec.parse_image_config_lenient(text)
   assert_eq(config.schema_version, 2)
   assert_eq(config.os, Some("linux"))
 }
@@ -106,8 +126,8 @@ test "parse_image_config_lenient fills in a missing schemaVersion" {
 test "parse_document sniffs the kind when mediaType is absent" {
   let index_text =
     #|{"schemaVersion": 2, "manifests": []}
-  assert_true(@oci_spec.parse_document(index_text).unwrap() is IndexDoc(_))
+  assert_true(@oci_spec.parse_document(index_text) is IndexDoc(_))
   let manifest_text =
     #|{"schemaVersion": 2, "config": {"mediaType": "x", "digest": "sha256:a", "size": 1}, "layers": []}
-  assert_true(@oci_spec.parse_document(manifest_text).unwrap() is Manifest(_))
+  assert_true(@oci_spec.parse_document(manifest_text) is Manifest(_))
 }

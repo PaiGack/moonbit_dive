@@ -62,23 +62,23 @@ pub extend OciParseError with Show::{to_string, output}
 
 ///|
 /// 从 JSON 文本解析出 OCI 文档，自动识别 manifest / index / config。
-pub fn parse_document(text : String) -> Result[OciDocument, OciParseError] {
+pub fn parse_document(text : String) -> OciDocument raise OciParseError {
   let json = @json.parse(text) catch {
-    error => return Err(ParseFailed(error.to_string()))
+    error => raise ParseFailed(error.to_string())
   }
   parse_document_json(json)
 }
 
 ///|
 /// 同 `parse_document`，输入已经是 `Json` 值。
-pub fn parse_document_json(json : Json) -> Result[OciDocument, OciParseError] {
+pub fn parse_document_json(json : Json) -> OciDocument raise OciParseError {
   let fields = match json {
     Json::Object(fields) => fields
-    other => return Err(NotAnObject(other.stringify()))
+    other => raise NotAnObject(other.stringify())
   }
   let media_type = match fields.get("mediaType") {
     Some(Json::String(value)) => Some(value)
-    Some(other) => return Err(InvalidField("mediaType", other.stringify()))
+    Some(other) => raise InvalidField("mediaType", other.stringify())
     None => None
   }
   let kind = match media_type {
@@ -87,28 +87,22 @@ pub fn parse_document_json(json : Json) -> Result[OciDocument, OciParseError] {
   }
   match kind {
     DocumentKind::Manifest =>
-      Ok(
-        Manifest(
-          @json.from_json(json) catch {
-            error => return Err(DecodeFailed(error.to_string()))
-          },
-        ),
+      Manifest(
+        @json.from_json(json) catch {
+          error => raise DecodeFailed(error.to_string())
+        },
       )
     DocumentKind::IndexDoc =>
-      Ok(
-        IndexDoc(
-          @json.from_json(json) catch {
-            error => return Err(DecodeFailed(error.to_string()))
-          },
-        ),
+      IndexDoc(
+        @json.from_json(json) catch {
+          error => raise DecodeFailed(error.to_string())
+        },
       )
     DocumentKind::ImageConfig =>
-      Ok(
-        ImageConfig(
-          @json.from_json(json) catch {
-            error => return Err(DecodeFailed(error.to_string()))
-          },
-        ),
+      ImageConfig(
+        @json.from_json(json) catch {
+          error => raise DecodeFailed(error.to_string())
+        },
       )
   }
 }
@@ -118,9 +112,9 @@ pub fn parse_document_json(json : Json) -> Result[OciDocument, OciParseError] {
 /// 这里补个默认值，只为尽力拿到 rootfs 与 history。
 pub fn parse_image_config_lenient(
   text : String,
-) -> Result[ImageConfig, OciParseError] {
+) -> ImageConfig raise OciParseError {
   let json = @json.parse(text) catch {
-    error => return Err(ParseFailed(error.to_string()))
+    error => raise ParseFailed(error.to_string())
   }
   match json {
     Json::Object(fields) => {
@@ -131,12 +125,11 @@ pub fn parse_image_config_lenient(
       if !patched.contains("schemaVersion") {
         patched["schemaVersion"] = Json::number(2.0)
       }
-      let config : ImageConfig = @json.from_json(Json::object(patched)) catch {
-        error => return Err(DecodeFailed(error.to_string()))
+      @json.from_json(Json::object(patched)) catch {
+        error => raise DecodeFailed(error.to_string())
       }
-      Ok(config)
     }
-    other => Err(NotAnObject(other.stringify()))
+    other => raise NotAnObject(other.stringify())
   }
 }
 

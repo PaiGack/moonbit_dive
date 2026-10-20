@@ -127,9 +127,8 @@ pub fn browse_decompressed(
     let before = tree.snapshot()
     // 已经解压过的层不该再出 tar 错：真出了就是「解压产物」这一契约被破坏，
     // 属于程序缺陷，就地炸出来，别把错误吞成一次静默的空视图
-    match apply_layer_boxed(tree, raw, index) {
-      Ok(_) => ()
-      Err(err) => abort("applying decompressed layer \{index} failed: \{err}")
+    apply_layer(tree, raw, index) catch {
+      err => abort("applying decompressed layer \{index} failed: \{err}")
     }
     let snapshot = tree.snapshot()
     // 摘要按两条线标：这一层的写入盖在 `snapshot` 上，上一层的写入盖在 `before` 上
@@ -251,31 +250,13 @@ pub fn LayerView::aggregate_changed_paths(self : LayerView) -> Array[String] {
 }
 
 ///|
-/// 把「已保证不会出错」的 `apply_layer` 焊成 Result，供 `browse_decompressed`
-/// 把契约破坏当程序缺陷报出来（`abort` 只在 `noraise` 上下文里可用）。
-fn apply_layer_boxed(
-  tree : FileTree,
-  raw : Bytes,
-  layer : Int32,
-) -> Result[Unit, TarError] noraise {
-  try apply_layer(tree, raw, layer) catch {
-    err => Err(err)
-  } noraise {
-    _ => Ok(())
-  }
-}
-
-///|
 /// 在视图里按路径前缀筛出一棵子树，供 CLI 的 `--path` 使用。
 ///
 /// 保留 `prefix` 自身及其子树，外加它沿途的祖先目录作为缩进参照——
 /// 少了祖先目录，`render_tree` 会把这些节点当孤儿，视图里只剩一个 `/`。
 /// `prefix` 找不到时返回空树。
 pub fn LayerView::subtree(self : LayerView, prefix : String) -> FileTree {
-  let normalized = match normalize_path(prefix) {
-    Ok(path) => path
-    Err(_) => return FileTree::new()
-  }
+  let normalized = normalize_path(prefix) catch { _ => return FileTree::new() }
   let result = FileTree::new()
   // 先确认前缀下真有条目：没有就返回空树，别把沿途祖先当成结果
   let hit = self.tree.paths().any(fn(path) { path_is_under(path, normalized) })

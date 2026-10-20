@@ -83,7 +83,7 @@ test "docker-archive layer ids are the diff ids from the config" {
   )
   let tar = bundle.files[0].1
   let config_text = @encoding.decoder(UTF8).decode(image.config.data)
-  let config = @oci_spec.parse_image_config_lenient(config_text).unwrap()
+  let config = @oci_spec.parse_image_config_lenient(config_text)
   for diff_id in config.rootfs.diff_ids {
     let hex = diff_id[7:].to_owned()
     // 目录名就是未压缩层的 sha256：`<hex>/layer.tar` 必须真的存在
@@ -103,7 +103,7 @@ test "docker-archive layers decompress back to the original tar" {
   let tar = bundle.files[0].1
   // 目录名是**未压缩层**的 sha256（diff id），不是压缩 blob 的 digest
   let config_text = @encoding.decoder(UTF8).decode(image.config.data)
-  let config = @oci_spec.parse_image_config_lenient(config_text).unwrap()
+  let config = @oci_spec.parse_image_config_lenient(config_text)
   let first_path = "\{config.rootfs.diff_ids[0][7:]}/layer.tar"
   let first = match @layer_tree.read_file_from_tar(tar, first_path) {
     Some(first) => first
@@ -228,7 +228,7 @@ test "oci layout index points at the manifest blob" {
     None => fail("index.json is missing")
   }
   let index_text = @encoding.decoder(UTF8).decode(index_bytes)
-  let index = @oci_spec.parse_document(index_text).unwrap()
+  let index = @oci_spec.parse_document(index_text)
   let descriptors = match index {
     @oci_spec.IndexDoc(index) => index.manifests
     _ => fail("index.json is not an index")
