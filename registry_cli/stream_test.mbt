@@ -360,3 +360,121 @@ fn descriptor_json_of(
   fields.set("size", Json::number(size.to_double()))
   Json::object(fields)
 }
+
+///|
+/// 两跳重定向：registry → 307 → 中间站 → 307 → 真正文。
+///
+/// 真实世界就是这样（Docker Hub 的 blob 先跳到 Cloudflare，再跳到 S3）。
+/// 只跟一跳的实现在这里会拿到一个「又不是 200 又不是 307」的应答，
+/// 报错看起来像认证或网络问题，其实只是少跟了一跳。
+#cfg(not(platform="windows"))
+async test "a blob that redirects twice is still followed" {
+  let config = fake_config([
+    @oci_spec.Digest::from_sha256(b"unused diff id").to_string(),
+  ])
+  let config_digest = @oci_spec.Digest::from_sha256(config).to_string()
+  // 层的正文是任意字节：这条用例只看「能不能落到盘上」，不看解压
+  let blob = Bytes::makei(64 * 1024, index => (index % 251).to_byte())
+  let digest = @oci_spec.Digest::from_sha256(blob).to_string()
+  let manifest = truncated_manifest(config~, config_digest~, digest~, blob~)
+  let manifest_digest = @oci_spec.Digest::from_sha256(manifest).to_string()
+  let server = @http.Server(@socket.Addr::new(0x7F000001, 0))
+  let port = server.addr.port()
+  let origin = "http://127.0.0.1:\{port}"
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      server.run_forever((request, _body, conn) => {
+        let path = request.path
+        if path.has_prefix("/hop1/") {
+          // 第一跳：把原来的路径塞进 /hop2/<原路径>
+          let rest = path[6:].to_owned()
+          let headers = Map([
+            (@http.CaseInsensitiveString("location"), "\{origin}/hop2/\{rest}"),
+            (@http.CaseInsensitiveString("content-length"), "0"),
+          ])
+          conn.send_response(307, "Temporary Redirect", extra_headers=headers)
+          return
+        }
+        if path.has_prefix("/hop2/") {
+          // 第二跳：回到真正的 blob 端点
+          let rest = path[6:].to_owned()
+          let headers = Map([
+            (@http.CaseInsensitiveString("location"), "\{origin}/\{rest}"),
+            (@http.CaseInsensitiveString("content-length"), "0"),
+          ])
+          conn.send_response(307, "Temporary Redirect", extra_headers=headers)
+          return
+        }
+        if path.has_prefix("/v2/blob/") {
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("location"),
+              "\{origin}/hop1/v2/blob/\{digest}",
+            ),
+            (@http.CaseInsensitiveString("content-length"), "0"),
+          ])
+          conn.send_response(307, "Temporary Redirect", extra_headers=headers)
+          return
+        }
+        if path.contains("/manifests/") {
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("content-type"),
+              @oci_spec.oci_manifest_media_type,
+            ),
+            (
+              @http.CaseInsensitiveString("docker-content-digest"),
+              manifest_digest,
+            ),
+            (
+              @http.CaseInsensitiveString("content-length"),
+              manifest.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(manifest)
+          return
+        }
+        if path.contains("/blobs/") {
+          let body = if path.has_suffix(config_digest) { config } else { blob }
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("content-length"),
+              body.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(body)
+          return
+        }
+        conn.send_response(404, "Not Found")
+      })
+    })
+    let directory = @fs.tmpdir(prefix="dive-redirect-test-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let client = RegistryClient::connect("127.0.0.1:\{port}", insecure=true) catch {
+      _ => fail("client")
+    }
+    let reference = @registry_cli.parse_reference("test/blob:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let pulled = pull_with_client(
+      client,
+      reference,
+      options=@registry_cli.PullOptions::new(),
+    ) catch {
+      err => fail("a two-hop redirect must be followed: \{err.to_string()}")
+    }
+    client.close()
+    let landed = pulled.layers[0].bytes() catch {
+      err => fail("the layer should be readable: \{err.to_string()}")
+    }
+    assert_eq(landed, blob)
+    @registry_cli.discard_image(pulled)
+    @fs.rmdir(directory, recursive=true) catch {
+      _ => ()
+    }
+    server.close()
+  })
+}

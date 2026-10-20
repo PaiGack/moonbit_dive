@@ -6,7 +6,8 @@
 2. 现在下载**没有速度和进度**，只有层的进度
 
 第 2 点是**现在就成立的缺口**，不依赖前两点。第 1 点是两个可以分开做的改造。
-本文只调研、不写代码。
+> **落地情况（issue #106）**：本文的三件事都做完了，见第 7 节「落地记录」。
+> 下文保留当时的判断与理由，作为决策过程的记录；与现状不一致的地方以第 7 节为准。
 
 ## 0. 先说结论
 
@@ -311,3 +312,83 @@ pub async fn RegistryClient::get_stream(
 - 打包与下载流水线并行（CPU 解压与网络 IO 叠加，收益小于复杂度，
   且会让「下载 100% 之后还要多久」更难说）
 - 每层独立连接池调优、HTTP/2 多路复用（`@http.Client` 的选择，不在本仓收口）
+
+## 7. 落地记录（issue #106）
+
+三件事按「进度 → 并发 → 流式落盘」的顺序做完了。下面是**实际**的形状，
+以及做的时候被现实改掉的那几条判断。
+
+### 7.1 进度与速度
+
+- `PullEvent` 加了 `Progress(received, total)`：整体口径由拉取侧报（已完成层之和 +
+  各层在途字节），渲染层只做减法，不再自己推算——并发之后那套推算会崩（§2.1 判断成立）
+- 事件步长 `1 MiB → 256 KiB`（`progress_step` → `progress_step_bytes()`）。
+  §1(c) 说的「小于 1 MiB 的层一个事件都不发」现在有测试守着：3 KiB 的层至少报一次
+- `PullReporter` 每层一份状态（`Map[Int32, LayerState]`），注入时钟算速度
+  （1.5 秒滑动窗口），没基线时显示 `--`
+- 同一行两次实际写入间隔 ≥ 200 ms（`min_repaint_millis`）。§2.3 说的「244 次 write」
+  正是这里挡掉的
+- 收尾 `finish(failed)` 补一行「断在第几层 / 跑了多久 / 平均多快」
+
+**没做**：§2.4 说要做「与数据无关的心跳 `spawn_bg`」。实际做并发之后这件事的
+价值变了——层与层之间会主动报 `Progress`（见 7.2），真正的空窗只剩下「一层之内
+服务端不发字节」，而那种情况显示正在下的字节数就已经能看出来。多加一个后台任务
+只是多一处生命周期要管，先不做。**这一条是本文与现状唯一的实质分歧。**
+
+### 7.2 并发
+
+- `concurrency` 默认 4，`--jobs` 控制；`1`（或 `0`）退回逐层串行
+- 用 `with_task_group` + `spawn` + `Semaphore`，结果按 manifest 顺序排回去
+- **改掉的一处判断**：§3.3 说「同一个 `RegistryClient` 的 token 是进程内的 `mut token`，
+  并发下重复换票无害」。真正的坑不在 token，而在**连接**：`RegistryClient` 背后是一个
+  `@http.Client`，一次只服务一个请求；两个任务共用它发请求，读到的是失效的 fd
+  （正是 issue #97 那个 `Bad file descriptor`）。所以并发时**每层开自己的连接**，
+  token 从模板抄过去
+- 失败不往上抛：`spawn` 里抛会把同组其他层一起取消，而取消中的任务连在途名额都
+  放不掉。折成 `None` 收进数组，等所有层停下来再报第一件错
+
+**预期照旧别吹**：本地单线程的假 registry 测不出加速（请求本来就排队），
+测试只钉语义（顺序、digest、串行/并发同结果、整体进度单调）。
+
+### 7.3 流式落盘
+
+- `RegistryClient` 加 `get_head`（只要头）+ `read_stream`（边读边写 sink、边算 sha256），
+  内存峰值是一块 64 KiB
+- `PulledBlob.data` 变成 `Option[Bytes]`，字节在 `path` 上；`RemoteImage` 带 `staging`
+  目录，`discard_image` 收尾。打包侧要用整块字节的地方走 `blob.bytes()`
+- OCI layout 直接**从 staging 抄**（64 KiB 一块的 `read_at/write`），内存与镜像体积解耦
+- `*.partial` → `rename`，`content-length` 对不上直接判失败（§4.2 判断成立）
+
+**docker-archive 仍然要整块**：`layer_tree` 的解压器只给了 `BytesView` 的入口
+（`gzip_decompress_to(data: BytesView, sink)`），所以 docker-archive 那条路会把流式
+落下来的层读回内存再解压。这是已知的最后一处，修它要动 `layer_tree` 的解压器接口
+（§4.3 的方案 1「落临时文件 + 按块 read_at 解压」只对「打包阶段」成立，
+解压器本身还是整块），所以本轮没做。
+
+### 7.4 真镜像上跑出来的两个坑
+
+单测没覆盖到、`docker pull` 一跑就露馅的：
+
+1. `get_head` 只拿头，正文没读就再发请求，读到的是同一条连接上的残留
+   （症状：`content-length` 说 577，拿到 0）→ 加 `RegistryClient::skip_body`
+2. CDN 那边**还会再跳一次**（Docker Hub → Cloudflare → S3），只跟一跳拿不到正文
+   → `get_stream_following_redirects` 递归地跟
+
+两条都有测试守着（`registry_cli/stream_test.mbt`）。
+
+### 7.5 验证
+
+| 项 | 用例 |
+|---|---|
+| 速度数值（假时钟，不睡真时间） | `progress_test.mbt`「speed comes from the sliding window」 |
+| 小层不再 0% | `progress_test.mbt`「a small layer still reports at least one progress event」 |
+| 8 层顺序与 digest | `registry_test.mbt`「concurrent pull keeps manifest order and digests」 |
+| 串行 = 并发 | `registry_test.mbt`「serial and concurrent pulls agree」 |
+| 整体进度单调 | `registry_test.mbt`「concurrent pull reports a monotonic overall progress」 |
+| 坏层不被接受 | `registry_test.mbt`「a missing layer fails the whole concurrent pull」 |
+| 内存不随体积涨（24 MB 层，32 MB 预算） | `stream_test.mbt`「a big layer is streamed to disk」 |
+| 中途掐断不留坏产物 | `stream_test.mbt`「a truncated layer is rejected」 |
+| 两跳重定向 | `stream_test.mbt`「a blob that redirects twice is still followed」 |
+
+真实镜像对拍（手工）：`library/hello-world`（1 层 2.4 KiB）、`library/alpine:3.20`
+（OCI layout）、`library/nginx:1.27-alpine`（8 层 20 MiB，`--jobs 1` 与默认都跑过）。
