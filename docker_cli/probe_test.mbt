@@ -320,3 +320,98 @@ fn count_occurrences(text : String, needle : String) -> Int32 {
   }
   count
 }
+
+///|
+/// Windows 上不塞 POSIX socket 候选（issue #94）。
+///
+/// 那边只有命名管道与 `tcp://`，`/var/run/docker.sock` 必然不存在。
+/// 留着这些候选只会让 `--verbose` 多两行无意义的 `socket not found`，
+/// 把人往「路径写错了」上带；要查的其实是 docker CLI 装没装。
+test "windows candidates carry no posix sockets" {
+  let candidates = @docker_cli.default_candidates_opts(
+    {},
+    windows_platform=true,
+  )
+  assert_eq(candidates, [
+    @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Docker),
+    @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Podman),
+    @docker_cli.BackendCandidate::Cli(@docker_cli.CliTool::Nerdctl),
+  ])
+}
+
+///|
+/// 显式写的 `DOCKER_HOST` 在 Windows 上也得留着：用户都写死了，别跟他争。
+/// 认不出形态的（`npipe://`）照旧跳过，不塞半成品进候选表。
+test "windows keeps an explicit DOCKER_HOST" {
+  let candidates = @docker_cli.default_candidates_opts(
+    { "DOCKER_HOST": "unix:///custom/docker.sock" },
+    windows_platform=true,
+  )
+  assert_eq(
+    candidates[0],
+    @docker_cli.BackendCandidate::Socket("/custom/docker.sock"),
+  )
+  assert_eq(candidates.length(), 4)
+}
+
+///|
+/// Windows 的 PATH 分隔符是 `;`：按 `:` 切会把 `C:\...` 的盘符切碎，
+/// 于是 path 上的 docker.exe 永远找不着。这条钉住 `;` 那条分支。
+async test "windows PATH is split on semicolons" {
+  let dir = @fs.tmpdir(prefix="dive-win-path-")
+  let ignored = "C:\\fakedir"
+  let script =
+    #|#!/bin/sh
+    #|exit 0
+    #|
+  // 探测拼出来的是 `dir\\docker.exe`：Linux 上没有扩展名语义，
+  // 建的就是这个带点的文件名；Windows 上它叫 `docker.exe`，两种拼法都落到同一个文件
+  let program = "\{dir}\\docker.exe"
+  @fs.write_file(program, script, permission=0o755)
+  // 前面塞一条带盘符的假目录：按 `:` 切会把它劈成 `C` 和 `\fakedir`
+  let env = { "OS": "Windows_NT", "PATH": "\{ignored};\{dir}" }
+  let resolved = @docker_cli.resolve_executable_opts(
+    "docker.exe",
+    env["PATH"],
+    allow_fallback=false,
+    windows_platform=true,
+  )
+  assert_eq(resolved, Some(program))
+  @fs.rmdir(dir, recursive=true)
+}
+
+///|
+/// 平台判断跟着 `env` 走：`OS` 优先，没有就退回带盘符的 `pwd`。
+test "platform detection reads OS then pwd" {
+  assert_true(@docker_cli.is_windows_platform_env({ "OS": "Windows_NT" }))
+  assert_true(@docker_cli.is_windows_platform_env({ "OS": "windows" }))
+  assert_true(@docker_cli.is_windows_platform_env({ "pwd": "D:\\code" }))
+  assert_false(@docker_cli.is_windows_platform_env({ "OS": "Linux" }))
+  assert_false(@docker_cli.is_windows_platform_env({ "pwd": "/home/me" }))
+}
+
+///|
+/// `DOCKER_CLI` 写成 Windows 路径时：basename 要按 `\` 切，
+/// `.exe` 要剥掉才能认出是哪个工具——否则 podman.exe 会被记成 docker。
+test "windows DOCKER_CLI path is parsed for tool and name" {
+  let candidates = @docker_cli.probe_order_for_test([], {
+    "DOCKER_CLI": "C:\\Program Files\\RedHat\\Podman\\podman.exe",
+  })
+  assert_eq(candidates, [
+    @docker_cli.BackendCandidate::Program(
+      "C:\\Program Files\\RedHat\\Podman\\podman.exe",
+      @docker_cli.CliTool::Podman,
+    ),
+  ])
+}
+
+///|
+/// 「一个后端都没有」的提示要跟着平台换：Windows 上念
+/// `DOCKER_HOST=unix:///var/run/docker.sock` 等于让人去开一个不存在的门。
+test "the no-backend hint is platform aware" {
+  let windows = @docker_cli.backend_hint(windows_platform=true)
+  assert_true(windows.contains("docker.exe") || windows.contains("PATH"))
+  assert_false(windows.contains("/var/run/docker.sock"))
+  let posix = @docker_cli.backend_hint(windows_platform=false)
+  assert_true(posix.contains("/var/run/docker.sock"))
+}

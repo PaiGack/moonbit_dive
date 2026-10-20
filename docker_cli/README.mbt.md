@@ -100,6 +100,17 @@ docker / podman / nerdctl 的 CLI「看起来一样」，实际有三处会把�
   （返回 `None` 而不是给半成品实现）
 - 顺序可配置：`default_candidates(env)` 返回的数组就是候选列表，调用方可以自己排
 
+**Windows 上没有 socket 候选**（issue #94）：那边只有命名管道与 `tcp://`，
+`/var/run/docker.sock` 必然不存在，所以默认候选只剩 `docker` / `podman` /
+`nerdctl` 三个 CLI。路径分隔符也换：`PATH` 按 `;` 拆、`DOCKER_CLI` 的
+`\` 也认，`docker.exe` 剥掉扩展名后一样能认出是哪个工具。
+「一个后端都没有」的提示同样换成 Windows 的话术（Docker Desktop 的 bin 目录），
+再让用户去设 `DOCKER_HOST=unix:///var/run/docker.sock` 等于让人去开一扇不存在的门。
+
+平台判断不用 `#cfg`：被裁掉的分支在 Linux CI 上根本不编译，写错了等于没测。
+改用运行时信息（`OS`、`pwd`／cwd 的盘符），两个平台走同一份代码，
+`default_candidates_opts(env, windows_platform~)` 让测试把两边各钉一遍。
+
 **探测只做「能不能用」的判定，不真的跑 `save`**：
 
 - socket：先看文件类型，再发一个**有超时的** `_ping`。文件是 socket
