@@ -9,13 +9,30 @@
 /// issue #17 要求「可配置」，因此这里返回候选列表而不是直接探测，
 /// 调用方可以删改顺序。
 pub fn default_candidates(env : Map[String, String]) -> Array[BackendCandidate] {
+  default_candidates_opts(env, windows_platform=is_windows_platform())
+}
+
+///|
+/// `default_candidates` 的显式平台版本，测试用它把两个平台各钉一遍。
+///
+/// Windows 上**不放**任何 unix socket 候选：那一侧只有命名管道
+/// （`//./pipe/docker_engine`）与 `tcp://`，`/var/run/docker.sock` 这类
+/// POSIX 路径在那里必然不存在。留着它们只会让 `--verbose` 的探测记录里
+/// 多两行无意义的 `socket not found`，把人往「路径写错了」的方向带——
+/// 实际要查的是 docker CLI 装没装（见 issue #94）。
+pub fn default_candidates_opts(
+  env : Map[String, String],
+  windows_platform~ : Bool,
+) -> Array[BackendCandidate] {
   let candidates = []
   push_socket_candidates(candidates, env.get("DOCKER_HOST"))
   push_socket_candidates(candidates, env.get("CONTAINER_HOST"))
-  candidates.push(Socket(DOCKER_SOCKET))
-  // podman 的 socket 路径不是猜的：这是 rootful 的官方默认值。装了 podman
-  // 却没开 docker daemon 的机器上，这一条能接住「只装了 podman」的情形。
-  candidates.push(Socket(PODMAN_ROOT_SOCKET))
+  if !windows_platform {
+    candidates.push(Socket(DOCKER_SOCKET))
+    // podman 的 socket 路径不是猜的：这是 rootful 的官方默认值。装了 podman
+    // 却没开 docker daemon 的机器上，这一条能接住「只装了 podman」的情形。
+    candidates.push(Socket(PODMAN_ROOT_SOCKET))
+  }
   candidates.push(Cli(CliTool::Docker))
   candidates.push(Cli(CliTool::Podman))
   candidates.push(Cli(CliTool::Nerdctl))
@@ -119,6 +136,7 @@ pub async fn probe_backends(
   // 调用方显式给了 PATH，就只在这个范围里找：否则装了 docker 的机器上
   // 怎么探都是「找得到」，确定性测试和隔离环境都会失真。
   let allow_fallback = env.get("PATH") is None
+  let windows_platform = is_windows_platform_env(env)
   let attempts = []
   for index, candidate in ordered {
     let (ok, reason) = health_check(
@@ -126,6 +144,7 @@ pub async fn probe_backends(
       path,
       timeout_ms~,
       allow_fallback~,
+      windows_platform~,
     )
     attempts.push({ candidate, ok, reason, })
     if ok {
@@ -202,6 +221,7 @@ pub async fn resolve_candidate_for_test(
 ) -> String? {
   let path = path_of_env(env)
   let allow_fallback = env.get("PATH") is None
+  let windows_platform = is_windows_platform_env(env)
   match candidate {
     Socket(_) => None
     Program(program, _) =>
@@ -211,28 +231,49 @@ pub async fn resolve_candidate_for_test(
         None
       }
     Cli(tool) =>
-      resolve_executable_opts(Show::to_string(tool), path, allow_fallback~)
+      resolve_executable_opts(
+        Show::to_string(tool),
+        path,
+        allow_fallback~,
+        windows_platform~,
+      )
   }
 }
 
 ///|
-/// `/usr/bin/docker` → `docker`
+/// `/usr/bin/docker` → `docker`；`C:\\Docker\\docker.exe` → `docker.exe`。
+///
+/// 两种分隔符都认：`DOCKER_CLI` 里写的是哪种，取决于用户在哪个平台打字。
 fn base_name_of(path : String) -> String {
-  let slash = path.rev_find("/")
-  match slash {
-    Some(index) => path[index + 1:].to_owned()
-    None => path
+  let mut cut = -1
+  for index, byte in path {
+    if byte == '/' || byte == '\\' {
+      cut = index
+    }
+  }
+  if cut < 0 {
+    path
+  } else {
+    path[cut + 1:].to_owned()
   }
 }
 
 ///|
 /// 可执行文件名 → 工具枚举。不认识的名字交给 `DOCKER_CLI` 直接当 docker 用。
 fn tool_of_name(name : String) -> CliTool? {
-  if name == "docker" {
+  // Windows 上 `DOCKER_CLI` 写的是 `docker.exe`：不剥掉扩展名，
+  // 这个路径就会被当成「不认识的工具」并按 docker 记，虽然也能跑，
+  // 但 `Program` 携带的工具类型会是错的（podman.exe 被记成 docker）。
+  let stem = if name.to_lower().has_suffix(".exe") {
+    name[:name.length() - 4].to_owned()
+  } else {
+    name
+  }
+  if stem == "docker" {
     Some(CliTool::Docker)
-  } else if name == "podman" {
+  } else if stem == "podman" {
     Some(CliTool::Podman)
-  } else if name == "nerdctl" {
+  } else if stem == "nerdctl" {
     Some(CliTool::Nerdctl)
   } else {
     None
@@ -246,6 +287,7 @@ async fn health_check(
   path : String,
   timeout_ms~ : Int32,
   allow_fallback~ : Bool,
+  windows_platform~ : Bool,
 ) -> (Bool, String) {
   match candidate {
     Socket(path) =>
@@ -255,7 +297,12 @@ async fn health_check(
       }
     Cli(tool) =>
       match
-        resolve_executable_opts(Show::to_string(tool), path, allow_fallback~) {
+        resolve_executable_opts(
+          Show::to_string(tool),
+          path,
+          allow_fallback~,
+          windows_platform~,
+        ) {
         Some(found) => (true, "found at \{found}")
         None => (false, "not found on PATH")
       }
@@ -351,7 +398,12 @@ fn strip_path_prefix(path : String, text : String) -> String {
 /// 只做「存在 + 可执行」判定，不真的跑 `--version`：
 /// 探测本身不应该产生副作用，否则 CI 里一个慢二进制就能拖死启动。
 pub async fn resolve_executable(name : String, path : String) -> String? {
-  resolve_executable_opts(name, path, allow_fallback=true)
+  resolve_executable_opts(
+    name,
+    path,
+    allow_fallback=true,
+    windows_platform=is_windows_platform(),
+  )
 }
 
 ///|
@@ -362,36 +414,49 @@ pub async fn resolve_executable(name : String, path : String) -> String? {
 /// 显式指定 PATH 的意思就是「只在这个范围里找」，再兜系统目录会把
 /// 隔离环境（测试、容器）里的判定搅乱：装了 docker 的机器上，
 /// 探测就永远失败不了。
-async fn resolve_executable_opts(
+pub async fn resolve_executable_opts(
   name : String,
   path : String,
   allow_fallback~ : Bool,
+  windows_platform~ : Bool,
 ) -> String? {
-  if name.contains("/") {
+  if name.contains("/") || name.contains("\\") {
     // 已经是路径，只看它在不在
     return if is_executable_file(name) { Some(name) } else { None }
   }
-  for directory in split_search_path(path) {
-    let candidate = if directory == "" {
-      name
-    } else if directory.has_suffix("/") {
-      directory + name
-    } else {
-      "\{directory}/\{name}"
-    }
+  for directory in split_search_path(path, windows_platform~) {
+    let candidate = join_path(directory, name, windows_platform~)
     if is_executable_file(candidate) {
       return Some(candidate)
     }
   }
   if allow_fallback {
     for directory in fallback_directories() {
-      let candidate = "\{directory}/\{name}"
+      let candidate = join_path(directory, name, windows_platform~)
       if is_executable_file(candidate) {
         return Some(candidate)
       }
     }
   }
   None
+}
+
+///|
+/// `目录 + 文件名`。两个平台都收 `/`，Windows 上额外收 `\`——
+/// `C:\Program Files\Docker\...` 这种写法不能因为分隔符不同就被判「找不到」。
+fn join_path(
+  directory : String,
+  name : String,
+  windows_platform~ : Bool,
+) -> String {
+  if directory == "" {
+    name
+  } else if directory.has_suffix("/") || directory.has_suffix("\\") {
+    directory + name
+  } else {
+    let separator = if windows_platform { "\\" } else { "/" }
+    "\{directory}\{separator}\{name}"
+  }
 }
 
 ///|
@@ -409,10 +474,95 @@ fn path_of_env(env : Map[String, String]) -> String {
 }
 
 ///|
+/// 拆分 PATH 的分隔符。
+///
+/// POSIX 是 `:`，Windows 是 `;`（盘符里的那个冒号不能当分隔符）。
+/// 内置实现看着像可以靠 `#cfg` 切换，实际不行：被 cfg 掉的那个分支
+/// 在别的平台上**完全不检查**，写错了要到对方的机器上才发现。
+/// 这里用运行时判断，两边都过编译器。
+fn path_separator(windows_platform~ : Bool) -> String {
+  if windows_platform {
+    ";"
+  } else {
+    ":"
+  }
+}
+
+///|
+/// 当前进程跑在 Windows 上吗。看进程环境，不去问运行时。
+///
+/// MoonBit 侧没有「编译期常量 + 另一平台也检查」的平台判断：
+/// `#cfg(platform="windows")` 被裁掉的分支在 Linux CI 上根本不编译，
+/// 写错了等于没测。所以三个判据（`OS` / `pwd` / `cwd`）都用运行时信息，
+/// 两个平台走同一份代码。
+pub fn is_windows_platform() -> Bool {
+  is_windows_platform_env(@env.get_env_vars())
+}
+
+///|
+/// 给定一份环境变量，判断这份环境暗示的平台是不是 Windows。
+///
+/// 与 `is_windows_platform` 分工不同：**候选表与提示文案跟着 `env` 走**，
+/// 因为 `probe_backends` 收的就是一份 `env`，测试要能从外面钉住平台。
+/// 两者的关系是「快照」：`process_env()` 拍下来的那份 `env` 里带着
+/// `OS`，所以真跑的时候两边答案一致。
+///
+/// 几个细节都踩过：
+/// - `OS` 在用户态改不动，靠得住；`pwd` 里那个带盘符的 `cwd` 也能兜一手
+/// - 两者都没有时（CI 上常被清空）才退回 `is_windows_platform()`
+pub fn is_windows_platform_env(env : Map[String, String]) -> Bool {
+  match env.get("OS") {
+    Some(value) => is_windows_os_name(value)
+    None =>
+      match env.get("pwd") {
+        Some(value) => looks_like_windows_path(value)
+        None =>
+          // 最后退回进程的 cwd：Windows 上是 `D:\\code\\...` 这种带盘符的样子
+          match @env.current_dir() {
+            Some(dir) => looks_like_windows_path(dir)
+            None => false
+          }
+      }
+  }
+}
+
+///|
+/// `OS=Windows_NT` / 未来的 `windows` 都认。
+fn is_windows_os_name(name : String) -> Bool {
+  let lower = name.to_lower()
+  lower.has_prefix("windows") || lower.has_prefix("winnt")
+}
+
+///|
+/// `D:\code\proj` 这种形态只可能是 Windows。
+fn looks_like_windows_path(path : String) -> Bool {
+  // 盘符可能被引号裹起来（`--pwd "D:\\code"`），先剥掉
+  let trimmed : String = path.trim().to_owned()
+  let body : String = if trimmed.has_prefix("\"") &&
+    trimmed.has_suffix("\"") &&
+    trimmed.length() >= 2 {
+    trimmed[1:trimmed.length() - 1].to_owned()
+  } else {
+    trimmed
+  }
+  match body.get_char(0) {
+    Some(first) =>
+      body.length() >= 3 &&
+      first.is_ascii_alphabetic() &&
+      body.get_char(1) is Some(':') &&
+      (body.get_char(2) is Some('\\') || body.get_char(2) is Some('/'))
+    None => false
+  }
+}
+
+///|
 /// PATH 拆成目录列表。空条目保留，按 POSIX 语义当「当前目录」处理。
-fn split_search_path(path : String) -> Array[String] {
+pub fn split_search_path(
+  path : String,
+  windows_platform~ : Bool,
+) -> Array[String] {
   let directories = []
-  for part in path.split(":") {
+  for part in path.split(path_separator(windows_platform~)) {
     directories.push(part.to_owned())
   }
   directories

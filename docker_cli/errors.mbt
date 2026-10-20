@@ -33,9 +33,7 @@ pub extend DockerCliError with @debug.Debug::{to_repr}
 pub impl Show for DockerCliError with fn to_string(self) {
   match self {
     NoBackend(detail) =>
-      "no usable docker backend: \{detail}\n" +
-      "  set DOCKER_CLI=/path/to/docker, or put docker / podman / nerdctl on PATH,\n" +
-      "  or run DOCKER_HOST=unix:///var/run/docker.sock, or pass a tar file directly"
+      "no usable docker backend: \{detail}\n" + backend_hint()
     Backend(name, code, stderr) => {
       let trimmed = stderr.trim()
       // code < 0 表示「不是子进程退出」：Engine 的 HTTP 失败、建连失败都走这条路。
@@ -56,6 +54,23 @@ pub impl Show for DockerCliError with fn to_string(self) {
     Archive(detail) => "not a readable image archive: \{detail}"
     InvalidReference(detail) => "invalid image reference: \{detail}"
     ImageNotFound(reference) => "no such image locally: \{reference}"
+  }
+}
+
+///|
+/// `NoBackend` 的安装提示。Windows 上念 POSIX socket 的经没有意义：
+/// 那边没有 `/var/run/docker.sock`，能用的是 docker CLI（Docker Desktop
+/// 的命名管道我们不走），所以提示换成「装 Docker Desktop / 把 docker 放进 PATH」。
+///
+/// 判平台用运行期信息而不是 `#cfg`：被裁掉的分支在 Linux CI 上根本不编译，
+/// 写错了也没人知道（见 `probe.mbt` 的 `is_windows_platform`）。
+pub fn backend_hint(windows_platform~ : Bool = is_windows_platform()) -> String {
+  if windows_platform {
+    "  put docker on PATH (e.g. Docker Desktop's C:\\Program Files\\Docker\\Docker\\resources\\bin),\n" +
+    "  or set DOCKER_CLI=C:\\path\\to\\docker.exe, or pass a tar file directly"
+  } else {
+    "  set DOCKER_CLI=/path/to/docker, or put docker / podman / nerdctl on PATH,\n" +
+    "  or run DOCKER_HOST=unix:///var/run/docker.sock, or pass a tar file directly"
   }
 }
 
