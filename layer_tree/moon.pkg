@@ -3,6 +3,17 @@ import {
   "moonbitlang/core/debug",
   "moonbitlang/x/crypto",
   "moonbitlang/x/encoding",
+  "gaato/zstd",
 }
 
 warnings = "-test_unqualified_package"
+
+// zstd 解码器声明了自己的 target 范围（不含 wasm），这里跟着写清楚，
+// 免得默认的 wasm 构建去解析一个跑不了的依赖。层解析本身是纯计算，
+// wasm-gc 与 native 都能跑。
+
+supported_targets = "-all+wasm-gc+native"
+
+import {
+  "moonbitlang/x/fs",
+} for "test"

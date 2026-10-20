@@ -377,7 +377,7 @@ pub fn make_opaque(tree : FileTree, directory : String, layer : Int32) -> Unit {
 }
 
 ///|
-/// 按压缩方式解压一层的数据。`algorithm` 取 `"none"` / `"gzip"`。
+/// 按压缩方式解压一层的数据。`algorithm` 取 `"none"` / `"gzip"` / `"zstd"`。
 pub fn decompress_layer(
   data : BytesView,
   algorithm : String,
@@ -385,6 +385,7 @@ pub fn decompress_layer(
   match algorithm {
     "" | "none" => data.to_owned()
     "gzip" => gzip_decompress(data)
+    "zstd" => zstd_decompress(data)
     _ => raise Unsupported(algorithm)
   }
 }

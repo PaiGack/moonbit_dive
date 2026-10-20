@@ -207,11 +207,6 @@ fn package_docker_archive(
   let layer_paths : Array[String] = []
   for index, layer in image.layers {
     let algorithm = @layer_tree.compression_of(layer.media_type)
-    if algorithm == "zstd" {
-      raise Unsupported(
-        "layer \{layer.digest} is zstd-compressed; use --format oci to store it as-is",
-      )
-    }
     let raw = @layer_tree.decompress_layer(layer.data, algorithm) catch {
       err => raise Unsupported("layer \{layer.digest}: \{err.to_string()}")
     }

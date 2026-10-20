@@ -115,11 +115,61 @@ test "docker-archive layers decompress back to the original tar" {
 }
 
 ///|
-test "docker-archive rejects zstd layers" {
-  let source = sample_image()
+/// zstd 层打 docker-archive：目录名仍是**解压后** tar 的 sha256，
+/// 所以压不压缩对产物没有影响（docker 只认未压缩的 `layer.tar`）。
+///
+/// 层用**真 `zstd -19` 压过**的那份夹具（与 `layer_tree` 同一个文件）：
+/// `layer_tree.zstd_compress` 只到 255 字节，装不下一个 tar。
+test "docker-archive unpacks zstd layers like gzip ones" {
+  let blob = zstd_layer_fixture()
+  let raw_layer = @layer_tree.zstd_decompress(blob[:])
+  let diff_id = @oci_spec.Digest::from_sha256(raw_layer).to_string()
+  let config = fake_config([diff_id])
+  let image : RemoteImage = {
+    reference: sample_reference(),
+    media_type: @oci_spec.oci_manifest_media_type,
+    manifest_digest: @oci_spec.Digest::from_sha256(b"manifest").to_string(),
+    config: {
+      media_type: @oci_spec.oci_config_media_type,
+      digest: @oci_spec.Digest::from_sha256(config).to_string(),
+      data: config,
+    },
+    layers: [
+      {
+        media_type: @oci_spec.oci_layer_zstd_media_type,
+        digest: @oci_spec.Digest::from_sha256(blob).to_string(),
+        data: blob,
+      },
+    ],
+    platform: None,
+  }
+  let bundle = @registry_cli.package_image(
+    image,
+    format=@registry_cli.DockerArchive,
+  )
+  let tar = bundle.files[0].1
+  // 目录名必须是**解压后** tar 的 sha256，而不是压缩 blob 的 digest
+  let first_path = "\{diff_id[7:]}/layer.tar"
+  let first = match @layer_tree.read_file_from_tar(tar, first_path) {
+    Some(first) => first
+    None => fail("layer tar \{first_path} is missing")
+  }
+  assert_eq(first, raw_layer)
+  let paths = @layer_tree.parse_tar_entries(first).map(entry => entry.path)
+  assert_eq(paths, ["etc/motd", "etc/"])
+}
+
+///|
+/// 解不开的层不该被静默塞进归档：报错里要带上层 digest 和原因。
+test "docker-archive reports broken zstd layers" {
+  let source = sample_image(gzip=false)
   let layers : Array[PulledBlob] = []
   for layer in source.layers {
-    layers.push({ ..layer, media_type: @oci_spec.oci_layer_zstd_media_type, })
+    layers.push({
+      ..layer,
+      media_type: @oci_spec.oci_layer_zstd_media_type,
+      data: b"\x28\xb5\x2f\xfd not really a zstd frame",
+    })
   }
   let image : RemoteImage = { ..source, layers, }
   let error = try
@@ -127,12 +177,13 @@ test "docker-archive rejects zstd layers" {
   catch {
     err => err
   } noraise {
-    _ => fail("zstd layers must be rejected for docker-archive")
+    _ => fail("a broken zstd layer must not be packed silently")
   }
   match error {
-    @registry_cli.Unsupported(message) =>
-      // 报错要指路：OCI layout 能原样存
-      assert_true(message.contains("--format oci"))
+    @registry_cli.Unsupported(message) => {
+      assert_true(message.contains("sha256:"))
+      assert_true(message.contains("zstd"))
+    }
     _ => fail("expected Unsupported")
   }
 }
@@ -198,4 +249,11 @@ test "format names parse both ways" {
   assert_true(@registry_cli.parse_format("OCI") is Some(_))
   assert_true(@registry_cli.parse_format("tar") is Some(_))
   assert_true(@registry_cli.parse_format("tgz") is None)
+}
+
+///|
+/// 真 `zstd -19` 压过的一份单层（`etc/motd`）。与 `layer_tree` 用的是同一种
+/// 夹具：要证明「zstd 层能进 docker-archive」，手写编码器造的小帧不够看。
+fn zstd_layer_fixture() -> Bytes raise {
+  @xfs.read_file_to_bytes("registry_cli/fixtures/etc-motd-layer.tar.zst")
 }

@@ -39,7 +39,7 @@
 | `oyjh0381/moonoci` | 确定性 OCI layout 构建与校验：`read_tar`/`write_tar`、sha256 流式、`is_whiteout_path`、`normalize_archive_path` | **和 P2 高度重叠**，见下节 |
 | `Hhsqoo/artifactdock` | MoonBit 写的 OCI Distribution `/v2/` registry server | 端到端测试时本地起个 registry 推镜像，替代 docker registry |
 | `bobzhang/tar` | 纯 MoonBit tar 读写（header + `Array[TarEntry]`） | 可用的 tar 底座，但见下节局限 |
-| `bikallem/compress` | flate/gzip/zlib/zstd/brotli 全家桶 | 层解压（`tar+gzip`、`tar+zstd`） |
+| `gaato/zstd` | 只做 zstd 解码，纯 MoonBit 流式 | 层解压（`tar+zstd`），已接入 |
 | `moonbit-community/flate` | 纯 MoonBit DEFLATE，无 IO 依赖可 suspend | 流式解压的备选 |
 | `bobzhang/crescent`、`fangyinc/socket`、`moonbitlang/async` | HTTP 服务端 / socket / 异步 | 真要自己搓 Engine 客户端时的底座（**不建议**，见第四节） |
 

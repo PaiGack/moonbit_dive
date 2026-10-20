@@ -382,13 +382,23 @@ fn read_utf8(path : String, what : String) -> Result[String, ImageError] {
 /// 解压一层，得到可以直接喂给 P3 的字节。
 ///
 /// docker save 的层 tar 通常没压缩（`layer.tar`），OCI layout 的 blob 多带 `+gzip`，
-/// 两种都由 media type 推断；media type 认不出来时按 gzip 魔数兜底。
+/// 两种都由 media type 推断；media type 认不出来时按魔数兜底。
+///
+/// 兜底这件事现在要覆盖 zstd：`docker save` 会把 zstd 层压成 gzip 再写出，
+/// 但 `docker save --format oci`（以及各种 OCI layout 产物）里的 blob
+/// 就是原始的 `tar+zstd`，而 `manifest.json` 那条老路径不带 media type。
+/// 认不出来就会把压缩字节当 tar 解析，报一个「tar 被截断」——看着像坏镜像，
+/// 其实是没解压。
 pub fn LayerSource::raw_bytes(self : LayerSource) -> Bytes raise ImageError {
   let algorithm = @layer_tree.compression_of(self.media_type)
-  let effective = if algorithm == "none" && looks_gzipped(self.data) {
-    "gzip"
-  } else {
+  let effective = if algorithm != "none" {
     algorithm
+  } else if looks_gzipped(self.data) {
+    "gzip"
+  } else if looks_zstd(self.data) {
+    "zstd"
+  } else {
+    "none"
   }
   @layer_tree.decompress_layer(self.data, effective) catch {
     err => raise Decompress(err.to_string())
@@ -402,10 +412,22 @@ fn looks_gzipped(data : Bytes) -> Bool {
 }
 
 ///|
-/// docker save 里的层没有 media type，靠 gzip 魔数判断。
+/// zstd 帧魔数：`28 b5 2f fd`（小端读是 `0xFD2FB528`）。
+fn looks_zstd(data : Bytes) -> Bool {
+  data.length() >= 4 &&
+  data[0] == b'\x28' &&
+  data[1] == b'\xb5' &&
+  data[2] == b'\x2f' &&
+  data[3] == b'\xfd'
+}
+
+///|
+/// docker save 里的层没有 media type，靠魔数判断。
 fn docker_media_type(data : Bytes) -> String {
   if looks_gzipped(data) {
     @oci_spec.docker_layer_gzip_media_type
+  } else if looks_zstd(data) {
+    @oci_spec.oci_layer_zstd_media_type
   } else {
     @oci_spec.docker_layer_media_type
   }

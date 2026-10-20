@@ -16,7 +16,7 @@
 ### tar 应用
 
 - 流式读 tar entry，按 entry type 建/改/删节点
-- 处理 layer 压缩：gzip / zstd 先解压再喂给 tar 解析（`bikallem/compress` 或 `moonbit-community/flate`）
+- 处理 layer 压缩：gzip / zstd 先解压再喂给 tar 解析（gzip 自实现，zstd 用 `gaato/zstd`）
 - 硬链接：指向目标节点而不是复制内容
 - 符号链接：记录链接目标，不跟随
 
