@@ -784,3 +784,34 @@ async test "concurrent cli reads survive transient EAGAIN without losing bytes" 
     fail("cli reads failed \{failures.length()} times: \{failures[0]}")
   }
 }
+
+///|
+/// 建连失败必须是「一条能读懂的 `Backend`」，不是 panic、不是什么都没发生。
+///
+/// 这条用例**两个平台都跑**：它只要求 `connect_unix_socket` 这个入口在
+/// Windows 上也存在。POSIX 上它走到 `connect(2)` 报 ENOENT；
+/// Windows 上它走 `connect_unix_socket_native` 的替身分支。
+/// issue #94 里 `docker error: ... was cancelled` 的根子，正是这个入口
+/// 在 Windows 上编译不出来——那时连「一条明确的错误」都拿不到。
+async test "connecting to a missing unix socket fails with a backend error" {
+  let missing = "/nonexistent/dive/missing.sock"
+  let outcome : Result[@raw_fd.RawFdStream, @docker_cli.DockerCliError] = try
+    @docker_cli.connect_unix_socket(missing)
+  catch {
+    err => Err(err)
+  } noraise {
+    stream => {
+      stream.close()
+      Ok(stream)
+    }
+  }
+  match outcome {
+    Ok(_) => fail("connecting to \{missing} should not succeed")
+    Err(@docker_cli.Backend(name, _, detail)) => {
+      // 错误里要念出用户给的那个路径，否则排查时无从下手
+      assert_eq(name, missing)
+      assert_true(detail.contains("connect failed"))
+    }
+    Err(other) => fail("expected Backend, got \{other.to_string()}")
+  }
+}

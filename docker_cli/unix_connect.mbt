@@ -9,22 +9,22 @@
 /// C 侧只负责建连并返回一个 non-blocking fd，
 /// 读写交给 `@raw_fd.RawFdStream`（实现 `@io.Reader` / `@io.Writer`）。
 ///
-/// **这里故意不加 `#cfg(not(platform="windows"))`。** FFI 声明一旦被 cfg 掉，
-/// 调用它的地方在 Windows 上就退化成「标识符未绑定」，跟着报一串
-/// `connect_error(socket_path, err)` 的类型不匹配——报错指向的是调用方，
-/// 真凶却在几百行外。所以声明和包装都留着，把平台差异收在 C 侧：
-/// `unix_socket_stub.c` 在 `_WIN32` 下把 `EPROTONOSUPPORT` 写进 `err_out`，
-/// 用户看到的是一条「这台机器没有 unix socket」的 `Backend`，
-/// 而不是编译不过。本包仍只对 native 构建（见 `moon.pkg`）。
-///
 /// 错误走 out 参数、fd 走返回值。`@types.Fd` 在 Windows 上是不透明的
 /// `HANDLE`（`#external`），没法拿它跟 0 比大小，所以「失败」不能靠
 /// 返回负数表达：C 侧把 `errno` 写进 `err_out`，返回 0 表示成功。
+///
+/// 平台差异分两层：**公开入口两个平台都在**（`connect_unix_socket_bytes`），
+/// FFI 与真正的建连只对 POSIX 编译（`connect_unix_socket_native`）。
+/// 只裁 FFI、不裁入口，调用方就不会在 Windows 上撞见「标识符未绑定」
+/// 那一串指向别处的类型错——issue #94 的 `cli:docker was cancelled`
+/// 背后站着的正是这个编译期问题。
+#cfg(not(platform="windows"))
 #borrow(path, err_out)
 extern "C" fn unix_connect_ffi(path : Bytes, err_out : Ref[Int32]) -> @types.Fd = "dive_unix_connect"
 
 ///|
 /// 关闭一个裸 fd（建连失败之外的收尾路径用）。
+#cfg(not(platform="windows"))
 extern "C" fn unix_close_ffi(fd : @types.Fd) -> Int32 = "dive_unix_close"
 
 ///|
@@ -44,7 +44,26 @@ pub async fn connect_unix_socket(
 ///
 /// `#borrow` 只对 `Bytes` 生效，所以 FFI 只在这一层被调用；
 /// `display` 是原样的路径文本，报错时要念给用户看。
+///
+/// 这里**不给整个函数加平台条件**：`http_unix.mbt` 的调用方需要它在两个
+/// 平台上都存在（见那里的注释）。平台差异往下压一层，落在
+/// `connect_unix_socket_native` 的两个实现上。
 pub async fn connect_unix_socket_bytes(
+  path : Bytes,
+  display : String,
+) -> @raw_fd.RawFdStream raise DockerCliError {
+  connect_unix_socket_native(path, display)
+}
+
+///|
+/// 真正建连的那半边，只对 POSIX 编译。
+///
+/// 为什么不把 `#cfg` 加在 `connect_unix_socket_bytes` 本身：调用方一旦在
+/// 被裁掉的分支上写 `catch { err => ... }`，报错会落在「对一个不抛错的表达式
+/// catch，`err` 类型对不上」，指向的是调用方而不是真凶。让函数在两个平台
+/// 上都存在、只在内部换实现，调用点就不用管平台。
+#cfg(not(platform="windows"))
+async fn connect_unix_socket_native(
   path : Bytes,
   display : String,
 ) -> @raw_fd.RawFdStream raise DockerCliError {
@@ -60,6 +79,21 @@ pub async fn connect_unix_socket_bytes(
   @raw_fd.RawFdStream(fd) catch {
     err => raise Backend(display, -1, "connect failed: \{err}")
   }
+}
+
+///|
+/// Windows 的替身：`@raw_fd.RawFdStream` 收的是裸 fd，那边拿到的是不透明
+/// `HANDLE`，`AF_UNIX` 也只能靠 1803 之后的 `WSASocket`——本轮不走。
+///
+/// 报错文案与 C stub 里那句 `EPROTONOSUPPORT` 对齐：两边都说「这台机器
+/// 没有 unix socket」，而不是让人去猜 `connect` 为什么失败。
+#cfg(platform="windows")
+async fn connect_unix_socket_native(
+  path : Bytes,
+  display : String,
+) -> @raw_fd.RawFdStream raise DockerCliError {
+  ignore(path)
+  raise Backend(display, 93, "connect failed: \{unix_errno_hint(93)}")
 }
 
 ///|
@@ -85,6 +119,7 @@ fn unix_errno_hint(errno : Int32) -> String {
 ///
 /// 参数用 `@types.Fd` 而不是 `Int32`：Windows 上它是不透明的 `HANDLE`，
 /// 这里只是把同一个句柄原样交给 C，不假装它是个整数。
+#cfg(not(platform="windows"))
 pub fn close_unix_fd(fd : @types.Fd) -> Unit {
   ignore(unix_close_ffi(fd))
 }
