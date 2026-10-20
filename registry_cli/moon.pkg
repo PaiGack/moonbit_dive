@@ -22,3 +22,7 @@ import {
 // 让默认的 wasm 构建不必解析这些依赖。
 
 supported_targets = "-all+native"
+
+options(
+  "native-stub": [ "stderr_stub.c" ],
+)

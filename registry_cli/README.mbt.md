@@ -43,6 +43,47 @@ async fn save() -> Unit {
 }
 ```
 
+## 进度
+
+拉一个几百 MB 的镜像要能看见「到哪了」，所以拉取过程会往外报 `PullEvent`：
+
+```moonbit nocheck
+///|
+async fn with_progress() -> Unit {
+  let reporter = @registry_cli.PullReporter::new()
+  let _ = @registry_cli.save_image(
+    @registry_cli.SaveRequest::new(
+      reference="library/nginx:1.27",
+      output="nginx.tar",
+      on_progress=Some(reporter.handle()),
+      // 回调是同步的，写终端也是同步的：每报一格就刷一次
+      on_tick=Some(fn() { reporter.flush() }),
+    ),
+  )
+}
+```
+
+`PullEvent` 只说事实（第几层、已下多少、总量多少），
+百分比与 `\r` 重画是 `PullReporter` 的事——以后的 TUI 换掉这一层就够了。
+
+`on_tick` 是「报完立刻画一下」的钩子：进度回调是同步的，
+而终端写入在一些实现里是 async 的，中间没有可插入 await 的缝。
+不接这个钩子进度依然正确，只是刷新会晚到下一层。
+
+## 大层是怎么读的
+
+`HttpReply` 只收响应头，正文靠 `read_body` / `read_body_with` 一段一段读
+（64 KiB 一块）。之前的实现在 `read_all` 里把整段正文攒进内存，
+攒到 700MB 就撞上 Int32 累加溢出：
+
+```
+Buffer capacity overflow
+PanicError
+```
+
+而且那时候连一行进度都没有——两件事其实是一件事：
+**层不是「一个 `Bytes`」，而是一条要先落到盘上的流**。
+
 ## 两步分开
 
 - `pull_image` / `pull_with_client`：只管「把字节拿下来」，产物是 `RemoteImage`

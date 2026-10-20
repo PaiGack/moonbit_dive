@@ -384,3 +384,53 @@ async test "pull survives a Bearer challenge" {
     assert_eq(image.layers.length(), 2)
   })
 }
+
+///|
+/// 大层不能再走「整段读到内存」的老路：700MB 的层在 `read_all` 里
+/// 会先撞上 Int32 累加溢出（issue #97 的 `Buffer capacity overflow`）。
+///
+/// 这里用 24MB 的层把同一条代码路径跑一遍：分块读 + 边读边报进度。
+/// 真按 700MB 造，测试自己会先被机器内存拖垮，而路径是同一段。
+async fn pull_large_layer(
+  host : String,
+  reference : ImageReference,
+) -> RemoteImage raise RegistryError {
+  let client = RegistryClient::connect(host, insecure=true) catch {
+    _ => raise @registry_cli.Network("cannot create the test client")
+  }
+  let image = {
+    errdefer client.close()
+    pull_with_client(client, reference, options=PullOptions::new())
+  }
+  client.close()
+  image
+}
+
+///|
+/// 一层 24MB 的镜像：每 1MB 报一次进度，最后收到的字节必须与 descriptor 一致。
+async test "a big layer is read in chunks, not in one go" {
+  let size = 24 * 1024 * 1024
+  let layer = FixedArray::make(size, b'x')
+  let bytes = layer.unsafe_reinterpret_as_bytes()
+  let diff = @oci_spec.Digest::from_sha256(bytes).to_string()
+  let image : FakeImage = {
+    config: fake_config([diff]),
+    layers: [bytes],
+    layer_media_type: @oci_spec.oci_layer_gzip_media_type,
+    as_index: false,
+    platform_os: "linux",
+    platform_arch: "amd64",
+  }
+  with_fake_registry(image, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let pulled = pull_large_layer(host, reference) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    assert_eq(pulled.layers.length(), 1)
+    // 字节一个不差：分块拼接没算错长度也没漏掉尾巴
+    assert_eq(pulled.layers[0].data.length(), size)
+    assert_true(@oci_spec.verify_digest(pulled.layers[0].data, diff))
+  })
+}

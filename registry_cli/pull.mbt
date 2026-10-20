@@ -7,8 +7,11 @@ pub struct PullOptions {
   insecure : Bool
   /// 显式 token；缺省读 `DIVE_REGISTRY_TOKEN`
   token : String?
-  /// 每下一层打一行进度（写 stderr 由调用方负责，这里只回调）
-  on_progress : ((String) -> Unit)?
+  /// 拉取进度（写 stderr / 画进度条由调用方负责，这里只回调事实）
+  on_progress : ((PullEvent) -> Unit)?
+  /// 每次报完进度后的「立刻画一下」：回调是同步的、写终端是 async 的，
+  /// 不把这一格送到 async 上下文里，进度条就只能等下一层才动
+  on_tick : (() -> Unit noraise)?
 }
 
 ///|
@@ -17,9 +20,10 @@ pub fn PullOptions::new(
   platform~ : @oci_spec.Platform? = None,
   insecure~ : Bool = false,
   token~ : String? = None,
-  on_progress~ : ((String) -> Unit)? = None,
+  on_progress~ : ((PullEvent) -> Unit)? = None,
+  on_tick~ : (() -> Unit noraise)? = None,
 ) -> PullOptions {
-  { platform, insecure, token, on_progress, }
+  { platform, insecure, token, on_progress, on_tick, }
 }
 
 ///|
@@ -107,6 +111,7 @@ pub async fn pull_with_client(
     Some(platform) => platform
     None => host_platform()
   }
+  notify(options, Started(reference=reference.canonical()))
   let tag = reference.reference
   let path = "/v2/\{reference.repository}/manifests/\{tag}"
   let accept = manifest_accept_header()
@@ -121,17 +126,40 @@ pub async fn pull_with_client(
       "\{reference.canonical()}: manifest request answered \{reply.status}",
     )
   }
-  notify(options, "manifest \{reply.body.length()} bytes")
+  // manifest 很小（几 KB），一次读完不心疼；层则一段一段读（见 `fetch_blob`）
+  let manifest_body = reply.body
   // index 还是 manifest 看 Content-Type；头缺失时退回 body 里的 mediaType。
   // 不猜：真猜错会把 index 当 manifest 解析，症状是「config 字段是 undefined」
   let content_type = reply.header("content-type").unwrap_or("")
   let (manifest, manifest_digest, media_type, picked_platform) = choose_manifest(
-    client, reference, reply, content_type, platform,
+    client, reference, reply, manifest_body, content_type, platform,
   )
-  let config = fetch_blob(client, reference, manifest.config, options~)
-  let layers : Array[PulledBlob] = []
+  // 先把「要下多少」算出来：进度条没有总量就只能显示一个越滚越大的数字，
+  // 用户依然不知道还要等多久（issue #97）
+  let mut plan_bytes : Int64 = 0L
   for descriptor in manifest.layers {
-    let blob = fetch_blob(client, reference, descriptor, options~)
+    plan_bytes = plan_bytes + descriptor.size.to_int64()
+  }
+  notify(options, Plan(layers=manifest.layers.length(), bytes=plan_bytes))
+  // config 不是层：它不占层号，事件里单独说一声，进度条只算层
+  let config = fetch_blob(
+    client,
+    reference,
+    manifest.config,
+    0,
+    kind=ConfigBlob,
+    options~,
+  )
+  let layers : Array[PulledBlob] = []
+  for index, descriptor in manifest.layers {
+    let blob = fetch_blob(
+      client,
+      reference,
+      descriptor,
+      index,
+      kind=LayerBlob,
+      options~,
+    )
     layers.push(blob)
   }
   {
@@ -152,12 +180,13 @@ async fn choose_manifest(
   client : RegistryClient,
   reference : ImageReference,
   reply : HttpReply,
+  manifest_body : Bytes,
   content_type : String,
   platform : @oci_spec.Platform,
 ) -> (@oci_spec.Manifest, String, String, @oci_spec.Platform?) raise RegistryError {
-  let text = utf8(reply.body)
+  let text = utf8(manifest_body)
   let header_digest = reply.header("docker-content-digest").unwrap_or("")
-  let body_digest = @oci_spec.Digest::from_sha256(reply.body).to_string()
+  let body_digest = @oci_spec.Digest::from_sha256(manifest_body).to_string()
   if @oci_spec.is_index_media_type(content_type) {
     let document = try @oci_spec.parse_document(text) catch {
       err =>
@@ -189,7 +218,8 @@ async fn choose_manifest(
     if child.status != 200 {
       raise Network("manifest \{chosen.digest} answered \{child.status}")
     }
-    let child_text = utf8(child.body)
+    let child_body = child.body
+    let child_text = utf8(child_body)
     let manifest = parse_manifest(child_text)
     let media_type = child.header("content-type").unwrap_or("").to_string()
     return (
@@ -314,35 +344,81 @@ fn describe_platforms(index : @oci_spec.Index) -> String {
 }
 
 ///|
+/// 这个 blob 是 config 还是层。
+///
+/// 只影响进度显示：config 通常几十 KB，把它算成「第 1 层」会让层号整体错位，
+/// 而用户数层数是拿它跟 `dive --layer N` 对的。
+priv enum BlobKind {
+  ConfigBlob
+  LayerBlob
+}
+
+///|
 /// 按 descriptor 取一个 blob，并校验字节与 digest 一致。
+///
+/// `index` 是进度事件里的层号（config 用 0，第 i 层用 i + 1），
+/// 只影响显示；读的时候一段一段读，顺手把「已经拿多少」报出去。
 async fn fetch_blob(
   client : RegistryClient,
   reference : ImageReference,
   descriptor : @oci_spec.Descriptor,
+  index : Int32,
+  kind~ : BlobKind,
   options~ : PullOptions = PullOptions::new(),
 ) -> PulledBlob raise RegistryError {
   let digest = descriptor.digest
   let path = "/v2/\{reference.repository}/blobs/\{digest}"
-  let reply = get_following_redirects(client, path, reference)
+  let total = descriptor.size.to_int64()
+  match kind {
+    // config 不是层：不报层号，免得层号整体错位（`dive --layer N` 要对得上）
+    ConfigBlob => ()
+    LayerBlob => notify(options, LayerStarted(index~, digest~, bytes=total))
+  }
+  // 边下边报进度：回调直接给 `get`，正文就在那里读（config 一般几十 KB，
+  // 报进度只会把行刷乱，所以它是唯一不带回调的那种）
+  let progress = match (kind, options.on_progress) {
+    (LayerBlob, Some(callback)) =>
+      Some((received : Int64, length : Int64?) => {
+        // 有 content-length 用它：重定向到 CDN 后可能与 descriptor 报的不同
+        let total = match length {
+          Some(length) if length > 0 => length
+          _ => total
+        }
+        callback(LayerProgress(index~, received~, total~))
+      })
+    _ => None
+  }
+  let reply = get_following_redirects(
+    client,
+    path,
+    reference,
+    on_progress?=progress,
+    on_tick?=options.on_tick,
+  )
   if reply.status == 404 {
     raise NotFound("\{reference.canonical()}: blob \{digest} is missing")
   }
   if reply.status != 200 {
     raise Network("blob \{digest} answered \{reply.status}")
   }
+  let data = reply.body
   // 字节数先对一遍：对不上就是截断，没必要再算 sha256
-  if descriptor.size > 0 && reply.body.length() != descriptor.size {
+  if descriptor.size > 0 && data.length() != descriptor.size {
     raise DigestMismatch(
-      "blob \{digest}: descriptor says \{descriptor.size} bytes, got \{reply.body.length()}",
+      "blob \{digest}: descriptor says \{descriptor.size} bytes, got \{data.length()}",
     )
   }
-  if !@oci_spec.verify_digest(reply.body, digest) {
+  if !@oci_spec.verify_digest(data, digest) {
     raise DigestMismatch(
-      "blob \{digest}: content hash \{@oci_spec.Digest::from_sha256(reply.body)} does not match",
+      "blob \{digest}: content hash \{@oci_spec.Digest::from_sha256(data)} does not match",
     )
   }
-  notify(options, "blob \{digest} \{reply.body.length()} bytes")
-  { media_type: descriptor.media_type, digest, data: reply.body, }
+  match kind {
+    ConfigBlob => ()
+    LayerBlob =>
+      notify(options, LayerDone(index~, bytes=data.length().to_int64()))
+  }
+  { media_type: descriptor.media_type, digest, data, }
 }
 
 ///|
@@ -354,6 +430,8 @@ async fn get_following_redirects(
   client : RegistryClient,
   path : String,
   reference : ImageReference,
+  on_progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
 ) -> HttpReply raise RegistryError {
   let reply = get_authorized(client, path, "", reference)
   if !reply.is_redirect() {
@@ -372,9 +450,11 @@ async fn get_following_redirects(
   ) catch {
     _ => raise Network("cannot create an HTTP client for \{origin}")
   }
+  // 重定向的目标可能是一个几百 MB 的层：进度要在这条连接上边读边报，
+  // 所以回调是交给 `mirror.get` 的，而不是回来以后再补
   let followed = {
     errdefer mirror.close()
-    mirror.get(target)
+    mirror.get(target, on_progress?, on_tick?)
   }
   mirror.close()
   followed
@@ -470,7 +550,9 @@ async fn fetch_token(
       "\{reference.canonical()}: token endpoint answered \{reply.status}",
     )
   }
-  let text = utf8(reply.body)
+  // 换票应答也是正文：`get` 只收头，body 得自己读
+  let body = reply.body
+  let text = utf8(body)
   let json = @json.parse(text) catch {
     err => raise Auth("token endpoint returned non-JSON: \{err.to_string()}")
   }
@@ -526,9 +608,9 @@ fn utf8(data : Bytes) -> String {
 }
 
 ///|
-fn notify(options : PullOptions, message : String) -> Unit {
+fn notify(options : PullOptions, event : PullEvent) -> Unit {
   match options.on_progress {
-    Some(callback) => callback(message)
+    Some(callback) => callback(event)
     None => ()
   }
 }
