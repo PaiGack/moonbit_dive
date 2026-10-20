@@ -295,7 +295,7 @@ async fn[X] with_fake_registry_result(
         let body_bytes = match swap {
           Some((index, bytes)) =>
             if reply.status == 200 &&
-              request.path.ends_with(
+              request.path.has_suffix(
                 @oci_spec.Digest::from_sha256(image.layers[index]).to_string(),
               ) {
               bytes
@@ -319,6 +319,9 @@ async fn[X] with_fake_registry_result(
 ///
 /// 不走 `pull_image`：那个函数按引用里的 registry 段选 host，
 /// 拿不到测试里随机分配的端口；这里用 `pull_with_client` 显式指定。
+///
+/// 这些夹具都是几百字节的小层，落盘只会让测试在 `/tmp` 里攒垃圾：
+/// 所以**默认关掉流式落盘**，谁要验流式谁自己显式打开。
 async fn pull_from(
   host : String,
   reference : ImageReference,
@@ -327,6 +330,15 @@ async fn pull_from(
   let client = RegistryClient::connect(host, insecure=true) catch {
     _ => raise @registry_cli.Network("cannot create the test client")
   }
+  let options = @registry_cli.PullOptions::new(
+    platform=options.platform,
+    insecure=options.insecure,
+    token=options.token,
+    on_progress=options.on_progress,
+    on_tick=options.on_tick,
+    concurrency=options.concurrency,
+    stream_to_disk=false,
+  )
   let image = {
     errdefer client.close()
     pull_with_client(client, reference, options~)
@@ -483,8 +495,11 @@ async test "a big layer is read in chunks, not in one go" {
     }
     assert_eq(pulled.layers.length(), 1)
     // 字节一个不差：分块拼接没算错长度也没漏掉尾巴
-    assert_eq(pulled.layers[0].data.length(), size)
-    assert_true(@oci_spec.verify_digest(pulled.layers[0].data, diff))
+    let data = pulled.layers[0].bytes() catch {
+      err => fail("the layer should be readable: \{err.to_string()}")
+    }
+    assert_eq(data.length(), size)
+    assert_true(@oci_spec.verify_digest(data, diff))
   })
 }
 
@@ -540,8 +555,11 @@ async test "concurrent pull keeps manifest order and digests" {
     for index, layer in pulled.layers {
       // 顺序错了这里立刻炸：digest 是按 manifest 顺序摆的
       assert_eq(layer.digest, expected[index])
-      assert_true(@oci_spec.verify_digest(layer.data, layer.digest))
-      assert_eq(layer.data.length(), source.layers[index].length())
+      let data = layer.bytes() catch {
+        err => fail("layer \{index} should be readable: \{err.to_string()}")
+      }
+      assert_true(@oci_spec.verify_digest(data, layer.digest))
+      assert_eq(data.length(), source.layers[index].length())
     }
   })
 }
@@ -581,7 +599,11 @@ async test "serial and concurrent pulls agree" {
     assert_eq(serial.layers.length(), zero.layers.length())
     for index, layer in serial.layers {
       assert_eq(layer.digest, parallel.layers[index].digest)
-      assert_eq(layer.data, parallel.layers[index].data)
+      let left = layer.bytes() catch { _ => fail("serial layer unreadable") }
+      let right = parallel.layers[index].bytes() catch {
+        _ => fail("concurrent layer unreadable")
+      }
+      assert_eq(left, right)
       assert_eq(layer.digest, zero.layers[index].digest)
     }
     assert_eq(serial.config.digest, parallel.config.digest)

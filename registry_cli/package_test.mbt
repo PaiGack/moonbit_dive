@@ -17,24 +17,27 @@ async fn sample_image(gzip~ : Bool = true) -> RemoteImage {
   let layers : Array[PulledBlob] = []
   for entry in layer_payload {
     let (data, media_type) = entry
-    layers.push({
-      media_type,
-      digest: @oci_spec.Digest::from_sha256(data).to_string(),
-      data,
-    })
+    layers.push(
+      @registry_cli.PulledBlob::in_memory(
+        media_type~,
+        digest=@oci_spec.Digest::from_sha256(data).to_string(),
+        data~,
+      ),
+    )
   }
   let config = fake_config([first_diff, second_diff])
   {
     reference: sample_reference(),
     media_type: @oci_spec.oci_manifest_media_type,
     manifest_digest: @oci_spec.Digest::from_sha256(b"manifest").to_string(),
-    config: {
-      media_type: @oci_spec.oci_config_media_type,
-      digest: @oci_spec.Digest::from_sha256(config).to_string(),
-      data: config,
-    },
+    config: @registry_cli.PulledBlob::in_memory(
+      media_type=@oci_spec.oci_config_media_type,
+      digest=@oci_spec.Digest::from_sha256(config).to_string(),
+      data=config,
+    ),
     layers,
     platform: None,
+    staging: None,
   }
 }
 
@@ -151,7 +154,11 @@ async test "docker-archive is readable by the existing image reader" {
 async test "docker-archive layer ids are the diff ids from the config" {
   let image = sample_image()
   let tar = pack_docker_archive(image)
-  let config_text = @encoding.decoder(UTF8).decode(image.config.data)
+  let config_text = @encoding.decoder(UTF8).decode(
+    image.config.bytes() catch {
+      err => fail("config should be readable: \{err.to_string()}")
+    },
+  )
   let config = @oci_spec.parse_image_config_lenient(config_text)
   for diff_id in config.rootfs.diff_ids {
     let hex = diff_id[7:].to_owned()
@@ -167,7 +174,11 @@ async test "docker-archive layers decompress back to the original tar" {
   let image = sample_image()
   let tar = pack_docker_archive(image)
   // 目录名是**未压缩层**的 sha256（diff id），不是压缩 blob 的 digest
-  let config_text = @encoding.decoder(UTF8).decode(image.config.data)
+  let config_text = @encoding.decoder(UTF8).decode(
+    image.config.bytes() catch {
+      err => fail("config should be readable: \{err.to_string()}")
+    },
+  )
   let config = @oci_spec.parse_image_config_lenient(config_text)
   let first_path = "\{config.rootfs.diff_ids[0][7:]}/layer.tar"
   let first = match @layer_tree.read_file_from_tar(tar, first_path) {
@@ -194,19 +205,20 @@ async test "docker-archive unpacks zstd layers like gzip ones" {
     reference: sample_reference(),
     media_type: @oci_spec.oci_manifest_media_type,
     manifest_digest: @oci_spec.Digest::from_sha256(b"manifest").to_string(),
-    config: {
-      media_type: @oci_spec.oci_config_media_type,
-      digest: @oci_spec.Digest::from_sha256(config).to_string(),
-      data: config,
-    },
+    config: @registry_cli.PulledBlob::in_memory(
+      media_type=@oci_spec.oci_config_media_type,
+      digest=@oci_spec.Digest::from_sha256(config).to_string(),
+      data=config,
+    ),
     layers: [
-      {
-        media_type: @oci_spec.oci_layer_zstd_media_type,
-        digest: @oci_spec.Digest::from_sha256(blob).to_string(),
-        data: blob,
-      },
+      @registry_cli.PulledBlob::in_memory(
+        media_type=@oci_spec.oci_layer_zstd_media_type,
+        digest=@oci_spec.Digest::from_sha256(blob).to_string(),
+        data=blob,
+      ),
     ],
     platform: None,
+    staging: None,
   }
   let tar = pack_docker_archive(image)
   // 目录名必须是**解压后** tar 的 sha256，而不是压缩 blob 的 digest
@@ -226,11 +238,13 @@ async test "docker-archive reports broken zstd layers" {
   let source = sample_image(gzip=false)
   let layers : Array[PulledBlob] = []
   for layer in source.layers {
-    layers.push({
-      ..layer,
-      media_type: @oci_spec.oci_layer_zstd_media_type,
-      data: b"\x28\xb5\x2f\xfd not really a zstd frame",
-    })
+    layers.push(
+      @registry_cli.PulledBlob::in_memory(
+        media_type=@oci_spec.oci_layer_zstd_media_type,
+        digest=layer.digest,
+        data=b"\x28\xb5\x2f\xfd not really a zstd frame",
+      ),
+    )
   }
   let image : RemoteImage = { ..source, layers, }
   let error = try
@@ -340,19 +354,20 @@ async fn big_layer_image(size : Int32) -> RemoteImage {
     reference: sample_reference(),
     media_type: @oci_spec.oci_manifest_media_type,
     manifest_digest: @oci_spec.Digest::from_sha256(b"manifest").to_string(),
-    config: {
-      media_type: @oci_spec.oci_config_media_type,
-      digest: @oci_spec.Digest::from_sha256(config).to_string(),
-      data: config,
-    },
+    config: @registry_cli.PulledBlob::in_memory(
+      media_type=@oci_spec.oci_config_media_type,
+      digest=@oci_spec.Digest::from_sha256(config).to_string(),
+      data=config,
+    ),
     layers: [
-      {
-        media_type: @oci_spec.oci_layer_gzip_media_type,
-        digest: @oci_spec.Digest::from_sha256(blob).to_string(),
-        data: blob,
-      },
+      @registry_cli.PulledBlob::in_memory(
+        media_type=@oci_spec.oci_layer_gzip_media_type,
+        digest=@oci_spec.Digest::from_sha256(blob).to_string(),
+        data=blob,
+      ),
     ],
     platform: None,
+    staging: None,
   }
 }
 
@@ -384,7 +399,11 @@ async test "packing a big layer streams instead of buffering it" {
     err => fail("fixture should build: \{err.to_string()}")
   }
   let tar = pack_docker_archive(image)
-  let config_text = @encoding.decoder(UTF8).decode(image.config.data)
+  let config_text = @encoding.decoder(UTF8).decode(
+    image.config.bytes() catch {
+      err => fail("config should be readable: \{err.to_string()}")
+    },
+  )
   let config = @oci_spec.parse_image_config_lenient(config_text)
   let layer_path = "\{config.rootfs.diff_ids[0][7:]}/layer.tar"
   let layer = match @layer_tree.read_file_from_tar(tar, layer_path) {

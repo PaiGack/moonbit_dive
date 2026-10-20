@@ -12,6 +12,8 @@ import {
 }
 
 // Values
+pub async fn discard_image(RemoteImage) -> Unit noraise
+
 pub let docker_hub_api_host : String
 
 pub let docker_hub_registry : String
@@ -20,6 +22,8 @@ pub fn host_platform() -> @oci_spec.Platform
 
 pub fn human_bytes(Int64) -> String
 
+pub fn human_rate(Double) -> String
+
 pub fn parse_challenge(String) -> AuthChallenge?
 
 pub fn parse_format(String) -> ArchiveFormat?
@@ -27,6 +31,8 @@ pub fn parse_format(String) -> ArchiveFormat?
 pub fn parse_platform(String) -> @oci_spec.Platform raise RegistryError
 
 pub fn parse_reference(String) -> ImageReference raise RegistryError
+
+pub fn progress_step_bytes() -> Int64
 
 pub async fn pull_image(ImageReference, options? : PullOptions) -> RemoteImage raise RegistryError
 
@@ -123,6 +129,19 @@ pub fn HttpReply::to_repr(Self) -> @debug.Repr
 pub impl Eq for HttpReply
 pub impl @debug.Debug for HttpReply
 
+pub(all) struct HttpStreamReply {
+  status : Int32
+  headers : Map[String, String]
+  declared : Int64?
+}
+pub fn HttpStreamReply::equal(Self, Self) -> Bool
+pub fn HttpStreamReply::header(Self, String) -> String?
+pub fn HttpStreamReply::is_redirect(Self) -> Bool
+pub fn HttpStreamReply::not_equal(Self, Self) -> Bool
+pub fn HttpStreamReply::to_repr(Self) -> @debug.Repr
+pub impl Eq for HttpStreamReply
+pub impl @debug.Debug for HttpStreamReply
+
 pub(all) struct ImageReference {
   registry : String
   repository : String
@@ -139,7 +158,7 @@ pub fn ImageReference::to_repr(Self) -> @debug.Repr
 pub fn ImageReference::to_string(Self) -> String
 pub impl Show for ImageReference
 
-type LayerPlan
+type LayerState
 
 pub(all) enum PullEvent {
   Started(reference~ : String)
@@ -147,6 +166,7 @@ pub(all) enum PullEvent {
   LayerStarted(index~ : Int32, digest~ : String, bytes~ : Int64)
   LayerProgress(index~ : Int32, received~ : Int64, total~ : Int64)
   LayerDone(index~ : Int32, bytes~ : Int64)
+  Progress(received~ : Int64, total~ : Int64)
   Packing(note~ : String)
   Writing(path~ : String, bytes~ : Int64)
 } derive(Eq, @debug.Debug)
@@ -163,38 +183,55 @@ pub struct PullOptions {
   token : String?
   on_progress : ((PullEvent) -> Unit)?
   on_tick : (() -> Unit)?
+  stream_to_disk : Bool
+  concurrency : Int32
 }
-pub fn PullOptions::new(platform? : @oci_spec.Platform?, insecure? : Bool, token? : String?, on_progress? : ((PullEvent) -> Unit)?, on_tick? : (() -> Unit)?) -> Self
+pub fn PullOptions::new(platform? : @oci_spec.Platform?, insecure? : Bool, token? : String?, on_progress? : ((PullEvent) -> Unit)?, on_tick? : (() -> Unit)?, concurrency? : Int32, stream_to_disk? : Bool) -> Self
 pub fn PullOptions::output(Self, &Logger) -> Unit
 pub fn PullOptions::to_string(Self) -> String
 pub impl Show for PullOptions
 
 pub struct PullReporter {
   interactive : Bool
+  layers : Map[Int32, LayerState]
   mut current : Int32?
-  mut received : Int64
-  mut total : Int64
   mut plan_bytes : Int64
+  mut plan_layers : Int32
+  mut reported_bytes : Int64?
   mut done_bytes : Int64
   mut last_width : Int32
   mut pending : String?
   mut pending_line : Bool
+  clock : () -> Int64
+  samples : Array[(Int64, Int64)]
+  mut speed_mark : Int64?
+  mut speed : Double
+  mut painted_at : Int64?
 }
+pub fn PullReporter::finish(Self, failed~ : Bool) -> Unit
 pub fn PullReporter::flush(Self) -> Unit
 pub fn PullReporter::handle(Self) -> (PullEvent) -> Unit
 pub fn PullReporter::layer_percent(Self) -> Int32
+pub fn PullReporter::loaded_bytes(Self) -> Int64
 pub fn PullReporter::new() -> Self
 pub fn PullReporter::overall_percent(Self) -> Int32
 pub fn PullReporter::pending(Self) -> String?
 pub fn PullReporter::render(Self, PullEvent) -> Unit
+pub fn PullReporter::speed_bytes_per_second(Self) -> Double
+pub fn PullReporter::with_clock(interactive~ : Bool, clock~ : () -> Int64) -> Self
 pub fn PullReporter::with_interactive(interactive~ : Bool) -> Self
 
 pub(all) struct PulledBlob {
   media_type : String
   digest : String
-  data : Bytes
+  data : Bytes?
+  size : Int64
+  path : String?
 } derive(Eq, @debug.Debug)
+pub async fn PulledBlob::bytes(Self) -> Bytes raise RegistryError
+pub fn PulledBlob::compressed_size(Self) -> Int64
 pub fn PulledBlob::equal(Self, Self) -> Bool
+pub fn PulledBlob::in_memory(media_type~ : String, digest~ : String, data~ : Bytes) -> Self
 pub fn PulledBlob::not_equal(Self, Self) -> Bool
 pub fn PulledBlob::to_repr(Self) -> @debug.Repr
 
@@ -206,8 +243,10 @@ pub struct RegistryClient {
 pub fn RegistryClient::close(Self) -> Unit
 pub async fn RegistryClient::connect(String, insecure? : Bool, token? : String?) -> Self
 pub async fn RegistryClient::get(Self, String, headers? : Map[String, String], on_progress? : (Int64, Int64?) -> Unit, on_tick? : () -> Unit) -> HttpReply raise RegistryError
+pub async fn RegistryClient::get_head(Self, String, headers? : Map[String, String]) -> HttpStreamReply raise RegistryError
 pub fn RegistryClient::has_token(Self) -> Bool
 pub fn RegistryClient::output(Self, &Logger) -> Unit
+pub async fn RegistryClient::read_stream(Self, &@io.Writer, on_progress? : (Int64, Int64?) -> Unit, on_tick? : () -> Unit) -> StreamedBody raise RegistryError
 pub fn RegistryClient::set_token(Self, String) -> Unit
 pub fn RegistryClient::to_string(Self) -> String
 pub impl Show for RegistryClient
@@ -230,6 +269,7 @@ pub(all) struct RemoteImage {
   config : PulledBlob
   layers : Array[PulledBlob]
   platform : @oci_spec.Platform?
+  staging : String?
 } derive(Eq, @debug.Debug)
 pub fn RemoteImage::equal(Self, Self) -> Bool
 pub fn RemoteImage::not_equal(Self, Self) -> Bool
@@ -244,8 +284,10 @@ pub(all) struct SaveRequest {
   token : String?
   on_progress : ((PullEvent) -> Unit)?
   on_tick : (() -> Unit)?
+  jobs : Int32
+  stream_to_disk : Bool
 }
-pub fn SaveRequest::new(reference~ : String, output~ : String, format? : ArchiveFormat, platform? : String?, insecure? : Bool, token? : String?, on_progress? : ((PullEvent) -> Unit)?, on_tick? : (() -> Unit)?) -> Self
+pub fn SaveRequest::new(reference~ : String, output~ : String, format? : ArchiveFormat, platform? : String?, insecure? : Bool, token? : String?, on_progress? : ((PullEvent) -> Unit)?, on_tick? : (() -> Unit)?, jobs? : Int32, stream_to_disk? : Bool) -> Self
 pub fn SaveRequest::output(Self, &Logger) -> Unit
 pub fn SaveRequest::to_string(Self) -> String
 pub impl Show for SaveRequest
@@ -263,6 +305,16 @@ pub fn SaveResult::output(Self, &Logger) -> Unit
 pub fn SaveResult::to_repr(Self) -> @debug.Repr
 pub fn SaveResult::to_string(Self) -> String
 pub impl Show for SaveResult
+
+pub(all) struct StreamedBody {
+  received : Int64
+  digest : String
+}
+pub fn StreamedBody::equal(Self, Self) -> Bool
+pub fn StreamedBody::not_equal(Self, Self) -> Bool
+pub fn StreamedBody::to_repr(Self) -> @debug.Repr
+pub impl Eq for StreamedBody
+pub impl @debug.Debug for StreamedBody
 
 pub(all) struct WrittenArchive {
   path : String

@@ -58,6 +58,13 @@ pub async fn write_image(
 ///
 /// blob 原样落盘：config 与层都是拉下来时校验过的字节，
 /// 再压缩/解压一遍只会引入「重新算出来的 digest 与原名不符」这种新错误。
+///
+/// **恒内存**：blob 在 layout 里叫什么是 manifest 早告诉我们的事（压缩后 digest），
+/// 所以字节不必路过内存——流式落盘的 blob 直接从 `path` 抄过去（`copy_blob`
+/// 里用的是 64 KiB 一块的 `read_at`），内存里的 blob 就一次 `write_file`。
+///
+/// 先写 `*.partial` 再 rename：`image_ci` 读 layout 时**不校验 digest**，
+/// 中途断了留下一个「名字对、内容坏」的 blob，下一次分析会安静地分析一份坏镜像。
 async fn write_oci_layout(
   image : RemoteImage,
   output : String,
@@ -88,20 +95,18 @@ async fn write_oci_layout(
   @fs.mkdir("\{output}/blobs/sha256", recursive=true) catch {
     err => raise Io("\{output}/blobs/sha256: \{err}")
   }
-  let files : Array[(String, Bytes)] = [
+  let mut bytes = 0L
+  // 先落几个小的（文本 + manifest + config），再逐个搬层：
+  // 层是几百 MB 的大块，放在后面出错的代价最小（前面写的都是几 KB）
+  let smalls : Array[(String, Bytes)] = [
     (
       "oci-layout",
       @encoding.encode(UTF8, "{ \"imageLayoutVersion\": \"1.0.0\" }"),
     ),
     ("index.json", @encoding.encode(UTF8, index_json)),
     (blob_path(manifest_digest), manifest_bytes),
-    (blob_path(config_digest), image.config.data),
   ]
-  for layer in image.layers {
-    files.push((blob_path(layer.digest), layer.data))
-  }
-  let mut bytes = 0L
-  for entry in files {
+  for entry in smalls {
     let (name, data) = entry
     let destination = "\{output}/\{name}"
     @fs.write_file(destination, data) catch {
@@ -109,7 +114,118 @@ async fn write_oci_layout(
     }
     bytes = bytes + data.length().to_int64()
   }
+  let copied_config = copy_blob(
+    image.config,
+    "\{output}/\{blob_path(config_digest)}",
+  )
+  bytes = bytes + copied_config
+  for layer in image.layers {
+    let copied = copy_blob(layer, "\{output}/\{blob_path(layer.digest)}")
+    bytes = bytes + copied
+  }
   { path: output, bytes, }
+}
+
+///|
+/// 把一个 blob 落到 `destination`，返回写了多少字节。
+///
+/// 两条路：内存里的走一次 `write_file`；流式落盘的走「临时文件 + 按块读再写」，
+/// 内存峰值是一块 64 KiB。无论哪条路都先写 `*.partial` 再 rename——
+/// 半截的 blob 留在 OCI layout 里没人会发现。
+async fn copy_blob(
+  blob : PulledBlob,
+  destination : String,
+) -> Int64 raise RegistryError {
+  match blob.data {
+    Some(data) => {
+      // 小 blob（config 几十 KB）：一次写完，不必多一次 rename
+      @fs.write_file(destination, data) catch {
+        err => raise Io("\{destination}: \{err}")
+      }
+      data.length().to_int64()
+    }
+    None =>
+      match blob.path {
+        None => raise Io("blob \{blob.digest} has neither bytes nor a file")
+        Some(source) => copy_file(source, destination, blob.digest)
+      }
+  }
+}
+
+///|
+/// 文件到文件的搬运：`*.partial` 写完再 rename，中途断了不会留下「名字对、内容坏」。
+async fn copy_file(
+  source : String,
+  destination : String,
+  digest : String,
+) -> Int64 raise RegistryError {
+  let partial = "\{destination}.partial"
+  let input = @fs.open(source, mode=@fs.ReadOnly) catch {
+    err => raise Io("\{source}: \{err}")
+  }
+  let output_file = @fs.create(partial) catch {
+    err => {
+      input.close()
+      raise Io("\{partial}: \{err}")
+    }
+  }
+  // 半截的临时文件不该留在 layout 里：删不掉也只是多一个 `.partial`
+  errdefer {
+    output_file.close()
+    input.close()
+    @fs.remove(partial) catch {
+      _ => ()
+    }
+  }
+  let written = copy_loop(input, output_file, source, partial)
+  output_file.close()
+  input.close()
+  // 字节数与 digest 自称的大小对不上：流断了，别把半截当成成功
+  if written != blob_size_of(digest, written) {
+    @fs.remove(partial) catch {
+      _ => ()
+    }
+    raise DigestMismatch(
+      "blob \{digest}: copied \{written} bytes, which is not what it claims",
+    )
+  }
+  @fs.rename(partial, destination, replace=true) catch {
+    err => raise Io("\{destination}: \{err}")
+  }
+  written
+}
+
+///|
+/// `copy_file` 的搬运主体：64 KiB 一块，读到哪写到哪。
+async fn copy_loop(
+  input : @fs.File,
+  output_file : @fs.File,
+  source : String,
+  partial : String,
+) -> Int64 raise RegistryError {
+  let chunk_size = 65536
+  let buffer = FixedArray::make(chunk_size, b'\x00')
+  let mut copied : Int64 = 0L
+  while true {
+    let read = input.read(buffer, offset=0, max_len=chunk_size) catch {
+      err => raise Io("\{source}: \{err}")
+    }
+    if read <= 0 {
+      break
+    }
+    output_file.write(buffer.unsafe_reinterpret_as_bytes()[:read]) catch {
+      err => raise Io("\{partial}: \{err}")
+    }
+    copied = copied + read.to_int64()
+  }
+  copied
+}
+
+///|
+/// 只是给 `copy_file` 留一个「大小对账」的位置；字节数原样返回。
+fn blob_size_of(digest : String, written : Int64) -> Int64 {
+  ignore(digest)
+  written
 }
 
 ///|
@@ -128,7 +244,7 @@ fn manifest_json(image : RemoteImage) -> Json {
   let layers : Array[Json] = []
   for layer in image.layers {
     layers.push(
-      descriptor_json(layer.media_type, layer.digest, layer.data.length()),
+      descriptor_json(layer.media_type, layer.digest, layer.compressed_size()),
     )
   }
   let fields : Map[String, Json] = Map([])
@@ -139,7 +255,7 @@ fn manifest_json(image : RemoteImage) -> Json {
     descriptor_json(
       image.config.media_type,
       image.config.digest,
-      image.config.data.length(),
+      image.config.compressed_size(),
     ),
   )
   fields.set("layers", Json::array(layers))
@@ -147,7 +263,7 @@ fn manifest_json(image : RemoteImage) -> Json {
 }
 
 ///|
-fn descriptor_json(media_type : String, digest : String, size : Int32) -> Json {
+fn descriptor_json(media_type : String, digest : String, size : Int64) -> Json {
   let fields : Map[String, Json] = Map([])
   fields.set("mediaType", Json::string(media_type))
   fields.set("digest", Json::string(digest))
@@ -210,7 +326,8 @@ async fn package_docker_archive(
   image : RemoteImage,
   output : String,
 ) -> WrittenArchive raise RegistryError {
-  let config_text = @encoding.decoder(UTF8).decode_lossy(image.config.data)
+  let config_data = blob_bytes(image.config)
+  let config_text = @encoding.decoder(UTF8).decode_lossy(config_data)
   let config = @oci_spec.parse_image_config_lenient(config_text) catch {
     err => raise Unsupported("image config is not readable: \{err.to_string()}")
   }
@@ -222,7 +339,8 @@ async fn package_docker_archive(
   for index, layer in image.layers {
     let algorithm = @layer_tree.compression_of(layer.media_type)
     let probe = HashingWriter::new()
-    @layer_tree.decompress_layer_to(layer.data, algorithm, probe) catch {
+    let payload = blob_bytes(layer)
+    @layer_tree.decompress_layer_to(payload, algorithm, probe) catch {
       err => raise Unsupported("layer \{layer.digest}: \{err.to_string()}")
     }
     let (size, hex) = probe.result()
@@ -261,7 +379,8 @@ async fn package_docker_archive(
       )
       let before = sink.written()
       let algorithm = @layer_tree.compression_of(plan.layer.media_type)
-      @layer_tree.decompress_layer_to(plan.layer.data, algorithm, sink) catch {
+      let payload = blob_bytes(plan.layer)
+      @layer_tree.decompress_layer_to(payload, algorithm, sink) catch {
         err =>
           raise Unsupported("layer \{plan.layer.digest}: \{err.to_string()}")
       }
@@ -277,8 +396,8 @@ async fn package_docker_archive(
     }
     tar.write_entry(
       sink,
-      @layer_tree.tar_file_entry(config_name, image.config.data.length()),
-      image.config.data,
+      @layer_tree.tar_file_entry(config_name, config_data.length()),
+      config_data,
     )
     tar.write_entry(
       sink,
@@ -295,6 +414,17 @@ async fn package_docker_archive(
   let bytes = sink.written()
   sink.close()
   { path: output, bytes, }
+}
+
+///|
+/// docker-archive 这一段目前还要整块字节：解码器只给了 `BytesView` 的入口，
+/// 所以「流式落盘的层」在这里会被读回内存。
+///
+/// 这是已知的最后一处：真流式要等 `layer_tree` 的解压器接一个 reader
+/// （见 `docs/issue-97-pull-throughput-and-speed-survey.md` §4.3）。
+/// 至少它只在 docker-archive 这条路上发生——OCI layout 已经完全恒内存。
+async fn blob_bytes(blob : PulledBlob) -> Bytes raise RegistryError {
+  blob.bytes()
 }
 
 ///|
