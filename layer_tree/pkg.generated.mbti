@@ -93,6 +93,10 @@ pub fn whiteout_kind(String) -> WhiteoutKind?
 
 pub let whiteout_prefix : String
 
+pub fn zstd_compress(BytesView) -> Bytes
+
+pub fn zstd_decompress(BytesView) -> Bytes raise DecompressError
+
 // Errors
 pub(all) suberror DecompressError {
   Gzip(String)

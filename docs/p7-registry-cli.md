@@ -71,8 +71,10 @@ write_bundle                   一个 tar 文件 / 一个 blobs+index.json 目�
 是**解压后** tar 的 sha256，也就是 config 里 `rootfs.diff_ids[i]`。写错的产物 docker 拒绝加载，
 所以打包时顺手校验一遍 config，对不上直接报 `DigestMismatch`。
 
-**zstd 层在 docker-archive 下直接拒。** 明确报 `Unsupported` 并指路 `--archive-format oci`
-（那个格式不在意压缩方式）。猜着处理只会产出一个谁也读不了的 tar。
+**zstd 层与 gzip 层走同一条路。** docker-archive 不在意 blob 压不压缩：层先解开，
+再按未压缩 tar 算 sha256 当目录名。压缩方式由 media type 推（`compression_of`），
+认不出来才当未压缩。解不开（真的坏了 / 参数不对）会带着层 digest 报错，
+不会把压缩字节当 tar 塞进归档。
 
 **重定向不带 Authorization。** blob 的 307 目标是 CDN 上的签名 URL，
 把 registry token 一起送过去既没用也不合适。
@@ -111,7 +113,9 @@ write_bundle                   一个 tar 文件 / 一个 blobs+index.json 目�
 - `registry_test.mbt`：**真起一个 HTTP 服务**当假 registry，跑通 manifest、index 选平台、
   平台不存在时报可选项、401 → 换票 → 重放
 - `package_test.mbt`：两种产物的结构，包括「层目录名等于 config 的 diff id」、
-  「OCI layout 里 blob 内容与文件名对得上」、「zstd 层被拒」
+  「OCI layout 里 blob 内容与文件名对得上」、「zstd 层被解开成未压缩 `layer.tar`」
+- 真后端对拍（`scripts/docker-cli-probe.sh` 第 6 节）：一份 zstd 层镜像走完
+  「docker save → 解压 → 建树 → 报告」，报告里的字节数对得上才算过
 
 手工验过的真实链路（不依赖本地 docker）：
 

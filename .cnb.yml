@@ -7,6 +7,10 @@
 # 以及 `dive --from-image` 的三条通路（见 scripts/docker-cli-probe.sh）。
 # 少了它这一步会自己跳过（exit 77），不会把流水线弄红——
 # 但 docker_cli 的参数形态就退化成只有假 CLI 覆盖了。
+#
+# 同一个 daemon 还负责第 6 节的 zstd 测试镜像：层是用 `docker run alpine zstd`
+# 现压的 `tar+zstd`，再交给 `dive --from-image` 解压。所以这里不用额外装 zstd，
+# 但需要能 `docker run`（拉得到 alpine、装得进 zstd 包）；拉不到时那节自己跳过。
 .ci-env: &ci-env
   docker:
     build:

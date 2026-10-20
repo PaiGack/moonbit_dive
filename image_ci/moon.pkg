@@ -14,3 +14,5 @@ import {
 } for "wbtest"
 
 warnings = "-test_unqualified_package"
+
+supported_targets = "wasm-gc+native"

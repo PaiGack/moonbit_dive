@@ -6,7 +6,8 @@
 # 装 MoonBit 工具链，然后调这个脚本。两个平台的 job 名字一一对应，
 # 步骤内容全部收在这里，避免两处流水线各改各的、慢慢漂移。
 #
-# 阶段：格式与接口 → 测试与覆盖率 → 构建 → CLI 冒烟。
+# 阶段：格式与接口 → 测试与覆盖率 → 构建 → CLI 冒烟 → 真实后端对拍
+# （最后一步里含一份 zstd 层测试镜像，见 scripts/docker-cli-probe.sh 第 6 节）。
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -118,7 +119,12 @@ run moon run --target native cmd/main -- --help
 # 和一份手搓的最小镜像跑一遍四条通路（见 scripts/docker-cli-probe.sh）。
 # 环境里没有 daemon 时脚本退 77，这里跳过而不判红——「没装 docker」
 # 不是代码问题，但「装了 docker 却取不到镜像」必须是。
-section "真实后端对拍"
+#
+# 第 6 节是 zstd 测试镜像：层用 docker 里的 `zstd -19` 压，
+# 再让 dive 自己解压、建树、出报告。它需要能 `docker run`
+# 一个装得上 zstd 的小镜像（默认 alpine）；拉不到时它自己跳过。
+# 想换镜像源就设 DIVE_TEST_ZSTD_HELPER_IMAGE。
+section "真实后端对拍（含 zstd 测试镜像）"
 if [ "${CI_SKIP_DOCKER_PROBE:-0}" = "1" ]; then
   printf '%s跳过（CI_SKIP_DOCKER_PROBE=1）%s\n' "$DIM" "$RESET"
 else

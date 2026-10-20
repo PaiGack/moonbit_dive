@@ -58,8 +58,9 @@ async fn save() -> Unit {
 | `DockerArchive` | `manifest.json` + `<config>.json` + `<diff-id>/layer.tar` | 层要**解压**；目录名是**解压后** tar 的 sha256 |
 | `OciLayout` | `oci-layout` + `index.json` + `blobs/sha256/<digest>` | blob 原样落盘，不重算 sha256 |
 
-zstd 层在 `DockerArchive` 下会明确报 `Unsupported`（并指路 `oci`）——
-猜着处理只会产出一个谁也读不了的 tar。
+zstd 层与 gzip 层一样被**解开后**写成 `layer.tar`：docker-archive 的目录名是
+解压后 tar 的 sha256，所以压不压缩对产物没影响。解不开的层会带着层 digest
+报错，不会被静默塞进归档。
 
 ## 边界
 

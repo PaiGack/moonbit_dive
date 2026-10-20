@@ -4,3 +4,7 @@ import {
 }
 
 warnings = "-test_unqualified_package"
+
+// 层解析是纯计算，三个后端都能跑；声明范围是为了跟 `layer_tree` 对齐。
+
+supported_targets = "wasm-gc+native"

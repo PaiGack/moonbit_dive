@@ -274,7 +274,14 @@ test "README aggregate compare" {
 - **路径即真相**：树节点比的是 `parent` + `insert_child`，不按 tar 里的顺序堆叠；
   重写同一路径就地更新，不复制节点。
 - **自实现 gzip**：MoonBit 生态暂无 DEFLATE，包里补了一个（crc32 + Huffman + stored block）。
-  支持 fixed/dynamic Huffman 与 stored 三种块类型，zstd 明确报 `Unsupported` 而不是静默跳过。
+  支持 fixed/dynamic Huffman 与 stored 三种块类型。
+- **zstd 用 `gaato/zstd`**：纯 MoonBit、流式、只做解码，`decompress` 直接吃 `BytesView`，
+  与 `gzip_decompress` 同一个形状，所以 `decompress_layer` / `decompress_layers` /
+  `apply_layer_with_media_type` 这三条路径不用为 zstd 开第二套语句。
+  错误按 `ZstdErrorKind` 翻成可断言的文案（`DecompressError::Zstd`）。
+- **层的压缩方式只从 media type 推**（`compression_of`）；认不出来就当未压缩。
+  不认识的算法（`lz4` 之类）在 `decompress_layer` 上明确报 `Unsupported`，
+  不会被当成未压缩送进 tar 解析器。
 
 ## 许可与出处
 

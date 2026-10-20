@@ -15,6 +15,7 @@ warnings = "-test_unqualified_package"
 import {
   "moonbitlang/async",
   "moonbitlang/async/socket",
+  "moonbitlang/x/fs" @xfs,
 } for "test"
 
 // registry 走 TCP + TLS，wasm / js 后端没有 socket；与 docker_cli 同理只支持 native，

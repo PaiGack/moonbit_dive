@@ -172,9 +172,10 @@ pub(all) struct PullOptions {
 建议在 `layer_tree` 里补一个流式 `TarWriter`（`Bytes` + 完整 header），
 这在 P2 阶段就该有，正好一起补。
 
-**缺口：zstd。** 现在主流层是 `+gzip`，但 `+zstd` 在增长。
-打包格式 A 遇到 zstd 层要么引入 zstd 依赖，要么直接拒（明确报 `Unsupported`）。
-格式 B 不受影响（原样落盘）。
+**zstd（已补）。** 现在主流层是 `+gzip`，但 `+zstd` 在增长。
+`layer_tree` 接了 `gaato/zstd`（纯 MoonBit、流式、只做解码），`decompress_layer` 多了一条
+`"zstd"` 分支，所以打包格式 A（docker-archive）直接把 zstd 层解开、与 gzip 层同一条路。
+格式 B 仍然原样落盘。
 
 ### 3.4 生态可复用度
 
