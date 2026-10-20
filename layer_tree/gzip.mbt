@@ -254,8 +254,13 @@ pub async fn inflate_to(
 /// 一个 DEFLATE 输出窗口：攒到一批就整块下发，同时留着最近 32KiB 供回拷。
 ///
 /// 两件事共用同一块缓冲，因为它们描述的是同一段字节：回拷要能读到
-/// 「刚写下的字节」，而那些字节正好还没发给下游。下发时只放掉前 32KiB、
-/// 尾巴原地留着，于是「最近 32KiB」永远都在缓冲里，回拷不必绕圈。
+/// 「刚写下的字节」，而那些字节正好还没发给下游。下发时只放掉前半段、
+/// 尾巴原地搬回开头，于是「最近 32KiB」永远都在缓冲里，回拷不必绕圈。
+///
+/// **所有写入原语都是同步的**。这件事必须明说：写一个字节也过一遍 `async`
+/// 边界的话，2 GiB 的输出就是十亿次挂起点——issue #113 里
+/// `user 26m44s / real 27m0s` 的纯 CPU 时间就是这么烧掉的。下游的写盘
+/// （`sink.write`）仍是 `async`，但那按 256 KiB 一批发生，不是按字节。
 pub struct InflateWindow {
   buffer : FixedArray[Byte]
   /// `[0, length)` 是还没下发的字节，恒小于缓冲长度
@@ -266,13 +271,20 @@ pub struct InflateWindow {
 }
 
 ///|
-/// 攒批粒度：DEFLATE 的距离上限就是 32KiB，缓冲留两倍做「留下的尾巴 + 新写的」。
+/// 回拷窗口：DEFLATE 的距离上限就是 32KiB，这一截必须一直留着。
 let inflate_window_size : Int32 = 32768
+
+///|
+/// 下发粒度：缓冲一共 `32KiB + 256KiB`，攒满一次就写下 256KiB。
+///
+/// 老写法是 32KiB 一批（`sys` 只有 8 秒说明它不是瓶颈），但每批都要过一次
+/// `async` 边界与一次系统调用；放大一个数量级，2 GiB 的层少掉 ~5 万次往返。
+let inflate_batch_size : Int32 = 262144
 
 ///|
 fn InflateWindow::new(sink : &@io.Writer) -> InflateWindow {
   {
-    buffer: FixedArray::make(inflate_window_size * 2, b'\x00'),
+    buffer: FixedArray::make(inflate_window_size + inflate_batch_size, b'\x00'),
     length: 0,
     produced: 0L,
     sink,
@@ -280,62 +292,77 @@ fn InflateWindow::new(sink : &@io.Writer) -> InflateWindow {
 }
 
 ///|
-/// 缓冲里攒满就下发前半段，后半段搬回开头。
-async fn InflateWindow::drain(self : InflateWindow) -> Unit {
+/// 缓冲里攒满就下发前面那批，尾巴（最近 32KiB）搬回开头。
+async fn InflateWindow::drain(
+  self : InflateWindow,
+) -> Unit raise DecompressError {
   if self.length < self.buffer.length() {
     return
   }
-  let head = self.buffer.unsafe_reinterpret_as_bytes()[:inflate_window_size]
-  self.sink.write(head)
-  let tail = self.buffer.unsafe_reinterpret_as_bytes()[inflate_window_size:]
-  self.buffer.blit_from_bytesview(0, tail)
-  self.length = self.length - inflate_window_size
-  self.produced = self.produced + inflate_window_size.to_int64()
+  let bytes = self.buffer.unsafe_reinterpret_as_bytes()
+  self.sink.write(bytes[:inflate_batch_size]) catch {
+    err => raise Gzip(err.to_string())
+  }
+  self.buffer.blit_from_bytesview(0, bytes[inflate_batch_size:])
+  self.length = self.length - inflate_batch_size
+  self.produced = self.produced + inflate_batch_size.to_int64()
 }
 
 ///|
 /// 收尾：把攒着的全下发。
-async fn InflateWindow::flush(self : InflateWindow) -> Unit {
+async fn InflateWindow::flush(
+  self : InflateWindow,
+) -> Unit raise DecompressError {
   if self.length > 0 {
-    self.sink.write(self.buffer.unsafe_reinterpret_as_bytes()[:self.length])
+    self.sink.write(self.buffer.unsafe_reinterpret_as_bytes()[:self.length]) catch {
+      err => raise Gzip(err.to_string())
+    }
     self.produced = self.produced + self.length.to_int64()
     self.length = 0
   }
 }
 
 ///|
-/// 写一个字节。
-async fn InflateWindow::write_byte(
-  self : InflateWindow,
-  byte : Byte,
-) -> Unit raise DecompressError {
-  self.drain() catch {
-    err => raise Gzip(err.to_string())
-  }
+/// 写一个字节。缓冲满之前不会失败，也不需要主动做事。
+///
+/// 「满了」由调用方查 `full()` 后 `drain`：一次 `drain` 之后至少还有 1 MiB
+/// 空间，于是写字节与它的调用点都不必是 `async`——否则每个输出字节都要过
+/// 一次挂起点（2 GiB 的层就是十亿次，issue #113 的纯 CPU 时间就在这儿）。
+fn InflateWindow::put_byte(self : InflateWindow, byte : Byte) -> Unit {
   self.buffer[self.length] = byte
   self.length = self.length + 1
 }
 
 ///|
-/// 写一段字节（stored 块用）：能塞多少塞多少，塞满了边下发边继续。
-async fn InflateWindow::write_bytes(
+/// 缓冲是不是已经写满（`put_byte` 之后要查一次）。
+fn InflateWindow::full(self : InflateWindow) -> Bool {
+  self.length == self.buffer.length()
+}
+
+///|
+/// 写一段字节（stored 块用）：能塞多少塞多少，满了 `drain` 再继续。
+async fn InflateWindow::put_bytes(
   self : InflateWindow,
   data : BytesView,
 ) -> Unit raise DecompressError {
   let mut offset = 0
   while offset < data.length() {
-    self.drain() catch {
-      err => raise Gzip(err.to_string())
-    }
     let room = self.buffer.length() - self.length
     let take = if data.length() - offset < room {
       data.length() - offset
     } else {
       room
     }
-    self.buffer.blit_from_bytesview(self.length, data[offset:offset + take])
-    self.length = self.length + take
-    offset = offset + take
+    if take > 0 {
+      self.buffer.blit_from_bytesview(self.length, data[offset:offset + take])
+      self.length = self.length + take
+      offset = offset + take
+    }
+    if offset < data.length() {
+      self.drain() catch {
+        err => raise Gzip(err.to_string())
+      }
+    }
   }
 }
 
@@ -343,7 +370,8 @@ async fn InflateWindow::write_bytes(
 /// 回拷 `length` 个字节，源位置距当前位置 `back` 字节。
 ///
 /// `back < length` 是常见情况（`abcabcabc...`）：后写的字节立刻成为后续读取的源，
-/// 所以必须逐字节推进，不能整段复制。
+/// 所以要从头顺着拷，不能整段 `blit`。但「顺着拷」不等于「逐字节过 async」——
+/// 这里把能连续拷贝的段算出来，一段一次 `blit`，只在缓冲满时才挂起。
 ///
 /// 距离可以越过当前攒着的范围（跨过已经下发的字节），但不能越过整条输出流的开头——
 /// 那说明压缩流本身是坏的。缓冲里留着的尾巴保证「越过」这一支读得到。
@@ -352,23 +380,42 @@ async fn InflateWindow::copy_from(
   back : Int32,
   length : Int32,
 ) -> Unit raise DecompressError {
-  let back64 = back.to_int64()
-  if back64 <= 0 || back64 > self.produced + self.length.to_int64() {
+  if back <= 0 || back.to_int64() > self.produced + self.length.to_int64() {
     raise Gzip("distance points before the start of the output")
   }
-  for _ in 0..<length {
-    let source = self.length.to_int64() - back64
-    // 下发时留下的尾巴让 `source` 落不进负区：`produced` 增长与
-    // `length` 回落是同步的，回拷最多回退 32KiB，而缓冲正好留了 32KiB 尾巴
+  let bytes = self.buffer.unsafe_reinterpret_as_bytes()
+  let mut remaining = length
+  while remaining > 0 {
+    if self.length == self.buffer.length() {
+      self.drain() catch {
+        err => raise Gzip(err.to_string())
+      }
+      continue
+    }
+    let source = self.length - back
     if source < 0 {
       raise Gzip("distance reaches past the retained window")
     }
-    let byte = self.buffer[source.to_int()]
-    self.drain() catch {
-      err => raise Gzip(err.to_string())
+    let room = self.buffer.length() - self.length
+    // 源与目的都从 `source` 开始、每次挪同样多，所以「源 + 一次拷贝量」
+    // 不超过当前位置时，这一次拷贝读的全是拷之前就在的字节，整段 `blit`
+    // 与逐字节等价。重叠的情况（比如 `abcabc`）就退成一小段一小段。
+    let lag = self.length - source
+    let run = if lag >= remaining && remaining <= room {
+      remaining
+    } else if lag >= room {
+      room
+    } else {
+      let step = if lag < remaining { lag } else { remaining }
+      if step < room {
+        step
+      } else {
+        room
+      }
     }
-    self.buffer[self.length] = byte
-    self.length = self.length + 1
+    self.buffer.blit_from_bytesview(self.length, bytes[source:source + run])
+    self.length = self.length + run
+    remaining = remaining - run
   }
 }
 
@@ -385,7 +432,7 @@ async fn inflate_stored(
   if (length ^ complement) != 0xFFFF {
     raise Gzip("stored block length check failed")
   }
-  window.write_bytes(reader.read_bytes(length))
+  window.put_bytes(reader.read_bytes(length))
 }
 
 ///|
@@ -458,6 +505,8 @@ fn read_dynamic_tables(
 
 ///|
 /// 用 literal/distance 码表解一个 Huffman 压缩块，遇结束符 256 返回。
+///
+/// 固定码表是常量：只为一块现建一次码表，在小块多的层上是纯浪费。
 async fn inflate_block(
   reader : BitReader,
   window : InflateWindow,
@@ -467,7 +516,12 @@ async fn inflate_block(
   while true {
     let symbol = reader.read_symbol(literal)
     if symbol < 256 {
-      window.write_byte(symbol.to_byte())
+      window.put_byte(symbol.to_byte())
+      if window.full() {
+        window.drain() catch {
+          err => raise Gzip(err.to_string())
+        }
+      }
       continue
     }
     if symbol == 256 {

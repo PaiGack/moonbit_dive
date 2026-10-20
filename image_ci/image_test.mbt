@@ -195,3 +195,87 @@ fn load_tar_result(data : Bytes) -> ImageSource raise ImageError {
 fn load_path_result(path : String) -> ImageSource raise ImageError {
   ImageSource::load(path)
 }
+
+///|
+/// 大归档：文件输入只记位置，字节按需读。
+///
+/// 这条用例钉的是 issue #113 的第一条：2 GiB 的 tar 不该先整个读进内存。
+/// 断言分两层——「读出来的东西对」与「内存没跟着归档体积涨」。
+async test "load keeps a large archive out of memory" {
+  let path = "target/big-layer.tar"
+  let payload = repeat_block("dive payload line\n", 64 * 1024)
+  // 一份足够大的输入：真把它读进内存，RSS 至少涨这么多
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("data/payload.bin", payload),
+  ])
+  @fs.write_bytes_to_file(path, layer) catch {
+    @fs.IOError(message) => fail(message)
+  }
+  let before = resident_kb()
+  let source = ImageSource::load(path) catch { err => fail(err.to_string()) }
+  let after = resident_kb()
+  assert_eq(source.format, "tar")
+  assert_eq(source.layers.length(), 1)
+  // 字节还在磁盘上：`data` 是空的，位置记在 `offset` / `size` 里
+  assert_eq(source.layers[0].data.length(), 0)
+  assert_eq(source.layers[0].size, layer.length().to_int64())
+  // 读回来仍然是完整的一层
+  let raw = source.layers[0].raw_bytes() catch { err => fail(err.to_string()) }
+  assert_eq(raw.length(), layer.length())
+  // 峰值增量远小于归档体积：架构在内存里的只有一个小窗口
+  let growth = after - before
+  assert_true(growth < 16 * 1024)
+}
+
+///|
+/// 同一份内容重复 `times` 遍。
+fn repeat_block(block : String, times : Int32) -> String {
+  let builder = StringBuilder()
+  for _ in 0..<times {
+    builder.write_string(block)
+  }
+  builder.to_string()
+}
+
+///|
+/// 截断的输入要报错，而不是安静地当成一个「小一点的镜像」。
+///
+/// 这条要覆盖的是 issue #113 现场那句 `cannot read image: Bad address`：
+/// tar 只写了一半（进程被杀 / 磁盘满）时，用户得看出是**这份文件**断了。
+/// 报错必须带上路径——没有路径的错误在批量分析里等于没报。
+async test "a half-written archive names the file it gave up on" {
+  let path = "target/half-written.tar"
+  let layer_bytes = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("big.bin", repeat_block("x", 16 * 1024)),
+  ])
+  let builder = @layer_tree.TarBuilder::new()
+  builder.add_file("0/layer.tar", bytes_as_text(layer_bytes))
+  builder.add_file(
+    "manifest.json",
+    (
+      #|[ { "Config": "config.json", "RepoTags": ["demo:latest"], "Layers": ["0/layer.tar"] } ]
+    ),
+  )
+  let whole = builder.finish()
+  // 砍在最后一个 header 中间：`manifest.json` 的名字都读不全
+  let cut = whole.length() - 40
+  @fs.write_bytes_to_file(path, whole[:cut].to_owned()) catch {
+    @fs.IOError(message) => fail(message)
+  }
+  let message = match load_outcome(path) {
+    Ok(source) => "<loaded \{source.layers.length()} layers>"
+    Err(reason) => reason
+  }
+  assert_true(message.contains(path))
+}
+
+///|
+/// 装载一份输入，成败折成一句文本。
+fn load_outcome(path : String) -> Result[ImageSource, String] {
+  let source = try ImageSource::load(path) catch {
+    err => return Err(err.to_string())
+  } noraise {
+    source => source
+  }
+  Ok(source)
+}
