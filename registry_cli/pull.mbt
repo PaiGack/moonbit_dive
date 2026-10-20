@@ -12,6 +12,11 @@ pub struct PullOptions {
   /// 每次报完进度后的「立刻画一下」：回调是同步的、写终端是 async 的，
   /// 不把这一格送到 async 上下文里，进度条就只能等下一层才动
   on_tick : (() -> Unit noraise)?
+  /// 同时在途的层数。1 = 老行为（逐层串行），0 也按 1 处理。
+  ///
+  /// 并发只对「多层小层」有收益：单层镜像一点不快，
+  /// 省下来的大头是 CDN 的每连接限速与首字节延迟，不是带宽。
+  concurrency : Int32
 }
 
 ///|
@@ -22,13 +27,14 @@ pub fn PullOptions::new(
   token~ : String? = None,
   on_progress~ : ((PullEvent) -> Unit)? = None,
   on_tick~ : (() -> Unit noraise)? = None,
+  concurrency~ : Int32 = 4,
 ) -> PullOptions {
-  { platform, insecure, token, on_progress, on_tick, }
+  { platform, insecure, token, on_progress, on_tick, concurrency, }
 }
 
 ///|
 pub impl Show for PullOptions with fn to_string(self) {
-  "PullOptions(insecure=\{self.insecure}, token=\{self.token is Some(_)})"
+  "PullOptions(insecure=\{self.insecure}, concurrency=\{self.concurrency}, token=\{self.token is Some(_)})"
 }
 
 ///|
@@ -141,32 +147,13 @@ pub async fn pull_with_client(
     plan_bytes = plan_bytes + descriptor.size.to_int64()
   }
   notify(options, Plan(layers=manifest.layers.length(), bytes=plan_bytes))
-  // config 不是层：它不占层号，事件里单独说一声，进度条只算层
-  let config = fetch_blob(
+  let (config, layers) = fetch_all(
     client,
     reference,
-    manifest.config,
-    0,
-    kind=ConfigBlob,
+    manifest,
     options~,
-    plan_total_bytes=plan_bytes,
+    plan_bytes~,
   )
-  let layers : Array[PulledBlob] = []
-  let mut done_bytes : Int64 = 0L
-  for index, descriptor in manifest.layers {
-    let blob = fetch_blob(
-      client,
-      reference,
-      descriptor,
-      index,
-      kind=LayerBlob,
-      options~,
-      plan_done_bytes=done_bytes,
-      plan_total_bytes=plan_bytes,
-    )
-    done_bytes = done_bytes + blob.data.length().to_int64()
-    layers.push(blob)
-  }
   {
     reference,
     media_type,
@@ -349,6 +336,226 @@ fn describe_platforms(index : @oci_spec.Index) -> String {
 }
 
 ///|
+/// 拉 config 与所有层，**层序与 manifest 一致**（那是叠层顺序，属于语义，不能乱）。
+///
+/// 并发借的是 `@async` 的结构化并发：每层一个 `spawn` 拿到 `Task`，
+/// 「并发跑、按原顺序取」正好对上「层序不能乱」；`Semaphore` 卡住在途层数，
+/// 任务组退出时保证所有子任务都收尾，不留野连接。
+///
+/// **并发的是「谁在拉」，不是「一层的字节怎么读」**：真并行的前提是每条在途的层
+/// 各占一条连接。`RegistryClient` 背后是一个 `@http.Client`，一次只服务一个请求
+/// （单连接），两个任务共用它发请求会读到已经失效的 fd —— issue #97 的
+/// `Bad file descriptor` 就是这个形状。所以并发时每层自己开一条，用完就关。
+///
+/// `concurrency <= 1` 时走原来的串行循环：共用一条连接，也是「怀疑并发」的退路。
+async fn fetch_all(
+  client : RegistryClient,
+  reference : ImageReference,
+  manifest : @oci_spec.Manifest,
+  options~ : PullOptions,
+  plan_bytes~ : Int64,
+) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
+  let in_flight = if options.concurrency < 1 { 1 } else { options.concurrency }
+  if in_flight <= 1 {
+    return fetch_all_serially(
+      client,
+      reference,
+      manifest,
+      options~,
+      plan_bytes~,
+    )
+  }
+  return fetch_all_concurrently(
+    client,
+    reference,
+    manifest,
+    options~,
+    plan_bytes~,
+    in_flight~,
+  )
+}
+
+///|
+/// 串行：一层下完再下一层，共用一个客户端（与老行为一致）。
+async fn fetch_all_serially(
+  client : RegistryClient,
+  reference : ImageReference,
+  manifest : @oci_spec.Manifest,
+  options~ : PullOptions,
+  plan_bytes~ : Int64,
+) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
+  // config 不是层：它不占层号，只报整体字节
+  let config = fetch_blob(
+    client,
+    reference,
+    manifest.config,
+    0,
+    kind=ConfigBlob,
+    options~,
+    plan_total_bytes=plan_bytes,
+  )
+  let layers : Array[PulledBlob] = []
+  let mut done_bytes : Int64 = 0L
+  for index, descriptor in manifest.layers {
+    let blob = fetch_blob(
+      client,
+      reference,
+      descriptor,
+      index,
+      kind=LayerBlob,
+      options~,
+      plan_done_bytes=done_bytes,
+      plan_total_bytes=plan_bytes,
+    )
+    done_bytes = done_bytes + blob.data.length().to_int64()
+    layers.push(blob)
+  }
+  (config, layers)
+}
+
+///|
+/// 并发：`in_flight` 层同时在途，结果按 manifest 顺序排回去。
+///
+/// 每一层（以及 config）都在自己的连接上跑：token 是同一个，
+/// 但连接不共享——共享的 `@http.Client` 一次只服务一个请求。
+///
+/// 失败时不往上抛：`spawn` 里抛出去只会把同组其他层一起取消，而取消中的任务
+/// 连在途名额都放不掉，收尾就成了「谁先死看运气」。这里把错误塞进数组，
+/// 等所有层都停下来之后再统一报第一件出错的事。
+async fn fetch_all_concurrently(
+  client : RegistryClient,
+  reference : ImageReference,
+  manifest : @oci_spec.Manifest,
+  options~ : PullOptions,
+  plan_bytes~ : Int64,
+  in_flight~ : Int32,
+) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
+  let gate = @semaphore.Semaphore(in_flight)
+  let failures : Array[RegistryError] = []
+  // 「已经下完多少」只能由调度这边记：各层自己算出来的是层内字节
+  let finished_bytes : Ref[Int64] = { val: 0L, }
+  let grouped = @async.with_task_group(group => {
+    // config 不占在途名额：它是几十 KB 的一块，跟第一层挤在一起下最划算
+    let config_task = group.spawn(() => {
+      let outcome = Some(
+        fetch_on_own_connection(client, reference, fn(own) {
+          fetch_blob(
+            own,
+            reference,
+            manifest.config,
+            0,
+            kind=ConfigBlob,
+            options~,
+            plan_total_bytes=plan_bytes,
+          )
+        }),
+      ) catch {
+        err => {
+          failures.push(err)
+          None
+        }
+      }
+      outcome
+    })
+    let tasks : Array[@async.Task[PulledBlob?]] = []
+    for index, descriptor in manifest.layers {
+      gate.acquire()
+      tasks.push(
+        group.spawn(() => {
+          let outcome = Some(
+            fetch_on_own_connection(client, reference, fn(own) {
+              let blob = fetch_blob(
+                own,
+                reference,
+                descriptor,
+                index,
+                kind=LayerBlob,
+                options~,
+                plan_done_bytes=finished_bytes.val,
+                plan_total_bytes=plan_bytes,
+              )
+              finished_bytes.val = finished_bytes.val +
+                blob.data.length().to_int64()
+              // 层与层之间有空窗：报一次整体进度，进度行就不会定住
+              match options.on_progress {
+                Some(callback) =>
+                  callback(
+                    Progress(received=finished_bytes.val, total=plan_bytes),
+                  )
+                None => ()
+              }
+              blob
+            }),
+          ) catch {
+            err => {
+              failures.push(err)
+              None
+            }
+          }
+          gate.release()
+          outcome
+        }),
+      )
+    }
+    // 按创建顺序取结果：`tasks` 的顺序就是 manifest 的顺序，层序因此不会乱
+    let layers : Array[PulledBlob] = []
+    for task in tasks {
+      match task.wait() {
+        Some(blob) => layers.push(blob)
+        None => ()
+      }
+    }
+    (config_task.wait(), layers)
+  }) catch {
+    err =>
+      raise Network(
+        "\{reference.canonical()}: pulling the layers failed: \{err.to_string()}",
+      )
+  }
+  match failures {
+    [first, ..] => raise first
+    [] =>
+      match grouped {
+        (Some(config), layers) => (config, layers)
+        // config 的失败本该被记进 `failures`；走到这里说明状态没对上，保守报一句
+        (None, _) =>
+          raise Network(
+            "\{reference.canonical()}: the config blob was never fetched",
+          )
+      }
+  }
+}
+
+///|
+/// 在一条**专属**连接上跑一次取 blob。
+///
+/// `template` 只是用来抄 base 与 token：真正拨号的是这里新开的那个，
+/// 用完必关（连接断了不会有人替它收 fd）。同一层要跟一次 307 到 CDN，
+/// 那是 `get_following_redirects` 自己的事，与这里的「一条连接」不冲突。
+async fn fetch_on_own_connection(
+  template : RegistryClient,
+  reference : ImageReference,
+  action : async (RegistryClient) -> PulledBlob raise RegistryError,
+) -> PulledBlob raise RegistryError {
+  let own = RegistryClient::connect(
+    strip_scheme(template.base),
+    insecure=template.base.has_prefix("http://"),
+    token=template.token,
+  ) catch {
+    _ =>
+      raise Network(
+        "cannot open a connection to \{template.base} for \{reference.canonical()}",
+      )
+  }
+  let blob = {
+    errdefer own.close()
+    action(own)
+  }
+  own.close()
+  blob
+}
+
+///|
 /// 这个 blob 是 config 还是层。
 ///
 /// 只影响进度显示：config 通常几十 KB，把它算成「第 1 层」会让层号整体错位，
@@ -387,23 +594,25 @@ async fn fetch_blob(
   // 报进度只会把行刷乱，所以它是唯一不带回调的那种）
   // 层内的字节数要报，**整体**字节数更要报：渲染层靠「完成层之和 + 当前层」
   // 自己推算整体进度，多层并发时必然算错，所以把事实报全，让它只做减法。
-  let progress = match (kind, options.on_progress) {
-    (LayerBlob, Some(callback)) =>
+  let progress = match options.on_progress {
+    Some(callback) =>
       Some((received : Int64, length : Int64?) => {
         // 有 content-length 用它：重定向到 CDN 后可能与 descriptor 报的不同
-        let total = match length {
+        let reported_total = match length {
           Some(length) if length > 0 => length
           _ => total
         }
-        callback(LayerProgress(index~, received~, total~))
+        // config 不占层号（那是 `dive --layer N` 要对上的），但它的字节要算进整体
+        match kind {
+          ConfigBlob => ()
+          LayerBlob =>
+            callback(LayerProgress(index~, received~, total=reported_total))
+        }
         callback(
-          Progress(
-            received=plan_done_bytes + received,
-            total=plan_total_bytes,
-          ),
+          Progress(received=plan_done_bytes + received, total=plan_total_bytes),
         )
       })
-    _ => None
+    None => None
   }
   let reply = get_following_redirects(
     client,

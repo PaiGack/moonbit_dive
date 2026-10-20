@@ -184,6 +184,11 @@ fn cli() -> @argparse.Command {
         "registry-token",
         about="--from-registry bearer token (default: $DIVE_REGISTRY_TOKEN)",
       ),
+      @argparse.OptionArg(
+        "jobs",
+        about="--from-registry how many layers to download at once (default: 4, 1 = one at a time)",
+        default_values=["4"],
+      ),
     ],
     flags=[
       @argparse.FlagArg(
@@ -267,6 +272,8 @@ struct Options {
   registry_insecure : Bool
   /// `--registry-token`：显式 token，缺省读 `DIVE_REGISTRY_TOKEN`
   registry_token : String?
+  /// `--jobs`：同时在途的层数（1 = 逐层串行）
+  jobs : Int32
   top : Int32
   /// 单次 docker 调用的超时（毫秒）。刻意**不接受 0**：
   /// 无超时正是「半死 socket → 静默挂住」的老问题，不给用户留这个坑
@@ -301,6 +308,7 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     platform: optional_value(matches, "platform"),
     registry_insecure: flag_of(matches, "insecure-registry"),
     registry_token: optional_value(matches, "registry-token"),
+    jobs: jobs_of(matches),
     top: top_of(matches),
     docker_timeout_ms: docker_timeout_of(matches),
   }
@@ -354,6 +362,29 @@ fn top_of(matches : @argparse.Matches) -> Int32 {
 }
 
 ///|
+/// 解析 `--jobs`：同时在途的层数。
+///
+/// 0 直接报参数错，不悄悄当 1：给了 0 的人多半以为「不限」，
+/// 那正是最该说清楚的地方。上限也钉死——再多也只是把 CDN 的限速队列拉长。
+fn jobs_of(matches : @argparse.Matches) -> Int32 {
+  let jobs = match optional_value(matches, "jobs") {
+    None => return 4
+    Some(text) => non_negative_int_or_exit(text, "--jobs")
+  }
+  if jobs < 1 {
+    eprintln(
+      "invalid --jobs: expect at least 1 (1 = download layers one at a time)",
+    )
+    exit_process(@image_ci.exit_config_error)
+  }
+  if jobs > 16 {
+    eprintln("invalid --jobs: at most 16 layers in flight")
+    exit_process(@image_ci.exit_config_error)
+  }
+  jobs
+}
+
+///|
 /// 解析 `--timeout`：缺省用 `docker_cli` 的默认值（30 秒）。
 ///
 /// 只认真整数秒并且必须 **> 0**：0 及负数在 `docker_cli` 里表示「不设超时」，
@@ -402,6 +433,7 @@ fn registry_options(options : Options) -> RegistryOptions {
     platform: options.platform,
     insecure: options.registry_insecure,
     token: options.registry_token,
+    jobs: options.jobs,
   }
 }
 

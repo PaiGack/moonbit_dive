@@ -236,7 +236,10 @@ pub fn PullReporter::render(self : PullReporter, event : PullEvent) -> Unit {
 ///
 /// 失败时最要紧的信息是**下到哪一步断的**。半行进度后面直接接错误信息会糊成
 /// 一团，所以先换行，再交代「断在第几层、跑了多久、平均多快」。
-pub fn PullReporter::finish(self : PullReporter, failed~ : Bool) -> Unit noraise {
+pub fn PullReporter::finish(
+  self : PullReporter,
+  failed~ : Bool,
+) -> Unit noraise {
   if self.pending_line {
     write_stderr("\n")
     self.pending_line = false
@@ -340,7 +343,8 @@ pub fn PullReporter::speed_bytes_per_second(self : PullReporter) -> Double {
 fn PullReporter::update_speed(self : PullReporter, received : Int64) -> Unit {
   let now = self.now()
   self.samples.push((now, received))
-  while self.samples.length() > 1 && now - self.samples[0].0 > speed_window_millis {
+  while self.samples.length() > 1 &&
+        now - self.samples[0].0 > speed_window_millis {
     ignore(self.samples.remove(0))
   }
   match self.samples[0] {

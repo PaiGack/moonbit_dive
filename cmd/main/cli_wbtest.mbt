@@ -105,3 +105,16 @@ async test "aggregate flag defaults to off and is independent" {
   assert_false(with_aggregate.tui)
   assert_eq(with_aggregate.format, "text")
 }
+
+///|
+/// `--jobs` 默认 4（并发拉几层），给了就按给的算。
+async test "jobs defaults to 4 and can be overridden" {
+  let options = parse_options(["nginx:latest", "--from-registry"])
+  assert_eq(options.jobs, 4)
+  // 1 = 逐层串行：是一条要留着的退路
+  let options = parse_options(["nginx:latest", "--from-registry", "--jobs", "1"])
+  assert_eq(options.jobs, 1)
+  // 给的数字不该顺手改掉别的选项
+  assert_true(options.from_registry)
+  assert_eq(options.image, "nginx:latest")
+}

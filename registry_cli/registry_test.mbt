@@ -268,6 +268,53 @@ async fn with_fake_registry(
 }
 
 ///|
+/// 与 `with_fake_registry` 一样，但把测试体的**返回值**带出来。
+///
+/// 断错误类型的测试需要它：`fail()` 在闭包里只会把测试判失败，
+/// 拿不到「到底抛了哪一种错」。
+async fn[X] with_fake_registry_result(
+  image : FakeImage,
+  require_token~ : Bool = false,
+  /// 让第 `index` 层的请求返回这坨字节，而不是真内容（模拟「某一层坏了」）
+  swap~ : (Int32, Bytes)? = None,
+  body~ : async (String) -> X,
+) -> X {
+  let server = @http.Server(@socket.Addr::new(0x7F000001, 0))
+  let port = server.addr.port()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      server.run_forever((request, _body, conn) => {
+        let header = request.headers.get(
+          @http.CaseInsensitiveString("authorization"),
+        )
+        let authorized = match header {
+          Some(value) => value == "Bearer fake-token"
+          None => false
+        }
+        let reply = image.reply(request.path, port, require_token, authorized)
+        let body_bytes = match swap {
+          Some((index, bytes)) =>
+            if reply.status == 200 &&
+              request.path.ends_with(
+                @oci_spec.Digest::from_sha256(image.layers[index]).to_string(),
+              ) {
+              bytes
+            } else {
+              reply.body
+            }
+          None => reply.body
+        }
+        conn.send_response(reply.status, "OK", extra_headers=reply.headers)
+        conn.write(body_bytes)
+      })
+    })
+    let outcome = body("127.0.0.1:\{port}")
+    server.close()
+    outcome
+  })
+}
+
+///|
 /// 直接连假 registry（`http://127.0.0.1:<port>`）拉一次。
 ///
 /// 不走 `pull_image`：那个函数按引用里的 registry 段选 host，
@@ -439,4 +486,180 @@ async test "a big layer is read in chunks, not in one go" {
     assert_eq(pulled.layers[0].data.length(), size)
     assert_true(@oci_spec.verify_digest(pulled.layers[0].data, diff))
   })
+}
+
+///|
+/// 造一个 N 层、每层都很小的镜像：并发拉取的形状验证靠它。
+///
+/// 每层内容不同（同一份 tar 会因为层名/内容撞 digest），
+/// 并且**故意让层的大小不一致**：并发最容易错的就是「结果按完成顺序排回去」，
+/// 大小整齐划一时这种错还看不出来。
+async fn fake_multilayer_image(layers : Int32) -> FakeImage {
+  let configs : Array[String] = []
+  let payloads : Array[Bytes] = []
+  for index in 0..<layers {
+    let path = "opt/app/file-\{index}.txt"
+    let (tar, diff) = fake_layer(path, "content of layer \{index}\n")
+    configs.push(diff)
+    payloads.push(@layer_tree.gzip_compress(tar))
+  }
+  {
+    config: fake_config(configs),
+    layers: payloads,
+    layer_media_type: @oci_spec.oci_layer_gzip_media_type,
+    as_index: false,
+    platform_os: "linux",
+    platform_arch: "amd64",
+  }
+}
+
+///|
+/// 并发的第一件事不是「快」，是「不乱」：8 层按 manifest 顺序排回去、
+/// 每层 digest 校验通过、字节数一个不差。
+///
+/// 本地单线程的假 registry 测不出加速（请求本来就排在一条线上），
+/// 所以这里只钉语义：**顺序是契约**，并发只是它的一种实现。
+async test "concurrent pull keeps manifest order and digests" {
+  let source = fake_multilayer_image(8)
+  let expected : Array[String] = []
+  for layer in source.layers {
+    expected.push(@oci_spec.Digest::from_sha256(layer).to_string())
+  }
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let pulled = pull_from(
+      host,
+      reference,
+      @registry_cli.PullOptions::new(concurrency=4),
+    ) catch {
+      err => fail("concurrent pull should succeed: \{err.to_string()}")
+    }
+    assert_eq(pulled.layers.length(), 8)
+    for index, layer in pulled.layers {
+      // 顺序错了这里立刻炸：digest 是按 manifest 顺序摆的
+      assert_eq(layer.digest, expected[index])
+      assert_true(@oci_spec.verify_digest(layer.data, layer.digest))
+      assert_eq(layer.data.length(), source.layers[index].length())
+    }
+  })
+}
+
+///|
+/// 串行与并发必须产出同一份东西：`--jobs 1` 是一条要留着的退路，
+/// 退路不能比新路结果差一点。
+async test "serial and concurrent pulls agree" {
+  let source = fake_multilayer_image(5)
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let serial = pull_from(
+      host,
+      reference,
+      @registry_cli.PullOptions::new(concurrency=1),
+    ) catch {
+      err => fail("serial pull should succeed: \{err.to_string()}")
+    }
+    let parallel = pull_from(
+      host,
+      reference,
+      @registry_cli.PullOptions::new(concurrency=3),
+    ) catch {
+      err => fail("concurrent pull should succeed: \{err.to_string()}")
+    }
+    // `concurrency = 0` 也要落回串行，而不是「同时在途 0 层」把自己卡死
+    let zero = pull_from(
+      host,
+      reference,
+      @registry_cli.PullOptions::new(concurrency=0),
+    ) catch {
+      err => fail("concurrency=0 should behave like 1: \{err.to_string()}")
+    }
+    assert_eq(serial.layers.length(), parallel.layers.length())
+    assert_eq(serial.layers.length(), zero.layers.length())
+    for index, layer in serial.layers {
+      assert_eq(layer.digest, parallel.layers[index].digest)
+      assert_eq(layer.data, parallel.layers[index].data)
+      assert_eq(layer.digest, zero.layers[index].digest)
+    }
+    assert_eq(serial.config.digest, parallel.config.digest)
+  })
+}
+
+///|
+/// 并发下整体进度不能倒退也不能超过总量：`Progress` 是唯一的整体口径，
+/// 交错的事件里它必须单调、封顶在 plan 字节上。
+async test "concurrent pull reports a monotonic overall progress" {
+  let source = fake_multilayer_image(6)
+  let seen : Array[(Int64, Int64)] = []
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let callback : (@registry_cli.PullEvent) -> Unit = fn(event) {
+      match event {
+        @registry_cli.Progress(received~, total~) =>
+          seen.push((received, total))
+        _ => ()
+      }
+    }
+    let pulled = pull_from(
+      host,
+      reference,
+      @registry_cli.PullOptions::new(concurrency=3, on_progress=Some(callback)),
+    ) catch {
+      err => fail("concurrent pull should succeed: \{err.to_string()}")
+    }
+    assert_eq(pulled.layers.length(), 6)
+  })
+  assert_true(seen.length() > 0)
+  let mut previous = 0L
+  let mut plan = 0L
+  for entry in seen {
+    let (received, total) = entry
+    if total > 0L {
+      plan = total
+    }
+    // 整体字节只增不减：并发下各层交错完成，倒退就是口径算错了
+    assert_true(received >= previous)
+    previous = received
+  }
+  if plan > 0L {
+    assert_true(previous <= plan)
+  }
+}
+
+///|
+/// 一层 404 时整次拉取失败，且报的是**那一眼能看懂**的错（哪一层的哪个 digest）。
+/// 并发不能把「有一层坏了」糊成「整体超时」。
+async test "a missing layer fails the whole concurrent pull" {
+  let source = fake_multilayer_image(4)
+  // manifest 说第三层的 digest 是 X，registry 上却把 X 的内容换掉了：
+  // 请求能成功，字节对不上——并发拉取最容易把这种「某一层坏了」盖过去
+  let swapped = @layer_tree.gzip_compress(b"not the layer you asked for")
+  let error = with_fake_registry_result(source, swap=Some((2, swapped)), body=async fn(
+    host,
+  ) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    try
+      pull_from(host, reference, @registry_cli.PullOptions::new(concurrency=4))
+    catch {
+      err => err
+    } noraise {
+      image =>
+        fail(
+          "a corrupt layer must not be accepted (got \{image.layers.length()} layers)",
+        )
+    }
+  })
+  match error {
+    @registry_cli.NotFound(message) => assert_true(message.contains("sha256:"))
+    @registry_cli.DigestMismatch(message) =>
+      assert_true(message.contains("sha256:"))
+    other => fail("expected a blob-level error, got \{other.to_string()}")
+  }
 }

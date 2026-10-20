@@ -13,6 +13,8 @@ pub(all) struct SaveRequest {
   on_progress : ((PullEvent) -> Unit)?
   /// 每次报完进度后「立刻画一下」的钩子，见 `PullOptions::on_tick`
   on_tick : (() -> Unit noraise)?
+  /// 同时在途的层数（1 = 逐层串行），见 `PullOptions::concurrency`
+  jobs : Int32
 }
 
 ///|
@@ -25,6 +27,7 @@ pub fn SaveRequest::new(
   token~ : String? = None,
   on_progress~ : ((PullEvent) -> Unit)? = None,
   on_tick~ : (() -> Unit noraise)? = None,
+  jobs~ : Int32 = 4,
 ) -> SaveRequest {
   {
     reference,
@@ -35,6 +38,7 @@ pub fn SaveRequest::new(
     token,
     on_progress,
     on_tick,
+    jobs,
   }
 }
 
@@ -95,6 +99,7 @@ pub async fn save_image(
     token=request.token,
     on_progress=request.on_progress,
     on_tick=request.on_tick,
+    concurrency=request.jobs,
   )
 
   let image = pull_image(reference, options~)

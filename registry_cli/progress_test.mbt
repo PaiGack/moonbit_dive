@@ -68,7 +68,7 @@ async test "reporter tracks per-layer and overall percentages" {
 /// 假时钟把 2 秒切成四格，每格 1 MiB，速度就该是 2 MiB/s。
 /// 不睡真时间，断数值。
 async test "speed comes from the sliding window, not from the total average" {
-  let now : Ref[Int64] = { val: 0L }
+  let now : Ref[Int64] = { val: 0L, }
   let clock : () -> Int64 = fn() { now.val }
   let reporter = @registry_cli.PullReporter::with_clock(
     interactive=false,
@@ -91,7 +91,7 @@ async test "speed comes from the sliding window, not from the total average" {
     now.val = (step * 1000).to_int64()
     reporter.render(
       @registry_cli.PullEvent::Progress(
-        received=(1000000L * (step + 1).to_int64()),
+        received=1000000L * (step + 1).to_int64(),
         total=4000000L,
       ),
     )
