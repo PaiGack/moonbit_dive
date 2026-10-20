@@ -5,6 +5,16 @@ import {
 
 warnings = "-test_unqualified_package"
 
+import {
+  "moonbitlang/async",
+} for "test"
+
+import {
+  "moonbitlang/async",
+} for "wbtest"
+
 // 层解析是纯计算，三个后端都能跑；声明范围是为了跟 `layer_tree` 对齐。
+// 解压改成流式之后（issue #97），解压这一步是 async 的，
+// 于是「解压 + 落树」这条链上的入口也跟着变成 async。
 
 supported_targets = "wasm-gc+native"

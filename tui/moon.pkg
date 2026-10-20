@@ -10,8 +10,13 @@ import {
 }
 
 import {
+  "moonbitlang/async",
   "moonbitlang/async/pipe" @async/pipe,
 } for "wbtest"
+
+import {
+  "moonbitlang/async",
+} for "test"
 
 // tty 只支持 native（见 tty 的 moon.pkg），本包因此同样收窄到 native。
 // 与 docker_cli / cmd/main 同一套约定：CI 与本地构建都显式 `--target native`。

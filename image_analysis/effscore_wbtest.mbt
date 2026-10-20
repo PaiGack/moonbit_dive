@@ -11,7 +11,7 @@ fn versions_of(
 }
 
 ///|
-test "no rewrite means a perfect score" {
+async test "no rewrite means a perfect score" {
   // 三个路径各只写一次：Σmin == Σcumulative
   let report = efficiency_of_versions(
     versions_of([("/a", [10]), ("/b", [5]), ("/c", [1])]),
@@ -24,7 +24,7 @@ test "no rewrite means a perfect score" {
 }
 
 ///|
-test "equal size rewrite costs exactly half" {
+async test "equal size rewrite costs exactly half" {
   // dive 的口径按路径聚合所有版本：两次各 10 字节，
   // min=10、cumulative=20，重复写入的空间被折半
   let report = efficiency_of_versions(versions_of([("/f", [10, 10])]))
@@ -36,7 +36,7 @@ test "equal size rewrite costs exactly half" {
 }
 
 ///|
-test "shrinking rewrite keeps the small version as min" {
+async test "shrinking rewrite keeps the small version as min" {
   // 先 100 后 10：min=10、cumulative=110
   let report = efficiency_of_versions(versions_of([("/big", [100, 10])]))
   assert_eq(report.efficiency.min_bytes, 10)
@@ -45,7 +45,7 @@ test "shrinking rewrite keeps the small version as min" {
 }
 
 ///|
-test "growing rewrite is penalised by the original small version" {
+async test "growing rewrite is penalised by the original small version" {
   // 先 10 后 100：min=10、cumulative=110，分数掉到 0.09
   let report = efficiency_of_versions(versions_of([("/f", [10, 100])]))
   assert_eq(report.efficiency.min_bytes, 10)
@@ -54,7 +54,7 @@ test "growing rewrite is penalised by the original small version" {
 }
 
 ///|
-test "deleting a file drags the score down" {
+async test "deleting a file drags the score down" {
   // 被 whiteout 删掉：版本序列 [100, 0]，min=0、cumulative=100
   let report = efficiency_of_versions(
     versions_of([("/big", [100, 0]), ("/small", [1])]),
@@ -65,14 +65,14 @@ test "deleting a file drags the score down" {
 }
 
 ///|
-test "empty image scores 1.0 rather than dividing by zero" {
+async test "empty image scores 1.0 rather than dividing by zero" {
   let report = efficiency_of_versions(Map([]))
   assert_eq(report.efficiency.score(), 1.0)
   assert_eq(report.efficiency.cumulative_bytes, 0)
 }
 
 ///|
-test "matches dive reference numbers from its own test fixture" {
+async test "matches dive reference numbers from its own test fixture" {
   // 对照 dive `filetree/efficiency_test.go` 的 TestEfficiency：
   // nginx.conf 2000 -> 5000，public 3000，athing 10000，nginx 目录被 whiteout
   // 期望分数 0.75，低效路径是 /etc/nginx/nginx.conf（cumulative 7000）
@@ -91,7 +91,7 @@ test "matches dive reference numbers from its own test fixture" {
 }
 
 ///|
-test "analyze exposes the same efficiency as the raw version table" {
+async test "analyze exposes the same efficiency as the raw version table" {
   let layers = [
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("app"),
@@ -111,7 +111,7 @@ test "analyze exposes the same efficiency as the raw version table" {
 }
 
 ///|
-test "whiteout shows up in the version table as a zero" {
+async test "whiteout shows up in the version table as a zero" {
   let layers = [
     layer_fixture([@layer_tree.TarEntrySpec::File("big", "0123456789")]),
     layer_fixture([@layer_tree.TarEntrySpec::Whiteout("", "big")]),

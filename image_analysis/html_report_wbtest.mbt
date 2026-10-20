@@ -3,7 +3,7 @@
 ///
 /// 快照钉的是「渲染结构」：字段全部来自 `Report`，与 JSON 报告的字段一一对应；
 /// 改样式会动到快照，改字段会同时动到三份报告的测试，属于预期。
-test "html report snapshots the whole picture" {
+async test "html report snapshots the whole picture" {
   // 两层覆盖写：让 `count` 与 `total space` 都有意义（report_fixture 的三层里
   // 删除层会把被删的路径也计成 second write，读起来容易误判）
   let (tree, analysis) = analyze_fixture([
@@ -142,7 +142,7 @@ test "html report snapshots the whole picture" {
 ///
 /// 这条路径同时出现在 wasteful paths 与 largest directories 两张表里，
 /// 两处都得转义干净，且不许出现能当标签用的裸 `<`。
-test "html report escapes paths in every table" {
+async test "html report escapes paths in every table" {
   let (tree, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("a<b&c\"d"),
@@ -157,7 +157,7 @@ test "html report escapes paths in every table" {
 
 ///|
 /// 转义函数本身：`&` 必须最先换，否则 `&lt;` 会被二次转义成 `&amp;lt;`。
-test "html escape covers the five characters" {
+async test "html escape covers the five characters" {
   assert_eq(html_escape("&<>\"'"), "&amp;&lt;&gt;&quot;&#39;")
   assert_eq(html_escape("a<b&c\"d"), "a&lt;b&amp;c&quot;d")
   assert_eq(html_escape("<"), "&lt;")
@@ -166,7 +166,7 @@ test "html escape covers the five characters" {
 
 ///|
 /// 空镜像：不该出现「0 条数据的空表」，而应有明确的 `(no layers)` / `(none)` 占位。
-test "html report handles an empty image" {
+async test "html report handles an empty image" {
   let (tree, analysis) = analyze_fixture([])
   let html = report_to_html(build_report(analysis, tree))
   assert_true(
@@ -180,7 +180,7 @@ test "html report handles an empty image" {
 
 ///|
 /// 单层干净镜像：分数满分、进度条铺满、没有 wasteful paths。
-test "html report handles a clean single layer image" {
+async test "html report handles a clean single layer image" {
   let (tree, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("bin"),
@@ -198,7 +198,7 @@ test "html report handles a clean single layer image" {
 
 ///|
 /// HTML 与 JSON 出自同一份 `Report`：字段逐一对应，不许两套口径。
-test "html report keeps the same numbers as the json report" {
+async test "html report keeps the same numbers as the json report" {
   let (tree, analysis) = report_fixture()
   let report = build_report(analysis, tree)
   let html = report_to_html(report)

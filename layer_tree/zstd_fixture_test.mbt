@@ -18,7 +18,7 @@ fn zstd_layer_fixture() -> Bytes raise {
 }
 
 ///|
-test "zstd: a real zstd -19 layer decompresses to a parsable tar" {
+async test "zstd: a real zstd -19 layer decompresses to a parsable tar" {
   let layer = zstd_layer_fixture()
   // 帧头魔数：这条断言保证夹具没在 checkin 时被当成文本改坏（比如换行符）
   assert_eq(layer[:4], b"\x28\xb5\x2f\xfd")
@@ -32,7 +32,7 @@ test "zstd: a real zstd -19 layer decompresses to a parsable tar" {
 }
 
 ///|
-test "zstd: the decompressed layer applies to a file tree" {
+async test "zstd: the decompressed layer applies to a file tree" {
   let tree = FileTree::new()
   apply_layer_with_media_type(
     tree,

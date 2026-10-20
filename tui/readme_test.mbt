@@ -1,6 +1,6 @@
 ///|
 /// README 里的示例：建视图状态、走行、折叠、换层。
-test "README example" {
+async test "README example" {
   // 造一个两层的树：L1 把 /app/main 改写了
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),

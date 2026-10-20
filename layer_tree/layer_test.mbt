@@ -21,7 +21,7 @@ fn sample_image() -> Array[BytesView] {
 }
 
 ///|
-test "apply_layers_with_diffs reports one diff per layer" {
+async test "apply_layers_with_diffs reports one diff per layer" {
   let layers = sample_image()
   let result = apply_layers_with_diffs(layers, media_types=[]) catch {
     err => fail("layers should apply: \{err.to_string()}")
@@ -35,7 +35,7 @@ test "apply_layers_with_diffs reports one diff per layer" {
 }
 
 ///|
-test "layer diff separates added, modified and removed" {
+async test "layer diff separates added, modified and removed" {
   let layers = sample_image()
   let result = apply_layers_with_diffs(layers, media_types=[]) catch {
     err => fail("layers should apply: \{err.to_string()}")
@@ -50,7 +50,7 @@ test "layer diff separates added, modified and removed" {
 }
 
 ///|
-test "final tree reflects all layers" {
+async test "final tree reflects all layers" {
   let layers = sample_image()
   let result = apply_layers_with_diffs(layers, media_types=[]) catch {
     err => fail("layers should apply: \{err.to_string()}")
@@ -66,7 +66,7 @@ test "final tree reflects all layers" {
 }
 
 ///|
-test "layer stats track changes and deletions per layer" {
+async test "layer stats track changes and deletions per layer" {
   let layers = sample_image()
   let result = apply_layers_with_diffs(layers, media_types=[]) catch {
     err => fail("layers should apply: \{err.to_string()}")
@@ -80,7 +80,7 @@ test "layer stats track changes and deletions per layer" {
 }
 
 ///|
-test "deep stacks stay linear in node count" {
+async test "deep stacks stay linear in node count" {
   // 20 层、每层新增一个文件：节点数应随层数线性增长，而不是指数复制
   let tree = FileTree::new()
   for index in 0..<20 {
@@ -97,7 +97,7 @@ test "deep stacks stay linear in node count" {
 }
 
 ///|
-test "media type drives decompression" {
+async test "media type drives decompression" {
   let tree = FileTree::new()
   let plain = build_tar([File("a.txt", "plain")])
   // 未压缩
@@ -120,7 +120,7 @@ test "media type drives decompression" {
 }
 
 ///|
-test "zstd layers are decompressed, not rejected" {
+async test "zstd layers are decompressed, not rejected" {
   // 用真 `zstd` 压过的层：手写夹具编码器只到 255 字节，装不下一个 tar
   // （tar 光是两个 512 字节的块就超了），所以这里直接读向量文件。
   let layer = zstd_layer_fixture()
@@ -137,7 +137,7 @@ test "zstd layers are decompressed, not rejected" {
 }
 
 ///|
-test "unknown layer compression is reported, not silently guessed" {
+async test "unknown layer compression is reported, not silently guessed" {
   let tree = FileTree::new()
   let lz4_result = try {
     apply_layer_with_media_type(
@@ -166,7 +166,7 @@ test "unknown layer compression is reported, not silently guessed" {
 }
 
 ///|
-test "compression_of maps layer media types" {
+async test "compression_of maps layer media types" {
   assert_eq(compression_of("application/vnd.oci.image.layer.v1.tar"), "none")
   assert_eq(
     compression_of("application/vnd.oci.image.layer.v1.tar+gzip"),
@@ -183,7 +183,7 @@ test "compression_of maps layer media types" {
 }
 
 ///|
-test "gzip decompression round-trips arbitrary payloads" {
+async test "gzip decompression round-trips arbitrary payloads" {
   for
     payload in [
       b"", b"a", b"a longer payload with repetition repetition", b"\x00\x01\x02\xff",
@@ -196,7 +196,7 @@ test "gzip decompression round-trips arbitrary payloads" {
 }
 
 ///|
-test "gzip rejects a corrupted stream" {
+async test "gzip rejects a corrupted stream" {
   let compressed = gzip_compress(b"payload")
   // 改掉 CRC32 的最后一个字节（trailer 8 字节的前 4 字节），应当被发现
   let bytes : Array[Byte] = []

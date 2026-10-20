@@ -35,6 +35,9 @@ pub(all) suberror DecompressError {
   Gzip(String)
   Zstd(String)
   Unsupported(String)
+  /// 解压完了但写不出去（磁盘满、fd 被关…）。不是压缩流的问题，
+  /// 文案要能一眼看出是哪一头出了事。
+  Write(String)
 } derive(Eq, Debug)
 
 ///|
@@ -49,6 +52,7 @@ pub impl Show for DecompressError with fn to_string(self) {
     Gzip(reason) => "invalid gzip stream: \{reason}"
     Zstd(reason) => "invalid zstd stream: \{reason}"
     Unsupported(algorithm) => "unsupported layer compression: \{algorithm}"
+    Write(reason) => "cannot write the decompressed layer: \{reason}"
   }
 }
 

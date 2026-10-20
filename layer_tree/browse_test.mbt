@@ -1,6 +1,6 @@
 ///|
 /// 逐层浏览：每层的树形状独立，互不影响。
-test "browse_layers snapshots each layer independently" {
+async test "browse_layers snapshots each layer independently" {
   let layer0 = build_tar([
     Dir("etc"),
     File("etc/hosts", "127.0.0.1 localhost"),
@@ -29,7 +29,7 @@ test "browse_layers snapshots each layer independently" {
 
 ///|
 /// 视图里的层号要跟层对齐。
-test "browse_layers numbers layers in order" {
+async test "browse_layers numbers layers in order" {
   let views = browse_layers([
     build_tar([File("a.txt", "1")]),
     build_tar([File("b.txt", "2")]),
@@ -46,7 +46,7 @@ test "browse_layers numbers layers in order" {
 
 ///|
 /// `changed_paths` 合并 diff 三组并去重排序。
-test "changed_paths merges diff groups" {
+async test "changed_paths merges diff groups" {
   let views = browse_layers([
     build_tar([File("keep", "x"), File("gone", "y")]),
     build_tar([Whiteout("", "gone"), File("keep", "xz"), File("new", "n")]),
@@ -58,7 +58,7 @@ test "changed_paths merges diff groups" {
 
 ///|
 /// 子视图只保留前缀自身与子树，其余不带。
-test "subtree keeps only the requested prefix" {
+async test "subtree keeps only the requested prefix" {
   let views = browse_layers([
     build_tar([
       Dir("app"),
@@ -90,7 +90,7 @@ test "subtree keeps only the requested prefix" {
 
 ///|
 /// 子视图里的节点不能被后续层污染（拷贝而非引用）。
-test "subtree nodes are copied" {
+async test "subtree nodes are copied" {
   let views = browse_layers([build_tar([File("a.txt", "hello")])]) catch {
     err => fail(err.to_string())
   }
@@ -109,7 +109,7 @@ test "subtree nodes are copied" {
 
 ///|
 /// LayerView 的 Show 能一眼看出是哪一层。
-test "layer view to_string mentions the layer" {
+async test "layer view to_string mentions the layer" {
   let views = browse_layers([build_tar([File("a", "1")])]) catch {
     err => fail(err.to_string())
   }
@@ -121,7 +121,7 @@ test "layer view to_string mentions the layer" {
 ///
 /// issue #52 的验收条件。TUI 启动要同时拿逐层快照与跨层统计，
 /// 两边共用 `DecompressedLayers`，解压就不该再发生第二次。
-test "decompress_layers decompresses each layer exactly once" {
+async test "decompress_layers decompresses each layer exactly once" {
   let layers : Array[BytesView] = [
     build_tar([File("a", "1")]),
     build_tar([File("b", "2")]),
@@ -136,7 +136,7 @@ test "decompress_layers decompresses each layer exactly once" {
 
 ///|
 /// 压缩层同样只解压一遍，且解压产物是真 tar（能直接叠树）。
-test "decompress_layers unwraps compressed layers once" {
+async test "decompress_layers unwraps compressed layers once" {
   let plain = build_tar([File("app/main", "hello")])
   let gzipped = gzip_compress(plain)
   let compressed : Array[BytesView] = [gzipped, gzipped]
@@ -152,7 +152,7 @@ test "decompress_layers unwraps compressed layers once" {
 ///|
 /// 从已解压层建视图，与 `browse_layers` 的结果逐字段一致——
 /// 「一次解压」不能顺手改掉视图语义。
-test "browse_decompressed matches browse_layers" {
+async test "browse_decompressed matches browse_layers" {
   let layers : Array[BytesView] = [
     build_tar([Dir("etc"), File("etc/hosts", "a"), File("etc/passwd", "b")]),
     gzip_compress(
@@ -191,7 +191,7 @@ test "browse_decompressed matches browse_layers" {
 /// 父目录也跟着进 `modified`：逐层口径只比大小与类型（目录恒为 0 / Directory，
 /// 所以目录那行永远不上色），聚合口径按原版 dive 的 `deriveDiffType` 把子节点的
 /// diff 往父目录合并，因此「`/app` 下面动过」这件事在目录那一行同样看得见。
-test "aggregate diff marks a path rewritten back as modified" {
+async test "aggregate diff marks a path rewritten back as modified" {
   let l0 = build_tar([Dir("app"), File("app/main", "v1")])
   let l1 = build_tar([File("app/main", "v2-longer")])
   // 第 2 层改回与第 0 层一模一样的字节
@@ -214,7 +214,7 @@ test "aggregate diff marks a path rewritten back as modified" {
 ///
 /// 逐层档与聚合档在这里给出同一条路径，但走的是两次独立比较
 /// （`[0,1]` 与 `[0,0]`），聚合口径因此不依赖逐层档的中间结果。
-test "aggregate diff keeps paths removed during the range" {
+async test "aggregate diff keeps paths removed during the range" {
   let l0 = build_tar([
     Dir("etc"),
     File("etc/hosts", "a"),
@@ -231,7 +231,7 @@ test "aggregate diff keeps paths removed during the range" {
 ///|
 /// 第 0 层的聚合 diff 就是「整棵树相对空树」，与 `diff_against_empty` 同口径
 /// （补出来的父目录也在，因为树里本来就有它）。
-test "aggregate diff of the first layer compares against the empty tree" {
+async test "aggregate diff of the first layer compares against the empty tree" {
   let l0 = build_tar([File("app/main", "v1")])
   let views = browse_layers([l0]) catch { err => fail(err.to_string()) }
   assert_eq(views[0].aggregate.added, ["/app", "/app/main"])
@@ -241,7 +241,7 @@ test "aggregate diff of the first layer compares against the empty tree" {
 
 ///|
 /// 聚合体积：`base = layer - 1` 与逐层档一致，`base = -1` 是「相对空树一共写了多少」。
-test "aggregate size delta follows the same range as the aggregate diff" {
+async test "aggregate size delta follows the same range as the aggregate diff" {
   let l0 = build_tar([File("app/main", "abcd")])
   let l1 = build_tar([File("app/main", "ab")])
   let views = browse_layers([l0, l1]) catch { err => fail(err.to_string()) }

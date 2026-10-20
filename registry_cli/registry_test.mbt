@@ -203,17 +203,21 @@ fn fake_config(diff_ids : Array[String]) -> Bytes {
 
 ///|
 /// 造一层只有单个文件的 tar，返回 `(tar 字节, diff_id)`。
-fn fake_layer(path : String, content : String) -> (Bytes, String) {
+async fn fake_layer(path : String, content : String) -> (Bytes, String) {
+  // 只在测试夹具里用：写完的 tar 本来就要整段留在内存里当假 registry 的 body
   let data = @encoding.encode(UTF8, content)
   let writer = @layer_tree.TarWriter::new()
-  writer.write_entry(@layer_tree.tar_file_entry(path, data.length()), data)
-  let tar = writer.finish()
+  let sink = @registry_cli.BytesBuffer::new()
+  let out : &@io.Writer = sink
+  writer.write_entry(out, @layer_tree.tar_file_entry(path, data.length()), data)
+  writer.finish(out)
+  let tar = sink.to_bytes()
   (tar, @oci_spec.Digest::from_sha256(tar).to_string())
 }
 
 ///|
 /// 一份两层的假镜像：层是 gzip 的，config 记着未压缩 tar 的 diff id。
-fn fake_image() -> FakeImage {
+async fn fake_image() -> FakeImage {
   let (first, first_diff) = fake_layer("etc/motd", "hello\n")
   let (second, second_diff) = fake_layer("opt/app/run.sh", "#!/bin/sh\n")
   {
@@ -287,7 +291,8 @@ async fn pull_from(
 ///|
 /// 拉一份直接给 manifest 的镜像（最常见的情况）。
 async test "pull a plain manifest image" {
-  with_fake_registry(fake_image(), body=async fn(host) {
+  let image = fake_image()
+  with_fake_registry(image, body=async fn(host) {
     let reference = @registry_cli.parse_reference("test/image:latest") catch {
       _ => fail("reference should parse")
     }
@@ -373,7 +378,8 @@ async test "pull reports the platforms when none match" {
 ///|
 /// 401 → 换票 → 重放这条链路。
 async test "pull survives a Bearer challenge" {
-  with_fake_registry(fake_image(), require_token=true, body=async fn(host) {
+  let image = fake_image()
+  with_fake_registry(image, require_token=true, body=async fn(host) {
     let reference = @registry_cli.parse_reference("test/image:latest") catch {
       _ => fail("reference should parse")
     }

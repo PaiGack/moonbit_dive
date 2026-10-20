@@ -32,7 +32,7 @@ fn render_fixture() -> (Screen, Frame) {
 
 ///|
 /// 标题行有镜像名，右侧有层号。
-test "draw paints the header with image and layer" {
+async test "draw paints the header with image and layer" {
   let (screen, frame) = render_fixture()
   draw(screen, frame)
   let header = screen.row_string(0)
@@ -43,7 +43,7 @@ test "draw paints the header with image and layer" {
 
 ///|
 /// 状态行在最后一行，右侧是光标位置。
-test "draw paints the status bar" {
+async test "draw paints the status bar" {
   let (screen, frame) = render_fixture()
   draw(screen, frame)
   let status = screen.row_string(23)
@@ -56,7 +56,7 @@ test "draw paints the status bar" {
 
 ///|
 /// 树行带缩进、名称与层号；光标行以 `>` 起头。
-test "draw paints tree rows with cursor and layer" {
+async test "draw paints tree rows with cursor and layer" {
   let (screen, frame) = render_fixture()
   draw(screen, frame)
   // 树的内容区从第 2 行（0 起）起笔：第 1 行是上边框
@@ -69,7 +69,7 @@ test "draw paints tree rows with cursor and layer" {
 
 ///|
 /// 目录行前带折叠标记：展开是 `-`。
-test "draw marks expanded directories" {
+async test "draw marks expanded directories" {
   let (screen, frame) = render_fixture()
   draw(screen, frame)
   let body = screen.row_string(2)
@@ -78,7 +78,7 @@ test "draw marks expanded directories" {
 
 ///|
 /// 没有详情数据源时右栏给一行提示，不画半截面板。
-test "draw explains a missing detail source instead of leaving it blank" {
+async test "draw explains a missing detail source instead of leaving it blank" {
   let (screen, frame) = render_fixture()
   draw(screen, frame)
   // 右栏内容区第一行（列 42，行 2：框占了外圈）
@@ -88,7 +88,7 @@ test "draw explains a missing detail source instead of leaving it blank" {
 
 ///|
 /// 有详情源时右栏出效率与浪费信息。
-test "draw paints the detail pane with a source" {
+async test "draw paints the detail pane with a source" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
   entries.set("/etc/hosts", {
@@ -119,7 +119,7 @@ test "draw paints the detail pane with a source" {
 
 ///|
 /// 光标落到有写记录的路径上时，右栏出这份记录。
-test "draw shows the size record for the selected path" {
+async test "draw shows the size record for the selected path" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
   entries.set("/etc/hosts", {
@@ -152,7 +152,7 @@ test "draw shows the size record for the selected path" {
 ///
 /// 表里只出 `cumulative - min` 这一个口径，抬头写明它是什么，
 /// 免得被当成 `wasteful paths` 的 `wasted_bytes`。
-test "draw paints the inefficient files table under the detail" {
+async test "draw paints the inefficient files table under the detail" {
   let (screen, base) = render_fixture()
   let source : DetailSource = {
     entries: Map([]),
@@ -179,7 +179,7 @@ test "draw paints the inefficient files table under the detail" {
 
 ///|
 /// 没有 inefficient 行时（干净镜像）表里给一句 `(none)`，不留半截表格。
-test "draw marks an empty inefficient table" {
+async test "draw marks an empty inefficient table" {
   let (screen, base) = render_fixture()
   let source : DetailSource = {
     entries: Map([]),
@@ -199,7 +199,7 @@ test "draw marks an empty inefficient table" {
 
 ///|
 /// 人类可读字节数。
-test "human_size formats bytes" {
+async test "human_size formats bytes" {
   assert_eq(human_size(0), "0 B")
   assert_eq(human_size(512), "512 B")
   assert_eq(human_size(1024), "1 KB")
@@ -210,7 +210,7 @@ test "human_size formats bytes" {
 
 ///|
 /// 尾部截断保留结尾，前面加省略号。
-test "truncate_keep_tail keeps the tail" {
+async test "truncate_keep_tail keeps the tail" {
   let text = "/very/long/path/to/some/file.txt"
   let cut = truncate_keep_tail(text, 12)
   assert_true(cut.has_prefix("..."))
@@ -221,7 +221,7 @@ test "truncate_keep_tail keeps the tail" {
 
 ///|
 /// 名称与右侧的大小/层号之间要有空格，否则读起来会黏成一个词。
-test "draw keeps a gap between the name and the size tail" {
+async test "draw keeps a gap between the name and the size tail" {
   let tree = @layer_tree.FileTree::new()
   let tar = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("app/main", "x"),
@@ -255,7 +255,7 @@ test "draw keeps a gap between the name and the size tail" {
 
 ///|
 /// 聚焦面板的框标题带 `>`，未聚焦的没有。
-test "draw marks the focused pane in the border title" {
+async test "draw marks the focused pane in the border title" {
   let (screen, base) = render_fixture()
   draw(screen, base)
   assert_true(screen.row_string(1).contains(">files"))
@@ -268,7 +268,7 @@ test "draw marks the focused pane in the border title" {
 
 ///|
 /// 焦点不在树上时，光标行不再用 `>`，改用 `:`——位置仍在，但不装作还能操作。
-test "draw keeps the cursor row visible when the tree loses focus" {
+async test "draw keeps the cursor row visible when the tree loses focus" {
   let (screen, base) = render_fixture()
   base.focus = Focus::Detail
   draw(screen, base)
@@ -280,7 +280,7 @@ test "draw keeps the cursor row visible when the tree loses focus" {
 
 ///|
 /// 状态行提示随后焦点变化：焦点在详情面板上时说的是「滚动」。
-test "draw hints the keys of the focused pane" {
+async test "draw hints the keys of the focused pane" {
   let (screen, base) = render_fixture()
   draw(screen, base)
   // 树那侧提示里现在给档位键留了位（`^A/^L diff`），折叠提示换成了它
@@ -295,7 +295,7 @@ test "draw hints the keys of the focused pane" {
 
 ///|
 /// 帮助浮层展开时铺在主体下半部分，并且盖住树的内容。
-test "draw paints the help overlay above the panes" {
+async test "draw paints the help overlay above the panes" {
   let (screen, base) = render_fixture()
   let layout = Layout::compute(80, 24, help_visible=true)
   let help_pane = layout.pane(PaneId::Help).unwrap()
@@ -313,7 +313,7 @@ test "draw paints the help overlay above the panes" {
 
 ///|
 /// 详情面板的滚动：滚下去之后第一行不再是路径。
-test "draw scrolls the detail pane" {
+async test "draw scrolls the detail pane" {
   let (screen, base) = render_fixture()
   let entries : Map[String, DetailEntry] = Map([])
   entries.set("/etc/hosts", {
@@ -344,7 +344,7 @@ test "draw scrolls the detail pane" {
 
 ///|
 /// 建一个带 diff 的帧：`/etc/new` 新增、`/etc/hosts` 改写、`/etc` 没动过。
-fn diff_fixture() -> (Screen, Frame) raise {
+async fn diff_fixture() -> (Screen, Frame) {
   let base = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("etc"),
     @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
@@ -387,7 +387,7 @@ fn diff_fixture() -> (Screen, Frame) raise {
 
 ///|
 /// 三类变化各上各的色；没动过的行暗一档（光标行除外，见下一个用例）。
-test "draw colours rows by their diff status" {
+async test "draw colours rows by their diff status" {
   let (screen, frame) = diff_fixture()
   draw(screen, frame)
   let pane = frame.layout.pane(PaneId::Tree).unwrap()
@@ -406,7 +406,7 @@ test "draw colours rows by their diff status" {
 
 ///|
 /// 光标行不换色：位置已经由 `>` 标出，再叠颜色会让两件事互相盖住。
-test "draw leaves the cursor row in the default style" {
+async test "draw leaves the cursor row in the default style" {
   let (screen, frame) = diff_fixture()
   frame.view.move_to(frame.view.index_of_path("/etc/new").unwrap())
   draw(screen, frame)
@@ -426,7 +426,7 @@ test "draw leaves the cursor row in the default style" {
 
 ///|
 /// 状态行带图例：三组「符号 + 词」各自上色，颜色不自解释。
-test "draw paints the diff legend in the status bar" {
+async test "draw paints the diff legend in the status bar" {
   let (screen, frame) = diff_fixture()
   draw(screen, frame)
   let status = screen.row_string(frame.layout.status_row)
@@ -450,7 +450,7 @@ test "draw paints the diff legend in the status bar" {
 
 ///|
 /// 窄屏放不下图例时整块不画：状态行被啃掉一半比没有图例更难看。
-test "draw drops the whole legend when the status row is too narrow" {
+async test "draw drops the whole legend when the status row is too narrow" {
   let (_, base) = render_fixture()
   // 15 列的图例 + 1 格间隔 + 位置计数，20 列里塞不下
   let layout = Layout::compute(18, 10)
@@ -465,7 +465,7 @@ test "draw drops the whole legend when the status row is too narrow" {
 /// 标题行写出当前 diff 档位：单层档是 `layer`，聚合档是 `agg L0..Ln`。
 ///
 /// 档位必须可见，否则「同一条路径为什么这次是绿的、下次是黄的」没人解释得清。
-test "draw names the active compare mode in the header" {
+async test "draw names the active compare mode in the header" {
   let (screen, base) = diff_fixture()
   draw(screen, base)
   assert_true(screen.row_string(0).contains("layer"))
@@ -486,7 +486,7 @@ test "draw names the active compare mode in the header" {
 
 ///|
 /// `diff_fixture` 那棵树的最终形状，够渲染层用（渲染测试只读行，不碰数据源）。
-fn fixture_tree() -> @layer_tree.FileTree {
+async fn fixture_tree() -> @layer_tree.FileTree {
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("etc"),
     @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
@@ -517,7 +517,7 @@ fn aggregate_diff() -> @layer_tree.Diff {
 
 ///|
 /// 删除列表浮层：`d` 打开时铺在浮层位置，逐条列出被删的路径并染红。
-test "draw lists the removed paths in the overlay" {
+async test "draw lists the removed paths in the overlay" {
   let (screen, base) = diff_fixture()
   let layout = Layout::compute(
     80,
@@ -554,7 +554,7 @@ test "draw lists the removed paths in the overlay" {
 
 ///|
 /// 没有删除时列表给一句说明，不留空面板（免得看起来像坏了）。
-test "the removed overlay explains an empty list" {
+async test "the removed overlay explains an empty list" {
   let (screen, base) = diff_fixture()
   let layout = Layout::compute(80, 24, help_visible=true)
   draw(screen, {

@@ -11,7 +11,7 @@ fn expect_invalid(raw : String) -> Bool {
 }
 
 ///|
-test "docker hub short name gets library prefix" {
+async test "docker hub short name gets library prefix" {
   // 引用解析是纯函数，失败即用例不成立，直接 fail
   let reference = @registry_cli.parse_reference("nginx") catch {
     _ => fail("reference should parse")
@@ -23,7 +23,7 @@ test "docker hub short name gets library prefix" {
 }
 
 ///|
-test "explicit tag is kept" {
+async test "explicit tag is kept" {
   let reference = @registry_cli.parse_reference("nginx:1.27") catch {
     _ => fail("reference should parse")
   }
@@ -33,7 +33,7 @@ test "explicit tag is kept" {
 }
 
 ///|
-test "org image keeps its path" {
+async test "org image keeps its path" {
   let reference = @registry_cli.parse_reference("moonbitlang/dive:0.1") catch {
     _ => fail("reference should parse")
   }
@@ -43,7 +43,7 @@ test "org image keeps its path" {
 }
 
 ///|
-test "registry host is separated by a dot" {
+async test "registry host is separated by a dot" {
   let reference = @registry_cli.parse_reference("ghcr.io/owner/repo:tag") catch {
     _ => fail("reference should parse")
   }
@@ -54,7 +54,7 @@ test "registry host is separated by a dot" {
 }
 
 ///|
-test "registry with a port keeps the port out of the tag" {
+async test "registry with a port keeps the port out of the tag" {
   let reference = @registry_cli.parse_reference("localhost:5000/library/nginx") catch {
     _ => fail("reference should parse")
   }
@@ -70,7 +70,7 @@ test "registry with a port keeps the port out of the tag" {
 }
 
 ///|
-test "digest reference wins over tag" {
+async test "digest reference wins over tag" {
   let digest = "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
   let reference = @registry_cli.parse_reference("nginx@\{digest}") catch {
     _ => fail("reference should parse")
@@ -81,7 +81,7 @@ test "digest reference wins over tag" {
 }
 
 ///|
-test "canonical renders the full name" {
+async test "canonical renders the full name" {
   let reference = @registry_cli.parse_reference("nginx:latest") catch {
     _ => fail("reference should parse")
   }
@@ -94,13 +94,13 @@ test "canonical renders the full name" {
 }
 
 ///|
-test "empty reference is rejected" {
+async test "empty reference is rejected" {
   assert_true(expect_invalid(""))
   assert_true(expect_invalid("   "))
 }
 
 ///|
-test "url scheme is rejected with a hint" {
+async test "url scheme is rejected with a hint" {
   let error = try
     @registry_cli.parse_reference("https://ghcr.io/owner/repo:tag")
   catch {
@@ -116,12 +116,12 @@ test "url scheme is rejected with a hint" {
 }
 
 ///|
-test "bad digest is rejected" {
+async test "bad digest is rejected" {
   assert_true(expect_invalid("nginx@sha256:beef"))
 }
 
 ///|
-test "uppercase repository is rejected" {
+async test "uppercase repository is rejected" {
   let error = try @registry_cli.parse_reference("Library/Nginx") catch {
     error => error
   } noraise {
@@ -135,7 +135,7 @@ test "uppercase repository is rejected" {
 }
 
 ///|
-test "empty path segments are rejected" {
+async test "empty path segments are rejected" {
   assert_true(expect_invalid("ghcr.io//repo"))
   assert_true(expect_invalid("ghcr.io/repo/"))
 }

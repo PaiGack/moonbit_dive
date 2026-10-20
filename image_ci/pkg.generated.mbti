@@ -12,9 +12,9 @@ pub fn config_error_annotation(ConfigError, String) -> String
 
 pub fn config_error_to_json(ConfigError, String) -> Json
 
-pub fn covered_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise
+pub async fn covered_fixture() -> (@image_analysis.Report, @layer_tree.FileTree)
 
-pub fn covered_pair() -> (@image_analysis.Report, @layer_tree.FileTree) raise
+pub async fn covered_pair() -> (@image_analysis.Report, @layer_tree.FileTree)
 
 pub fn exit_code_of(CheckResult) -> Int32
 
@@ -24,7 +24,7 @@ pub let exit_ok : Int32
 
 pub let exit_rule_failed : Int32
 
-pub fn fat_fixture() -> (@image_analysis.Report, @layer_tree.FileTree) raise
+pub async fn fat_fixture() -> (@image_analysis.Report, @layer_tree.FileTree)
 
 pub fn percent1(Double) -> String
 
@@ -104,7 +104,7 @@ pub(all) struct LayerSource {
   diff_id : String
 } derive(@debug.Debug)
 pub fn LayerSource::output(Self, &Logger) -> Unit
-pub fn LayerSource::raw_bytes(Self) -> Bytes raise ImageError
+pub async fn LayerSource::raw_bytes(Self) -> Bytes raise ImageError
 pub fn LayerSource::to_repr(Self) -> @debug.Repr
 pub fn LayerSource::to_string(Self) -> String
 pub impl Show for LayerSource

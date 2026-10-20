@@ -49,7 +49,7 @@ fn snapshot_paths(tree : @layer_tree.FileTree) -> Map[String, Int32] {
 ///
 /// `tree` 会被推进到最后一层；返回的 `Analysis` 是纯统计结果，
 /// 不依赖 `tree` 之后的形态。`media_types` 缺省按未压缩处理。
-pub fn analyze_layers(
+pub async fn analyze_layers(
   tree : @layer_tree.FileTree,
   layers : Array[BytesView],
   media_types~ : Array[String] = [],

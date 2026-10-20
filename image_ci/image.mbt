@@ -369,7 +369,9 @@ fn read_utf8(path : String, what : String) -> String raise ImageError {
 /// 就是原始的 `tar+zstd`，而 `manifest.json` 那条老路径不带 media type。
 /// 认不出来就会把压缩字节当 tar 解析，报一个「tar 被截断」——看着像坏镜像，
 /// 其实是没解压。
-pub fn LayerSource::raw_bytes(self : LayerSource) -> Bytes raise ImageError {
+pub async fn LayerSource::raw_bytes(
+  self : LayerSource,
+) -> Bytes raise ImageError {
   let algorithm = @layer_tree.compression_of(self.media_type)
   let effective = if algorithm != "none" {
     algorithm

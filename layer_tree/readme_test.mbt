@@ -1,6 +1,6 @@
 ///|
 /// README 里的示例：多层 tar 的 whiteout 与 diff。
-test "README example" {
+async test "README example" {
   // 手工造两层 tar（真实场景下数据来自镜像 registry）
   let layer0 = build_tar([
     Dir("etc"),
@@ -32,7 +32,7 @@ test "README example" {
 
 ///|
 /// README 里的逐层浏览示例。
-test "README layer browse" {
+async test "README layer browse" {
   let layer0 = build_tar([TarEntrySpec::File("app/main.js", "v1")])
   let layer1 = build_tar([TarEntrySpec::File("app/main.js", "v2-longer")])
   let views = browse_layers([layer0, layer1]) catch {
@@ -56,7 +56,7 @@ test "README layer browse" {
 
 ///|
 /// README 里的聚合档示例。
-test "README aggregate compare" {
+async test "README aggregate compare" {
   let l0 = build_tar([Dir("app"), File("app/main", "v1")])
   let l1 = build_tar([File("app/main", "v2-longer")])
   let l2 = build_tar([File("app/main", "v1")])

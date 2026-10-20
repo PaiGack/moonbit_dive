@@ -1,6 +1,6 @@
 ///|
 /// 一份有代表性的镜像：基础层、覆盖层、删除层。
-fn report_fixture() -> (@layer_tree.FileTree, Analysis) raise {
+async fn report_fixture() -> (@layer_tree.FileTree, Analysis) {
   analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("app"),
@@ -15,7 +15,7 @@ fn report_fixture() -> (@layer_tree.FileTree, Analysis) raise {
 }
 
 ///|
-test "text report snapshots the whole picture" {
+async test "text report snapshots the whole picture" {
   let (tree, analysis) = report_fixture()
   inspect(
     render_text_report(build_report(analysis, tree)),
@@ -45,7 +45,7 @@ test "text report snapshots the whole picture" {
 }
 
 ///|
-test "json report has the documented shape" {
+async test "json report has the documented shape" {
   let (tree, analysis) = report_fixture()
   let json = report_to_json(build_report(analysis, tree))
   let fields = match json {
@@ -87,7 +87,7 @@ test "json report has the documented shape" {
 }
 
 ///|
-test "json report text is stable" {
+async test "json report text is stable" {
   let (tree, analysis) = analyze_fixture([
     layer_fixture([@layer_tree.TarEntrySpec::File("app/main.js", "0123456789")]),
     layer_fixture([
@@ -160,7 +160,7 @@ test "json report text is stable" {
 }
 
 ///|
-test "clean image reports no wasteful paths" {
+async test "clean image reports no wasteful paths" {
   let (tree, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("bin"),
@@ -174,7 +174,7 @@ test "clean image reports no wasteful paths" {
 }
 
 ///|
-test "largest directories rank by subtree size" {
+async test "largest directories rank by subtree size" {
   let (tree, _) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("small"),

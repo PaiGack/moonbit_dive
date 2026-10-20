@@ -1,5 +1,5 @@
 ///|
-test "human_bytes keeps the unit readable" {
+async test "human_bytes keeps the unit readable" {
   assert_eq(@registry_cli.human_bytes(0L), "0 B")
   assert_eq(@registry_cli.human_bytes(512L), "512 B")
   // 一位小数才看得出「还在动」
@@ -10,7 +10,7 @@ test "human_bytes keeps the unit readable" {
 }
 
 ///|
-test "short_digest keeps the algorithm and a dozen hex chars" {
+async test "short_digest keeps the algorithm and a dozen hex chars" {
   let digest = "sha256:0123456789abcdef0123456789abcdef"
   assert_eq(@registry_cli.short_digest(digest), "sha256:0123456789ab")
   // 本来就很短的不截
@@ -19,7 +19,7 @@ test "short_digest keeps the algorithm and a dozen hex chars" {
 
 ///|
 /// 进度事件是给人看的：`Show` 至少要说清「第几层、多少字节」。
-test "events render into something a human can read" {
+async test "events render into something a human can read" {
   let text = @registry_cli.PullEvent::LayerProgress(
     index=1,
     received=1024L * 1024L,
@@ -32,7 +32,7 @@ test "events render into something a human can read" {
 ///|
 /// 渲染器要能把「第几层 / 百分比 / 整体进度」算对：
 /// 事件流是唯一真相，测试直接喂事件、看它攒下的那一行。
-test "reporter tracks per-layer and overall percentages" {
+async test "reporter tracks per-layer and overall percentages" {
   let reporter = @registry_cli.PullReporter::new()
   reporter.render(@registry_cli.PullEvent::Plan(layers=2, bytes=200L))
   reporter.render(
@@ -66,7 +66,7 @@ test "reporter tracks per-layer and overall percentages" {
 ///|
 /// 管道里不能用 `\r` 原地重画：每格要独立成行。
 /// 这里只看状态机是否按预期攒行（真正的写终端在 `stderr_stub.c` 里）。
-test "non-interactive reporter emits one line per update" {
+async test "non-interactive reporter emits one line per update" {
   let reporter = @registry_cli.PullReporter::with_interactive(interactive=false)
   reporter.render(@registry_cli.PullEvent::Plan(layers=1, bytes=100L))
   reporter.render(

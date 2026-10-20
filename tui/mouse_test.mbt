@@ -16,7 +16,7 @@ fn mouse(
 
 ///|
 /// 左键按下是选中，Ctrl + 左键是切焦点。
-test "mouse press maps to select or focus" {
+async test "mouse press maps to select or focus" {
   assert_eq(
     action_of_mouse(
       mouse(@input.MouseEventKind::Press(@input.MouseButton::Left)),
@@ -33,7 +33,7 @@ test "mouse press maps to select or focus" {
 
 ///|
 /// 右键是切展开态；`Ctrl + 右键` 是反向切焦点（与 `Shift+Tab` 对称）。
-test "right click folds, ctrl right click switches focus backwards" {
+async test "right click folds, ctrl right click switches focus backwards" {
   assert_eq(
     action_of_mouse(
       mouse(@input.MouseEventKind::Press(@input.MouseButton::Right)),
@@ -50,7 +50,7 @@ test "right click folds, ctrl right click switches focus backwards" {
 
 ///|
 /// 滚轮上下各走一步；左右滚轮本轮不接。
-test "mouse wheel maps to scrolling" {
+async test "mouse wheel maps to scrolling" {
   assert_eq(
     action_of_mouse(
       mouse(@input.MouseEventKind::Scroll(@input.MouseScroll::Up)),
@@ -73,7 +73,7 @@ test "mouse wheel maps to scrolling" {
 
 ///|
 /// 拖拽 / 移动 / 松开全部忽略：本轮不做拖拽与框选（#51 非目标）。
-test "mouse drag and release are ignored" {
+async test "mouse drag and release are ignored" {
   assert_eq(
     action_of_mouse(
       mouse(@input.MouseEventKind::Drag(@input.MouseButton::Left)),
@@ -102,7 +102,7 @@ test "mouse drag and release are ignored" {
 ///|
 /// 鼠标跟踪模式位（#62）：默认 `Drag`（比 #51 的 `Click` 多一档「按住移动」），
 /// 像素鼠标终端上退到 `Motion`。
-test "mouse tracking mode is drag by default and motion for pixel reports" {
+async test "mouse tracking mode is drag by default and motion for pixel reports" {
   assert_eq(
     mouse_tracking_mode(pixel_mouse=false),
     @tty.MouseTrackingMode::Drag,
@@ -117,7 +117,7 @@ test "mouse tracking mode is drag by default and motion for pixel reports" {
 /// 像素口径的坐标换算回格子（#62）。
 ///
 /// 1600x1200 像素 / 80x24 格 → 每格 20x50 像素。
-test "pixel mouse coordinates are converted back to cells" {
+async test "pixel mouse coordinates are converted back to cells" {
   // 像素 (col 1030, row 51)：每格 12x2（从 1030/80、51/24 反推）
   // 换算成格子是第 24 行、第 80 列（夹在边界上）
   let event = resolve_mouse(
@@ -141,7 +141,7 @@ test "pixel mouse coordinates are converted back to cells" {
 /// `resolve_mouse` 的每格像素是**从报上来的坐标反推**的（`col / viewport_cols`），
 /// 不是终端真报的格子尺寸；反推出来偏小的时候，换算结果会贴到视口边界，
 /// 这时夹回边界内——宁可落点偏一点，也不能点到屏幕外。
-test "pixel conversion stays inside the viewport" {
+async test "pixel conversion stays inside the viewport" {
   let event = resolve_mouse(
     mouse(
       @input.MouseEventKind::Press(@input.MouseButton::Left),
@@ -157,7 +157,7 @@ test "pixel conversion stays inside the viewport" {
 
 ///|
 /// 格子口径的坐标原样返回（普通终端走这条路，一个字节都不动）。
-test "cell coordinates pass through untouched" {
+async test "cell coordinates pass through untouched" {
   let event = resolve_mouse(
     mouse(
       @input.MouseEventKind::Press(@input.MouseButton::Right),
@@ -174,7 +174,7 @@ test "cell coordinates pass through untouched" {
 
 ///|
 /// 换算不会把点推到屏幕外：像素坐标比「格子数 × 每格像素」大时夹到边上。
-test "pixel conversion clamps to the viewport" {
+async test "pixel conversion clamps to the viewport" {
   let event = resolve_mouse(
     mouse(
       @input.MouseEventKind::Press(@input.MouseButton::Left),
@@ -190,6 +190,6 @@ test "pixel conversion clamps to the viewport" {
 
 ///|
 /// 滚轮步长是个小常数：一次一屏会滑过头，一次一行搓不动。
-test "mouse wheel step is small" {
+async test "mouse wheel step is small" {
   assert_eq(scroll_step(), 3)
 }

@@ -10,10 +10,10 @@ fn layer_fixture(entries : Array[@layer_tree.TarEntrySpec]) -> Bytes {
 
 ///|
 /// 把一组层 tar 跑成 `BytesView`，再交给分析。
-fn analyze_fixture(
+async fn analyze_fixture(
   layers : Array[Bytes],
   media_types~ : Array[String] = [],
-) -> (@layer_tree.FileTree, Analysis) raise {
+) -> (@layer_tree.FileTree, Analysis) {
   let tree = @layer_tree.FileTree::new()
   let views : Array[BytesView] = layers.map(fn(layer) { (layer : BytesView) })
   let analysis = analyze_layers(tree, views, media_types~) catch {
@@ -23,7 +23,7 @@ fn analyze_fixture(
 }
 
 ///|
-test "single layer image wastes nothing" {
+async test "single layer image wastes nothing" {
   let (tree, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("etc"),
@@ -47,7 +47,7 @@ test "single layer image wastes nothing" {
 }
 
 ///|
-test "overwriting a file counts the old bytes as waste" {
+async test "overwriting a file counts the old bytes as waste" {
   let (_, analysis) = analyze_fixture([
     layer_fixture([@layer_tree.TarEntrySpec::File("app/main.js", "12345")]),
     layer_fixture([@layer_tree.TarEntrySpec::File("app/main.js", "1234567890")]),
@@ -69,7 +69,7 @@ test "overwriting a file counts the old bytes as waste" {
 }
 
 ///|
-test "whiteout charges the deleted bytes as waste" {
+async test "whiteout charges the deleted bytes as waste" {
   let (tree, analysis) = analyze_fixture([
     layer_fixture([@layer_tree.TarEntrySpec::File("big", "0123456789")]),
     layer_fixture([@layer_tree.TarEntrySpec::Whiteout("", "big")]),
@@ -87,7 +87,7 @@ test "whiteout charges the deleted bytes as waste" {
 }
 
 ///|
-test "whiteout on a directory charges its whole subtree" {
+async test "whiteout on a directory charges its whole subtree" {
   let (_, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("var"),
@@ -105,7 +105,7 @@ test "whiteout on a directory charges its whole subtree" {
 }
 
 ///|
-test "opaque directory erases previous content but keeps the new writes" {
+async test "opaque directory erases previous content but keeps the new writes" {
   let (tree, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("etc"),
@@ -127,7 +127,7 @@ test "opaque directory erases previous content but keeps the new writes" {
 }
 
 ///|
-test "same-layer rewrites only count once" {
+async test "same-layer rewrites only count once" {
   // 同一层里写两次同名路径：后一次覆盖前一次，同层内的浪费不被单列，
   // 树上和总量都以最后一次为准
   let (tree, analysis) = analyze_fixture([
@@ -144,7 +144,7 @@ test "same-layer rewrites only count once" {
 }
 
 ///|
-test "directories and links do not add bytes" {
+async test "directories and links do not add bytes" {
   let (_, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("bin"),
@@ -161,7 +161,7 @@ test "directories and links do not add bytes" {
 }
 
 ///|
-test "gzip layers are decompressed before accounting" {
+async test "gzip layers are decompressed before accounting" {
   let plain = layer_fixture([@layer_tree.TarEntrySpec::File("a", "0123456789")])
   let gzipped = @layer_tree.gzip_compress(plain)
   let (_, analysis) = analyze_fixture([gzipped], media_types=[
@@ -172,7 +172,7 @@ test "gzip layers are decompressed before accounting" {
 }
 
 ///|
-test "waste ranking lists the worst paths first" {
+async test "waste ranking lists the worst paths first" {
   let (_, analysis) = analyze_fixture([
     layer_fixture([
       @layer_tree.TarEntrySpec::File("small", "ab"),
@@ -196,7 +196,7 @@ test "waste ranking lists the worst paths first" {
 /// issue #52 合并了两条链路，验收要求「报告数字与合并前一致」：
 /// 这里把同一批层分别喂给两条入口，逐字段比对，合并只许省掉一次解压，
 /// 不许动任何数字。
-test "analyze_decompressed agrees with analyze_layers" {
+async test "analyze_decompressed agrees with analyze_layers" {
   let layers : Array[BytesView] = [
     layer_fixture([
       @layer_tree.TarEntrySpec::Dir("app"),
@@ -245,7 +245,7 @@ test "analyze_decompressed agrees with analyze_layers" {
 }
 
 ///|
-test "analyze fails loudly on a broken tar" {
+async test "analyze fails loudly on a broken tar" {
   let tree = @layer_tree.FileTree::new()
   let broken : Array[BytesView] = [b"\x00\x01\x02"]
   let result = try {

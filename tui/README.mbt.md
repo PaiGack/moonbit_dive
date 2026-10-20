@@ -41,7 +41,7 @@ app.mbt         L4 主循环：进全屏 → 取尺寸 → 组帧 → 等事件 
 
 ```moonbit check
 ///|
-test "README example" {
+async test "README example" {
   // 造一个两层的树：L1 把 /app/main 改写了
   let l0 = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::Dir("app"),

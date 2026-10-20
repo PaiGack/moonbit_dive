@@ -2,6 +2,7 @@
 package "PaiGack/dive/layer_tree"
 
 import {
+  "moonbitlang/async/io",
   "moonbitlang/core/buffer",
   "moonbitlang/core/debug",
 }
@@ -9,15 +10,15 @@ import {
 // Values
 pub fn apply_layer(FileTree, BytesView, Int32) -> Unit raise TarError
 
-pub fn apply_layer_with_media_type(FileTree, BytesView, String, Int32) -> Unit raise LayerError
+pub async fn apply_layer_with_media_type(FileTree, BytesView, String, Int32) -> Unit raise LayerError
 
-pub fn apply_layers_with_diffs(Array[BytesView], media_types? : Array[String]) -> LayerDiffResult raise LayerError
+pub async fn apply_layers_with_diffs(Array[BytesView], media_types? : Array[String]) -> LayerDiffResult raise LayerError
 
 pub fn base_name(String) -> String
 
 pub fn browse_decompressed(DecompressedLayers, content_hashes? : Bool) -> Array[LayerView]
 
-pub fn browse_layers(Array[BytesView], media_types? : Array[String]) -> Array[LayerView] raise LayerError
+pub async fn browse_layers(Array[BytesView], media_types? : Array[String]) -> Array[LayerView] raise LayerError
 
 pub fn build_tar(Array[TarEntrySpec]) -> Bytes
 
@@ -31,9 +32,11 @@ pub fn content_scan(BytesView) -> ContentScan
 
 pub fn crc32(BytesView) -> UInt32
 
-pub fn decompress_layer(BytesView, String) -> Bytes raise DecompressError
+pub async fn decompress_layer(BytesView, String) -> Bytes raise DecompressError
 
-pub fn decompress_layers(Array[BytesView], media_types? : Array[String]) -> DecompressedLayers raise LayerError
+pub async fn decompress_layer_to(BytesView, String, &@io.Writer) -> Unit raise DecompressError
+
+pub async fn decompress_layers(Array[BytesView], media_types? : Array[String]) -> DecompressedLayers raise LayerError
 
 pub let default_render_options : RenderOptions
 
@@ -45,9 +48,13 @@ pub fn diff_snapshots(FileTree, FileTree, Int32, Int32) -> Diff
 
 pub fn gzip_compress(BytesView) -> Bytes
 
-pub fn gzip_decompress(BytesView) -> Bytes raise DecompressError
+pub async fn gzip_decompress(BytesView) -> Bytes raise DecompressError
 
-pub fn inflate(BytesView) -> Bytes raise DecompressError
+pub async fn gzip_decompress_to(BytesView, &@io.Writer) -> Unit raise DecompressError
+
+pub async fn inflate(BytesView) -> Bytes raise DecompressError
+
+pub async fn inflate_to(BytesView, &@io.Writer) -> Unit raise DecompressError
 
 pub fn join_path(String, String) -> String
 
@@ -55,7 +62,7 @@ pub fn make_opaque(FileTree, String, Int32) -> Unit
 
 pub let minimal_render_options : RenderOptions
 
-pub fn normalize_path(String) -> Result[String, PathError]
+pub fn normalize_path(String) -> String raise PathError
 
 pub let opaque_marker : String
 
@@ -102,6 +109,7 @@ pub(all) suberror DecompressError {
   Gzip(String)
   Zstd(String)
   Unsupported(String)
+  Write(String)
 } derive(Eq, @debug.Debug)
 pub fn DecompressError::equal(Self, Self) -> Bool
 pub fn DecompressError::not_equal(Self, Self) -> Bool
@@ -138,6 +146,7 @@ pub(all) suberror TarError {
   Truncated(String)
   BadHeader(String)
   InvalidNumber(String, String)
+  NotFound
 } derive(Eq, @debug.Debug)
 pub fn TarError::equal(Self, Self) -> Bool
 pub fn TarError::not_equal(Self, Self) -> Bool
@@ -154,10 +163,28 @@ pub struct BitReader {
 } derive(@debug.Debug)
 pub fn BitReader::to_repr(Self) -> @debug.Repr
 
+pub struct BytesSink {
+  buffer : @buffer.Buffer
+}
+pub async fn BytesSink::write(Self, &@io.Data) -> Unit
+pub async fn BytesSink::write_once(Self, Bytes, offset~ : Int32, len~ : Int32) -> Int32
+pub async fn BytesSink::write_reader(Self, &@io.Reader) -> Unit
+pub impl @io.Writer for BytesSink
+
 pub struct ContentScan {
   hashes : Map[String, String?]
 } derive(@debug.Debug)
 pub fn ContentScan::to_repr(Self) -> @debug.Repr
+
+pub struct Crc32Tee {
+  sink : &@io.Writer
+  mut crc : UInt32
+  mut total : Int64
+}
+pub async fn Crc32Tee::write(Self, &@io.Data) -> Unit
+pub async fn Crc32Tee::write_once(Self, Bytes, offset~ : Int32, len~ : Int32) -> Int32
+pub async fn Crc32Tee::write_reader(Self, &@io.Reader) -> Unit
+pub impl @io.Writer for Crc32Tee
 
 pub(all) struct DecompressedLayers {
   raws : Array[Bytes]
@@ -227,6 +254,13 @@ pub struct HuffmanTable {
   symbols : FixedArray[Int32]
 } derive(@debug.Debug)
 pub fn HuffmanTable::to_repr(Self) -> @debug.Repr
+
+pub struct InflateWindow {
+  buffer : FixedArray[Byte]
+  mut length : Int32
+  mut produced : Int64
+  sink : &@io.Writer
+}
 
 pub struct LayerDiffResult {
   tree : FileTree
@@ -404,7 +438,7 @@ pub struct TarReader {
   mut done : Bool
 } derive(@debug.Debug)
 pub fn TarReader::new(BytesView) -> Self
-pub fn TarReader::next(Self) -> TarEntry? raise TarError
+pub fn TarReader::next(Self) -> TarEntry raise TarError
 pub fn TarReader::to_repr(Self) -> @debug.Repr
 pub fn TarReader::with_base(BytesView, Int32) -> Self
 
@@ -420,15 +454,14 @@ pub fn TarWriteEntry::not_equal(Self, Self) -> Bool
 pub fn TarWriteEntry::to_repr(Self) -> @debug.Repr
 
 pub struct TarWriter {
-  output : @buffer.Buffer
+  trailer : FixedArray[Byte]
 } derive(@debug.Debug)
-pub fn TarWriter::begin(Self, TarWriteEntry) -> Unit
-pub fn TarWriter::finish(Self) -> Bytes
+pub async fn TarWriter::begin(Self, &@io.Writer, TarWriteEntry) -> Unit
+pub async fn TarWriter::finish(Self, &@io.Writer) -> Unit
 pub fn TarWriter::new() -> Self
-pub fn TarWriter::pad(Self, Int32) -> Unit
+pub async fn TarWriter::pad(Self, &@io.Writer, Int32) -> Unit
 pub fn TarWriter::to_repr(Self) -> @debug.Repr
-pub fn TarWriter::write_data(Self, BytesView) -> Unit
-pub fn TarWriter::write_entry(Self, TarWriteEntry, BytesView) -> Unit
+pub async fn TarWriter::write_entry(Self, &@io.Writer, TarWriteEntry, BytesView) -> Unit
 
 pub(all) enum WhiteoutKind {
   Entry(String)

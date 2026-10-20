@@ -84,10 +84,17 @@ PanicError
 而且那时候连一行进度都没有——两件事其实是一件事：
 **层不是「一个 `Bytes`」，而是一条要先落到盘上的流**。
 
+打包这一步同理：`docker save` 一个 700MB 的镜像，解压出来的层如果先攒成
+一块再套 tar，峰值内存是「压缩 + 解压 + 打包」三份。所以 `write_image`
+一路流式：解压出来的字节直接写进 tar 文件，中途只留一个 32 KiB 的窗口
+（`decompress_layer_to` → `TarWriter` → 文件）。代价是每层要解压两遍——
+第一遍只为了拿「未压缩 tar 的 sha256」当目录名，这一遍的字节直接扔掉
+（`HashingWriter`）。两遍各是一次顺序扫描，换掉的是一份与镜像等大的内存。
+
 ## 两步分开
 
 - `pull_image` / `pull_with_client`：只管「把字节拿下来」，产物是 `RemoteImage`
-- `package_image`：只管「把 `RemoteImage` 摆成某种格式」，产物是 `ArchiveBundle`
+- `write_image`：只管「把 `RemoteImage` 摆成某种格式并落盘」，产物是落盘摘要
 
 分开的好处是两者都能单独测：拉取用假 registry 起真 HTTP，
 打包用手里造好的 `RemoteImage`，不必为了测打包去连网络。

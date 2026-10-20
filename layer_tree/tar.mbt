@@ -351,12 +351,6 @@ pub fn read_file_from_tar(
 }
 
 ///|
-/// 写 tar 用的一块缓冲区容量：header 一定是 512，数据按 block 补零。
-/// 取 64KB 是因为 `Buffer` 扩容是整段复制，层动辄几十 MB，
-/// 一次只长 512 字节会让写 tar 退化成 O(n²)。
-let tar_write_chunk : Int32 = 65536
-
-///|
 /// 一条待写入的 tar entry。数据只在 `write_data` 时流式吐出，
 /// 不驻留在 entry 里——大层不能因为「要打包」就被整段搬进内存两遍。
 pub(all) struct TarWriteEntry {
@@ -484,77 +478,75 @@ fn header_checksum(header : FixedArray[Byte]) -> Int32 {
 /// ustar 的名字字段里若有 `&`，某些实现会把它当扩展语义——这里不处理，
 /// 因为镜像归档里的路径不会出现这种写法。
 ///
-/// 流式写 tar 的写入器：`begin` 写 header，`write_data` 吐数据，`end` 收尾。
+/// 流式写 tar 的写入器：`begin` 写 header，数据由调用方直接写进 `sink`，
+/// `pad` / `finish` 补零收尾。
 ///
-/// 为什么不用 `@buffer.Buffer` 攒整包：一层的 `layer.tar` 就是几十 MB，
-/// 攒整包等于把镜像的未压缩体积搬进内存。这里只保证「当前 entry 的数据
-/// 按需流出」，内存占用是一个数据块，与镜像大小无关。
+/// 为什么不留内部缓冲：一层的 `layer.tar` 就是几十 MB 到几 GB，
+/// 攒整包等于把镜像的未压缩体积搬进内存（issue #97 的
+/// `Buffer capacity overflow` 就出在这里）。写入器自己只拼 header，
+/// 数据一律由调用方「边解压边写」。
+/// 没有状态：header 每次现拼，收尾的全零块是常量。
+/// 留一个 `struct` 是给调用方一个「写入器」的名字，也让以后加字段不用改签名。
 pub struct TarWriter {
-  output : @buffer.Buffer
+  priv unit : Unit
 } derive(Debug)
 
 ///|
 pub extend TarWriter with @debug.Debug::{to_repr}
 
 ///|
-/// 建一个写到内存的 tar 写入器。镜像归档总量可控（分析链已经整包读入），
-/// 要落盘就由调用方把 `finish` 的字节写出去。
 pub fn TarWriter::new() -> TarWriter {
-  { output: @buffer.Buffer(size_hint=tar_write_chunk), }
+  { unit: (), }
 }
 
 ///|
-/// 开始一条 entry：写 header，之后调用方必须正好写 `entry.size` 个字节。
-pub fn TarWriter::begin(self : TarWriter, entry : TarWriteEntry) -> Unit {
+/// 开始一条 entry：写 header；之后调用方必须正好写 `entry.size` 个字节。
+pub async fn TarWriter::begin(
+  _self : TarWriter,
+  sink : &@io.Writer,
+  entry : TarWriteEntry,
+) -> Unit {
   if entry.entry_type is Directory && entry.size != 0 {
-    abort("tar directory entry \"\{entry.path}\" must not carry data")
+    abort("tar directory entry \"{entry.path}\" must not carry data")
   }
-  self.output.write_iter(build_header(entry).iter())
-}
-
-///|
-/// 写一条 entry 的数据：长度必须与 header 里的 size 一致，
-/// 少了会让后面的 header 错位，所以当场对齐补零并对不上就报出来。
-pub fn TarWriter::write_data(self : TarWriter, data : BytesView) -> Unit {
-  self.output.write_bytes(data)
+  sink.write(build_header(entry).unsafe_reinterpret_as_bytes())
 }
 
 ///|
 /// 结束一条数据量为 `size` 的 entry：把不足 512 的尾巴补零。
-pub fn TarWriter::pad(self : TarWriter, size : Int32) -> Unit {
+pub async fn TarWriter::pad(
+  _self : TarWriter,
+  sink : &@io.Writer,
+  size : Int32,
+) -> Unit {
   let remainder = size % tar_block_size
   if remainder == 0 {
     return
   }
   let padding = tar_block_size - remainder
-  let zeros = FixedArray::make(padding, b'\x00')
-  self.output.write_iter(zeros.iter())
+  sink.write(FixedArray::make(padding, b'\x00').unsafe_reinterpret_as_bytes())
 }
 
 ///|
 /// 一条 entry 一步写完（数据已经在手里时用这个）。
-pub fn TarWriter::write_entry(
+pub async fn TarWriter::write_entry(
   self : TarWriter,
+  sink : &@io.Writer,
   entry : TarWriteEntry,
   data : BytesView,
 ) -> Unit {
-  self.begin(entry)
-  self.write_data(data)
-  self.pad(entry.size)
+  self.begin(sink, entry)
+  sink.write(data)
+  self.pad(sink, entry.size)
 }
 
 ///|
-/// 收尾：两个全零块 + 按一万字节补齐（GNU tar 的习惯）。
-pub fn TarWriter::finish(self : TarWriter) -> Bytes {
-  let zeros = FixedArray::make(tar_block_size, b'\x00')
-  self.output.write_iter(zeros.iter())
-  self.output.write_iter(zeros.iter())
-  let total = self.output.length()
-  let remainder = total % 10240
-  if remainder != 0 {
-    self.output.write_iter(FixedArray::make(10240 - remainder, b'\x00').iter())
-  }
-  self.output.to_bytes()
+/// 收尾：两个 512 字节全零块 + 补到 10240（GNU tar 的习惯）。
+///
+/// 读 tar 的人靠全零块判「没有下一条」；补齐到一万字节只是让产物
+/// 与 `tar` 命令打出来的东西长得一样，不影响可读性。
+pub async fn TarWriter::finish(_self : TarWriter, sink : &@io.Writer) -> Unit {
+  sink.write(FixedArray::make(10240, b'\x00').unsafe_reinterpret_as_bytes())
 }
 
 ///|

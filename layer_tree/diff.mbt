@@ -65,7 +65,7 @@ pub extend LayerDiffResult with @debug.Debug::{to_repr}
 /// 依次应用多层 tar，同时收集层间 diff。
 ///
 /// `layers` 里每个元素是一层的原始数据；`media_types` 缺省按未压缩处理。
-pub fn apply_layers_with_diffs(
+pub async fn apply_layers_with_diffs(
   layers : Array[BytesView],
   media_types~ : Array[String] = [],
 ) -> LayerDiffResult raise LayerError {
