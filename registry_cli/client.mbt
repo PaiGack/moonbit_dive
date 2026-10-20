@@ -175,6 +175,20 @@ pub async fn RegistryClient::get_head(
 }
 
 ///|
+/// 把「只拿了头、正文还没读」的应答丢掉，好让这条连接能接着服务下一个请求。
+///
+/// `get_head` 之后一定要调它：正文没读完的直接再发请求，读到的是同一条连接上
+/// 上一个应答的残留（症状是「content-length 说 577，拿到 0」）。
+/// 真正要读正文的调用方（`read_stream`）不要调，它自己读到 EOF。
+pub async fn RegistryClient::skip_body(self : RegistryClient) -> Unit noraise {
+  try self.client.skip_response_body() catch {
+    _ => ()
+  } noraise {
+    _ => ()
+  }
+}
+
+///|
 /// 只有头、正文还没读的应答。
 ///
 /// 带上 `declared`（`content-length`）是给落盘端对账用的：流写完了要能判断

@@ -925,6 +925,7 @@ async fn get_stream_following_redirects(
           "\{reference.canonical()}: 401 without a usable WWW-Authenticate header (\{challenge_text})",
         )
     }
+    client.skip_body()
     client.set_token(fetch_token(client, challenge, reference))
     return get_stream_following_redirects(
       client,
@@ -942,6 +943,8 @@ async fn get_stream_following_redirects(
         "blob \{path} answered \{head.status} without a Location header",
       )
     }
+    // 这条应答的正文不会再读了：丢掉它，连接才能接着用
+    client.skip_body()
     let (origin, target) = resolve_location(client.base, location)
     let mirror = RegistryClient::connect(
       strip_scheme(origin),
@@ -949,18 +952,31 @@ async fn get_stream_following_redirects(
     ) catch {
       _ => raise Network("cannot create an HTTP client for \{origin}")
     }
-    // 重定向的目标可能是几百 MB 的层：正文在这条连接上边读边写
+    // 重定向的目标可能是几百 MB 的层：正文在这条连接上边读边写。
+    // CDN 那边还可能再跳一次（S3、CloudFront 都会），所以这里先拿头再判。
+    // 中间那条连接**没有**交给 `errdefer`：`mirror.close()` 必须在 return 之前
+    // 真的执行到，否则每跳一次泄漏一条连接。
     errdefer mirror.close()
-    let streamed = stream_body(mirror, target, destination, progress?, on_tick?)
+    let streamed = get_stream_following_redirects(
+      mirror,
+      target,
+      reference,
+      destination,
+      progress?,
+      on_tick?,
+    )
     mirror.close()
     return streamed
   }
   if head.status == 404 {
+    client.skip_body()
     raise NotFound("\{reference.canonical()}: blob \{path} is missing")
   }
   if head.status != 200 {
+    client.skip_body()
     raise Network("blob \{path} answered \{head.status}")
   }
+  // 200：正文接着在这条连接上读，不跳过
   stream_body(client, path, destination, progress?, on_tick?)
 }
 
