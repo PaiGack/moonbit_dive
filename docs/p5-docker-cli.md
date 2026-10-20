@@ -47,7 +47,15 @@ pub(open) trait ImageSource {
   不再折回 `Cli(工具名)`——否则路径被丢掉，PATH 上没有同名文件时会
   报 `not found on PATH`，用户写死的程序根本不会被调用
 - **不整体读进 `String`**：`run_cli` 走 `read_from_process` 拿 `Bytes`；
-  `save_to_file` 再进一步，stdout 直接 `redirect_to_file`，大镜像不驻留内存
+  需要落盘时再进一步，走 `ArchiveSink` 边读边写，大镜像不驻留内存
+- **`--from-image` 的主路径是流式的**：`save_into` 把 `docker save` 的
+  stdout 一块块倒进 `ArchiveSink`（`TempArchive` = 临时文件），
+  只有最后一步 `read_back` 才把归档读成 `Bytes` 交给 P2——因为
+  `ImageSource::from_tar_bytes` 吃的是字节。返回 `Bytes` 的旧入口
+  （`fetch_archive` / `save_maybe_pulling` / `save_or_pull_across_backends`）
+  保留，内部就是「临时文件 + 读回来」的包装
+- 换后端重试前必须把临时文件截回 0（`TempArchive::rewind`）：上一条后端
+  可能已经写了半截，不截会拼出「前一半 A、后一半 B」的归档
 - 退出码与 stderr 透传：`Backend(name, code, stderr)`，排查不靠猜
 - 超时与中断：**量的是空闲，不是总时长**（issue #94）。每读到一块数据就把
   `IdleClock` 重置，只有「连续这么久一个字节都没有」才 `hard_cancel()`
@@ -59,7 +67,10 @@ pub(open) trait ImageSource {
   `/var/run/docker.sock` 由外层转发时，socket 在、`connect` 也成功，
   但对端不通——没有超时就会停在「等状态行」上永远不返回（见 issue #42）。
   `cmd/main --timeout <秒>` 可调大，只认正整数
-- 超时文案带三个数：`no output for <空闲> (idle timeout <预算>, ran <总耗时>)`。
+- 超时文案带三个数：`no output for <空闲> (idle timeout <预算>, ran <总耗时>)`，
+  前面还带**阶段名**：`docker save <ref>: no output for 30000ms (...)`。
+  只报「超时了」的话，人没法判断是 `inspect` 慢、`pull` 卡住，还是
+  `save` 正在闷头攒 tar（issue #94 里正是最后一种）
   空闲≈总耗时 = 一句话都没有；空闲≪总耗时 = 一直在动、最后这一步卡住了
 
 #### 三个工具的差异（issue #86）

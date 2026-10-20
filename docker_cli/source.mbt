@@ -36,6 +36,23 @@ impl ImageSource for ImageBackend with fn pull(self, reference) {
 }
 
 ///|
+/// 把归档倒进 `sink`：按后端类型分派到各自的流式实现。
+///
+/// 这是取归档的唯一真实路径——返回 `Bytes` 的那几个入口
+/// （`fetch_archive` / `save_maybe_pulling` / `save_or_pull_across_backends`）
+/// 都是「先落到临时文件、再整个读回来」的包装，留给不想管临时文件的调用方。
+pub async fn save_into(
+  backend : ImageBackend,
+  reference : String,
+  sink : &ArchiveSink,
+) -> Unit raise DockerCliError {
+  match backend {
+    Cli(source) => source.save_into(reference, sink)
+    Engine(source) => source.save_into(reference, sink)
+  }
+}
+
+///|
 impl Show for ImageBackend with fn to_string(self) {
   match self {
     Cli(source) => "cli:\{source.program}"
@@ -171,7 +188,12 @@ pub async fn fetch_archive(
   pull_if_missing~ : Bool = false,
 ) -> Bytes raise DockerCliError {
   let candidates = default_candidates(env)
-  let (archive, _resolved) = fetch_archive_with_backends(
+  let temp = TempArchive::create() catch {
+    err => raise Backend("tmp", -1, "cannot create a temp file: \{err}")
+  }
+  errdefer temp.discard()
+  fetch_archive_into(
+    temp,
     reference,
     candidates,
     env,
@@ -179,7 +201,8 @@ pub async fn fetch_archive(
     pull_if_missing~,
     on_stage=fn(_) { () },
   )
-  archive
+  |> ignore
+  temp.read_back()
 }
 
 ///|
@@ -196,7 +219,14 @@ pub async fn save_maybe_pulling(
   reference : String,
   pull_if_missing~ : Bool = false,
 ) -> Bytes raise DockerCliError {
-  save_or_pull_once(backend, reference, pull_if_missing~)
+  let temp = TempArchive::create() catch {
+    err => raise Backend("tmp", -1, "cannot create a temp file: \{err}")
+  }
+  errdefer temp.discard()
+  save_or_pull_once(backend, reference, pull_if_missing~, sink=temp) |> ignore
+  let archive = temp.read_back()
+  temp.discard()
+  archive
 }
 
 ///|
@@ -218,7 +248,12 @@ pub async fn fetch_archive_verbose(
     Some(candidates) => candidates
     None => default_candidates(env)
   }
-  fetch_archive_with_backends(
+  let temp = TempArchive::create() catch {
+    err => raise Backend("tmp", -1, "cannot create a temp file: \{err}")
+  }
+  errdefer temp.discard()
+  let resolved = fetch_archive_into(
+    temp,
     reference,
     candidates,
     env,
@@ -226,6 +261,9 @@ pub async fn fetch_archive_verbose(
     pull_if_missing~,
     on_stage~,
   )
+  let archive = temp.read_back()
+  temp.discard()
+  (archive, resolved)
 }
 
 ///|
@@ -237,25 +275,27 @@ pub async fn fetch_archive_verbose(
 /// `GET /images/{name}/get` 时才发现对端没有这个镜像」——CNB 这类环境里
 /// `/var/run/docker.sock` 是外层转发进来的，正是这个样子。要分清
 /// 「这条路推不动」，只有真走一趟取归档。
-async fn fetch_archive_with_backends(
+async fn fetch_archive_into(
+  temp : TempArchive,
   reference : String,
   candidates : Array[BackendCandidate],
   env : Map[String, String],
   timeout_ms~ : Int32,
   pull_if_missing~ : Bool,
   on_stage~ : (FetchStage) -> Unit,
-) -> (Bytes, ResolvedBackend) raise DockerCliError {
+) -> ResolvedBackend raise DockerCliError {
   let resolved = resolve_backend(candidates, env, timeout_ms~)
   on_stage(Resolved(resolved.backend))
   let backends = backend_chain(candidates, resolved, env, timeout_ms~)
-  let archive = save_or_pull_across_backends(
+  save_or_pull_across_backends_into(
     backends,
     0,
     reference,
+    temp,
     pull_if_missing~,
     on_stage~,
   )
-  (archive, resolved)
+  resolved
 }
 
 ///|
@@ -280,6 +320,38 @@ pub async fn save_or_pull_across_backends(
   pull_if_missing~ : Bool = false,
   on_stage~ : (FetchStage) -> Unit = fn(_) { () },
 ) -> Bytes raise DockerCliError {
+  let temp = TempArchive::create() catch {
+    err => raise Backend("tmp", -1, "cannot create a temp file: \{err}")
+  }
+  errdefer temp.discard()
+  save_or_pull_across_backends_into(
+    backends,
+    index,
+    reference,
+    temp,
+    pull_if_missing~,
+    on_stage~,
+  )
+  let archive = temp.read_back()
+  temp.discard()
+  archive
+}
+
+///|
+/// `save_or_pull_across_backends` 的落盘版本：归档边读边写进 `temp`。
+///
+/// 换后端的语义与内存版一模一样，**唯一**的区别是每条后端重试前要把
+/// 临时文件截回 0：上一条后端已经写进去半截字节（`Cancelled` 正好发生在
+/// 700MB 的地方），不清掉的话下一条会接着往后追加，最后拼出一个
+/// 「前一半是 A、后一半是 B」的归档——它甚至能被 tar 读开头，错得很深。
+async fn save_or_pull_across_backends_into(
+  backends : Array[ImageBackend],
+  index : Int32,
+  reference : String,
+  temp : TempArchive,
+  pull_if_missing~ : Bool,
+  on_stage~ : (FetchStage) -> Unit,
+) -> Unit raise DockerCliError {
   let attempts : Array[String] = []
   let mut first : DockerCliError? = None
   let mut position = index
@@ -287,15 +359,22 @@ pub async fn save_or_pull_across_backends(
   while position < count {
     let backend = backends[position]
     on_stage(Trying(backend))
-    let outcome : Result[Bytes, DockerCliError] = try
-      save_or_pull_once(backend, reference, pull_if_missing~, on_stage~)
-    catch {
+    let outcome : Result[Unit, DockerCliError] = try {
+      temp.rewind()
+      save_or_pull_once(
+        backend,
+        reference,
+        pull_if_missing~,
+        on_stage~,
+        sink=temp,
+      )
+    } catch {
       err => Err(err)
     } noraise {
-      archive => Ok(archive)
+      _ => Ok(())
     }
     match outcome {
-      Ok(archive) => return archive
+      Ok(_) => return
       // 这条路走不通：记下原因，接着试下一条
       Err(err) => {
         attempts.push("  \{backend} — \{err.to_string()}")
@@ -360,13 +439,14 @@ async fn save_or_pull_once(
   reference : String,
   pull_if_missing~ : Bool,
   on_stage~ : (FetchStage) -> Unit = fn(_) { () },
-) -> Bytes raise DockerCliError {
+  sink~ : &ArchiveSink,
+) -> Unit raise DockerCliError {
   if pull_if_missing && !image_is_local(backend, reference) {
     on_stage(Pulling(reference))
     ImageSource::pull(backend, reference)
   }
   on_stage(Saving(reference))
-  ImageSource::save(backend, reference)
+  save_into(backend, reference, sink)
 }
 
 ///|

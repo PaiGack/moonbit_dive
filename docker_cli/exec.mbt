@@ -11,12 +11,14 @@ pub async fn run_cli(
   program : String,
   args : Array[String],
   timeout_ms : Int32,
+  stage~ : String = "",
 ) -> (Int32, Bytes, Bytes) raise DockerCliError {
   let (code, stdout, stderr, _) = run_capture(
     program,
     args,
     timeout_ms,
     clock=IdleClock::new(),
+    stage~,
   )
   (code, stdout, stderr)
 }
@@ -70,8 +72,9 @@ async fn run_capture(
   timeout_ms : Int32,
   sink~ : OutputSink = Memory,
   clock~ : IdleClock,
+  stage~ : String = "",
 ) -> (Int32, Bytes, Bytes, CliRun) raise DockerCliError {
-  let result = with_timeout(program, timeout_ms, clock, () => {
+  let result = with_timeout(program, timeout_ms, clock, stage~, () => {
     run_once(program, args, clock, sink~)
   })
   let (code, out, err) = result
@@ -134,6 +137,7 @@ async fn[X] with_timeout(
   program : String,
   timeout_ms : Int32,
   clock : IdleClock,
+  stage~ : String,
   action : async () -> X,
 ) -> X raise DockerCliError {
   if timeout_ms <= 0 {
@@ -162,7 +166,7 @@ async fn[X] with_timeout(
     // 组里的结果被换成 `None` = 我们按了停止键
     None => {
       let report = clock.report()
-      raise Cancelled(program, idle_report(timeout_ms, report))
+      raise Cancelled(program, idle_report(timeout_ms, report, stage~))
     }
   }
 }
@@ -199,8 +203,13 @@ fn poll_ms(timeout_ms : Int32) -> Int32 {
 ///
 /// 现在钟量的是**空闲**，所以文案必须说清楚是「多久没动静」，
 /// 而不是「一共花了多久」——后者在一条拉了五分钟大镜像的日志里毫无意义。
-pub fn idle_report(budget_ms : Int32, report : CliRun) -> String {
-  "no output for \{report.idle_ms}ms " +
+pub fn idle_report(
+  budget_ms : Int32,
+  report : CliRun,
+  stage~ : String = "",
+) -> String {
+  let what = if stage.is_empty() { "" } else { "\{stage}: " }
+  "\{what}no output for \{report.idle_ms}ms " +
   "(idle timeout \{budget_ms}ms, ran \{report.elapsed_ms}ms)"
 }
 
@@ -443,6 +452,7 @@ pub async fn run_cli_to_file(
   args : Array[String],
   output_path : String,
   timeout_ms : Int32,
+  stage~ : String = "",
 ) -> (Int32, Int32) raise DockerCliError {
   let clock = IdleClock::new()
   let file = @fs.open(
@@ -459,6 +469,7 @@ pub async fn run_cli_to_file(
     timeout_ms,
     sink=Stream(file),
     clock~,
+    stage~,
   )
   if code != 0 {
     raise Backend(program, code, bytes_to_string(stderr))

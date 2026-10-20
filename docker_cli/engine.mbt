@@ -102,6 +102,23 @@ impl ImageSource for EngineSource with fn inspect(self, reference) {
 }
 
 ///|
+/// Engine 侧的流式 save：响应体直接倒进 `sink`。
+///
+/// 注意这条路上**没有**「空闲超时」可言：`http_over_unix` 一次请求只等
+/// 一个总时长（拿到响应头就算完），响应体本身在它返回时已经收全。
+/// 也就是说 Engine 后端的 `save` 依旧全量驻留内存——这是既有的实现，
+/// 换成逐块读需要改 `http_unix` 的响应解析，不在本轮范围内。
+/// 这里做的是把它也接到 `ArchiveSink` 上，让上层只有一条路径。
+pub async fn EngineSource::save_into(
+  self : EngineSource,
+  reference : String,
+  sink : &ArchiveSink,
+) -> Unit raise DockerCliError {
+  let bytes = ImageSource::save(self, reference)
+  sink.write(bytes)
+}
+
+///|
 impl ImageSource for EngineSource with fn save(self, reference) {
   guard_engine_reference(reference)
   if self.api_prefix.is_empty() {
