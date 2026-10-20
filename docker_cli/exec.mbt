@@ -34,6 +34,8 @@ pub(all) struct CliRun {
   elapsed_ms : Int32
   /// 离上一次读到数据过去了多久，毫秒；一个字节都没读到就是整段耗时
   idle_ms : Int32
+  /// 整段过程中**最长**的一次连续空转，毫秒
+  peak_idle_ms : Int32
 } derive(Eq, Debug)
 
 ///|
@@ -53,6 +55,13 @@ pub(all) enum OutputSink {
   Memory
   /// 边读边写，内存里不留整段归档
   Stream(&@io.Writer)
+  /// 边读边写，并每写一块就 `touch` 一次
+  ///
+  /// 单独立一个变体，是因为**安静地往外倒字节**的调用（`docker save`）
+  /// 在管道这一层看不出来：它一个字节都不往 stderr 写，父进程明明在收数据，
+  /// 空闲钟却只认「子进程写没写」，于是 30 秒一到就被判死——issue #94 的现场。
+  /// 谁在收数据，谁就该是「还活着」的证据。
+  StreamTicking(&@io.Writer, IdleClock)
 }
 
 ///|
@@ -89,12 +98,18 @@ async fn run_capture(
 pub(all) struct IdleClock {
   started : Int64
   mut last : Int64
+  /// 截至目前的**最长**一次连续空转（毫秒）
+  ///
+  /// 只留「最后一次空转了多久」是不够的：一次 90 秒的 `docker save` 里，
+  /// 最后一次空转可能只有 200ms，但中途曾一度停了 28 秒——离被判死只差 2 秒。
+  /// 后者才是「这条链路稳不稳」的答案，也是调 `--timeout` 时唯一有参考价值的数。
+  mut peak_idle_ms : Int64
 }
 
 ///|
 pub fn IdleClock::new() -> IdleClock {
   let now = @async.now()
-  { started: now, last: now, }
+  { started: now, last: now, peak_idle_ms: 0, }
 }
 
 ///|
@@ -103,7 +118,12 @@ pub fn IdleClock::new() -> IdleClock {
 /// `last` 用 `Int64` 而不是 `Int32`：`now()` 是单调时钟的原值，
 /// 截成 32 位会在跑了很久的程序里绕回来，算出的间隔变成负数。
 pub fn IdleClock::touch(self : IdleClock) -> Unit {
-  self.last = @async.now()
+  let now = @async.now()
+  let gap = now - self.last
+  if gap > self.peak_idle_ms {
+    self.peak_idle_ms = gap
+  }
+  self.last = now
 }
 
 ///|
@@ -119,7 +139,14 @@ pub fn IdleClock::report(self : IdleClock) -> CliRun {
   let now = @async.now()
   let elapsed = (now - self.started).to_int()
   let idle = (now - self.last).to_int()
-  { code: -1, elapsed_ms: elapsed, idle_ms: idle, }
+  // 收尾这一刻的空转也算进去，否则「跑完了但从头到尾没动静」的用例
+  // 会报出一个比真实情况小的 `peak_idle_ms`
+  let peak = if idle.to_int64() > self.peak_idle_ms {
+    idle.to_int64()
+  } else {
+    self.peak_idle_ms
+  }
+  { code: -1, elapsed_ms: elapsed, idle_ms: idle, peak_idle_ms: peak.to_int(), }
 }
 
 ///|
@@ -377,13 +404,24 @@ async fn read_to_bytes(
       Ok(0) => break
       Ok(n) => {
         let data = chunk.unsafe_reinterpret_as_bytes()[:n].to_owned()
-        // 落盘路径：边读边写，内存里不留整段归档
+        // 落盘路径：边读边写，内存里不留整段归档。
+        //
+        // 块大小在 64KB 这个量级，而 `docker save` 往管道里推的速度远快于
+        // 这里落盘 / 算哈希的速度，所以每块之后都会有一小段「管道空了但子进程
+        // 还在干活」——那不是卡住，是我们在忙。这期间也要 `touch`（`StreamTicking`），
+        // 否则一块写得慢一点就会被算进空闲。
         match sink {
           Memory => out.write_bytes(data)
           Stream(writer) =>
             writer.write(data) catch {
               err => raise Backend("write", -1, err.to_string())
             }
+          StreamTicking(writer, sink_clock) => {
+            writer.write(data) catch {
+              err => raise Backend("write", -1, err.to_string())
+            }
+            sink_clock.touch()
+          }
         }
         // 读到东西 = 子进程还活着，空闲计时从这一刻重新算
         clock.touch()

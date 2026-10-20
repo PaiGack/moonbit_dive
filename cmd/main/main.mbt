@@ -514,6 +514,21 @@ async fn load_source(
       err => raise CommandError::Image(err.to_string())
     }
   }
+  // `save` 期间只说「开始」不说「进度」，用户手上唯一的线索就是这行耗时。
+  // 装上钩子之后，收尾时会补一句「多久、最长静默多久、多少字节」——
+  // 这是判断该不该调 `--timeout` 的唯一依据（issue #94）。
+  if options.verbose {
+    @docker_cli.save_progress_hook.val = Some(fn(
+      elapsed_ms,
+      peak_idle_ms,
+      bytes,
+    ) {
+      eprintln(
+        "[docker] saved \{bytes} bytes in \{elapsed_ms}ms " +
+        "(longest silence \{peak_idle_ms}ms)",
+      )
+    })
+  }
   let (archive, resolved) = @docker_cli.fetch_archive_verbose(
     options.image,
     env~,
@@ -532,7 +547,6 @@ async fn load_source(
     if !described.is_empty() {
       eprintln(described)
     }
-    eprintln("[docker] fetched \{archive.length()} bytes")
   }
   // 解压 + 叠树是纯本地计算，但大镜像上并不快（见 `layer_tree` 的 gzip 注释）。
   // 这里点一句，免得「取完归档到出报告之间」被当成又卡住了。

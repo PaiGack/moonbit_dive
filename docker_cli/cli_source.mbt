@@ -93,20 +93,58 @@ pub async fn DockerCliSource::save_into(
   sink : &ArchiveSink,
 ) -> Unit raise DockerCliError {
   guard_reference(reference)
+  let clock = IdleClock::new()
   let writer = SinkWriter::new(sink)
-  run_cli_to_writer(
+  let (code, _, stderr, report) = run_capture(
     self.program,
     save_args(self.tool, reference),
-    writer,
     self.timeout_ms,
+    sink=StreamTicking(writer, clock),
+    clock~,
     stage="docker save \{reference}",
   )
-  if writer.written == 0 {
+  if code != 0 {
+    raise Backend(self.program, code, bytes_to_string(stderr))
+  }
+  let written = writer.written
+  if written == 0 {
     // docker save 对未知镜像会安静地吐一个空 tar；这里当失败处理更实在。
-    // 退出码非 0 的情况 `run_cli_to_writer` 已经带着 stderr 抛过了。
+    // 退出码非 0 的情况上面已经带着 stderr 抛过了。
     raise Backend(self.program, 0, "save produced an empty archive")
   }
+  on_save_done(report, written)
 }
+
+///|
+/// `save` 收尾时的旁白：只在调用方装了钩子时才说话。
+///
+/// 说的是「耗时 + 睡着了多久 + 收了多少字节」，三个数一起才有用：
+/// `slept` 是**空闲钟**量到的「一次连续没动静的最长时间」，它比总耗时
+/// 更能说明这条链路稳不稳——一个 90 秒的导出里最长空转 2 秒，
+/// 与最长空转 28 秒（离判死一步之遥），是完全不同的两件事。
+fn on_save_done(report : CliRun, bytes : Int32) -> Unit {
+  if save_progress_hook.val is Some(hook) {
+    hook(report.elapsed_ms, report.peak_idle_ms, bytes)
+  }
+}
+
+///|
+/// 一次 `save` 收尾的旁白。
+///
+/// 参数：`elapsed_ms`（这次导出花了多久）、`peak_idle_ms`（其中最长的一段连续静默）、
+/// `bytes`（收了多大的归档）。三个数分开报，是因为「花了 90 秒」和
+/// 「90 秒里最长静默 28 秒」是两种完全不同的处境：后者离被 30 秒预算判死
+/// 只差一步，用户该做的是调大 `--timeout`，而不是怀疑镜像坏了。
+pub type OnSaveDone = (Int32, Int32, Int32) -> Unit
+
+///|
+/// 一次 `save` 收尾时要不要说话（`--verbose`），由调用方在 main 里装。
+///
+/// 用全局钩子而不是给整条 `save_into` 的签名加参数：`save_into` 是
+/// `ArchiveSink` 那条链路上的中间层，为了打一行日志把 `verbose` 从 CLI
+/// 参数一路穿过 `source` / `backend` / `engine` 三个包，代价远大于收益。
+/// 钩子是「进程级行为」（要不要打日志），不是「这次调用的语义」。
+pub let save_progress_hook : Ref[OnSaveDone?] = Ref(None)
 
 ///|
 /// `ArchiveSink` → `@io.Writer` 的适配层，顺便记下写了多少字节。
@@ -135,6 +173,50 @@ impl @io.Writer for SinkWriter with fn write_once(
   self.written = self.written + len
   len
 }
+
+///|
+/// 小块推送时的块大小。
+///
+/// `SinkWriter` 本身是按块被喂的（`read_to_bytes` 一次给 64KB），这里再切一刀
+/// 不是为了节流，而是为了让「写盘 / 算哈希」这种**慢 sink** 也能按小块推进：
+/// 下游 `progress::TeeSink` 要拿块大小算进度，块太粗（几百 MB 的层一次给完）
+/// 就等于没有进度。8KB 与常见 IO 缓冲同量级，代价可以忽略。
+let save_push_chunk : Int32 = 8192
+
+///|
+/// 把一个 writer 包成 [`ArchiveSink`]：写进去的字节原样交给它，并**分小块**推。
+///
+/// 分块的意义见 [`save_push_chunk`]；它同时保证了「推一块 = 一次心跳」——
+/// 大块一次塞进去，中间的等待在空闲钟眼里就是一个空洞。
+pub fn writer_sink(writer : &@io.Writer) -> &ArchiveSink {
+  PushSink::{ writer, }
+}
+
+///|
+/// [`writer_sink`] 的实现：只做「切块 + 转交」。
+///
+/// 不用闭包类型是为了能 `impl` 一个 `pub(open) trait`（trait 需要具名实现者），
+/// 顺带也不用管闭包捕获可变状态的那堆约束。
+struct PushSink {
+  writer : &@io.Writer
+}
+
+///|
+impl ArchiveSink for PushSink with fn write(self, bytes) {
+  let mut offset = 0
+  let total = bytes.length()
+  while offset < total {
+    let take = @cmp.minimum(save_push_chunk, total - offset)
+    let slice = bytes[offset:offset + take].to_owned()
+    self.writer.write(slice) catch {
+      err => raise Backend("write", -1, err.to_string())
+    }
+    offset = offset + take
+  }
+}
+
+///|
+pub extend PushSink with ArchiveSink::{write}
 
 ///|
 /// 让 `run_cli_to_file` 的流式逻辑也吃 `@io.Writer`：同一个循环、

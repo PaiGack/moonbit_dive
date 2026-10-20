@@ -193,3 +193,58 @@ async test "silence after some output still times out" {
   assert_true(error.to_string().contains("was cancelled"))
   remove_fake_cli(program)
 }
+
+///|
+/// 收数据的一侧也在算「还活着」：写盘慢 ≠ 子进程卡死。
+///
+/// 这条守的是 issue #94 里 `docker save` 被砍的真正原因。`save` 是**安静**的
+/// ——它一个字节都不往 stderr 写，只是闷头往管道里倒归档。父进程每收一块
+/// 都要落盘 / 算哈希，管道因此会短暂空掉；如果空闲钟只认「子进程写没写」，
+/// 这段「我们在忙」就会被算成静默，几轮下来撞上 30 秒上限，
+/// 用户看到的就是 `docker save ...: no output for 30000ms`。
+///
+/// `StreamTicking` 让收数据方在写完之后自己 `touch` 一次：只要归档还在流进来，
+/// 这次调用就不该被判死。这里用一个「吐几块就慢下来」的假子进程钉住它。
+#cfg(not(platform="windows"))
+async test "a slow sink still counts as activity" {
+  let payload = "sink".repeat(200_000)
+  let payload_path = write_temp_bytes("slow-sink.txt", @utf8.encode(payload))
+  // 每 32KB 停 0.15 秒：子进程一直有数据在手，只是推得慢
+  let program = write_fake_cli(
+    "#!/bin/sh\ni=0\nwhile [ $i -lt 6 ]; do dd if=PAYLOAD bs=32768 skip=$i count=1 iflag=fullblock 2>/dev/null; sleep 0.15; i=$((i+1)); done\n".replace(
+      old="PAYLOAD",
+      new=payload_path,
+    ),
+  )
+  let sink_path = write_temp_bytes("slow-sink-out.bin", b"")
+  let file = @fs.open(sink_path, mode=@fs.Mode::ReadWrite) catch {
+    err => fail("cannot open sink: \{err}")
+  }
+  let clock = IdleClock::new()
+  // 预算 400ms，整段要跑 ≈0.9s：按「总耗时」必被判死，
+  // 按「收数据即活动」则必须跑完
+  // `i=0` 不能省：脚本以 `#!/bin/sh` 起（测试环境里是 dash），未定义变量
+  // 在 `[ $i -lt 6 ]` 里是直接报错退出的——测出来的「没输出」会是假的。
+  // `iflag=fullblock` 同理：管道语义下每段只有 4KB，不给它 dd 会「有多少读多少」，
+  // 几轮就读到 EOF，测的就不是「慢」而是「短」。
+  let (code, _, _stderr, report) = run_capture(
+    program,
+    [],
+    400,
+    sink=StreamTicking(file, clock),
+    clock~,
+  ) catch {
+    err => fail("a slow sink must not be cancelled: \{err}")
+  }
+  assert_eq(code, 0)
+  file.close()
+  let written = @fs.file_size(sink_path) catch { err => fail("stat: \{err}") }
+  assert_true(written > 0)
+  // 整段比预算久一倍多，却只被判过一次「等」，最长静默远小于预算：
+  // 这就是「收数据即活动」该有的样子
+  assert_true(report.elapsed_ms > 800)
+  assert_true(report.peak_idle_ms < 400)
+  remove_fake_cli(program)
+  remove_temp_bytes(payload_path)
+  remove_temp_bytes(sink_path)
+}

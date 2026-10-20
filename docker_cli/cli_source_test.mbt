@@ -534,3 +534,81 @@ async test "cli backend truncates the temp archive between retries" {
   remove_fake_cli(program)
   remove_temp_bytes(archive_path)
 }
+
+///|
+/// `docker save` 是安静的：不往 stderr 写、只往 stdout 倒字节。
+///
+/// 这就是 issue #94 的现场——导出几百 MB 的镜像时，父进程明明一直在收数据，
+/// 但计时只看「子进程有没有动静」，于是 30 秒一到照样判死：
+/// `docker save ...: no output for 30000ms`。用户手里只有一个已经拉到本地的镜像
+/// 和一句「超时」，完全无从下手。
+///
+/// 这里用一个「分块吐归档、每块之间停顿」的假 docker 钉住修复：
+/// 单块都很小（远小于空闲预算），整段却远长于预算。修复后必须跑完，
+/// 且归档一个字节不差——顺带守住 `writer_sink` 分小块推送不丢字节。
+
+///|
+/// 把 `text` 里所有 `old` 换成 `new`（`String::replace` 只换第一处）。
+fn replace_all(text : String, old : String, new : String) -> String {
+  let out = StringBuilder()
+  let parts = text.split(old).collect()
+  for index, part in parts {
+    if index > 0 {
+      out.write_string(new)
+    }
+    out.write_string(part.to_owned())
+  }
+  out.to_string()
+}
+
+///|
+#cfg(not(platform="windows"))
+async test "cli backend streams a slow save without timing out" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit\n"),
+  ])
+  let archive = build_docker_archive([("beef", layer)])
+  let archive_path = write_temp_bytes("slow.tar", archive)
+  // 每 4KB 一停，0.12 秒一块：整段远长于 400ms 预算，但每块都很快。
+  // `end` 按归档长度算，别写死块数——写死会把归档尾部截掉。
+  //
+  // `iflag=fullblock` 不能省：`dd` 从管道读时每段只有 4KB，不给它就会
+  // 「有多少读多少」，几轮之后读到 EOF——那就成了「短」而不是「慢」。
+  let script =
+    #|#!/bin/sh
+    #|case "$1" in
+    #|  inspect)
+    #|    echo '[{"Id":"sha256:beef"}]'
+    #|    ;;
+    #|  save)
+    #|    i=0
+    #|    end=$(($(wc -c < ARCHIVE_PATH) / 4096 + 1))
+    #|    while [ $i -lt $end ]; do
+    #|      dd if=ARCHIVE_PATH bs=4096 skip=$i count=1 iflag=fullblock 2>/dev/null
+    #|      sleep 0.12
+    #|      i=$((i+1))
+    #|    done
+    #|    ;;
+    #|esac
+    #|
+  let program = write_fake_cli(
+    // 占位符会出现两次，`String::replace` 只换第一处：先自己换干净再交出去，
+    // 否则脚本里会留一个字面量路径，`dd` 读不到东西还安静地退出 0，
+    // 最后报成「save produced an empty archive」——排查起来相当费劲。
+    replace_all(script, "ARCHIVE_PATH", archive_path),
+  )
+  let source = @docker_cli.DockerCliSource::new(program, timeout_ms=400)
+  let temp = @docker_cli.TempArchive::create() catch {
+    err => fail("temp: \{err}")
+  }
+  source.save_into("example:latest", temp) catch {
+    err => fail("a slow but steady save must not be cancelled: \{err}")
+  }
+  let readback = temp.read_back() catch { err => fail("read back: \{err}") }
+  // 分块推送不许丢字节：8 × 4KB 恰好覆盖一个大归档，尾部那截也得在
+  assert_eq(readback.length(), archive.length())
+  assert_eq(readback, archive)
+  temp.discard()
+  remove_fake_cli(program)
+  remove_temp_bytes(archive_path)
+}

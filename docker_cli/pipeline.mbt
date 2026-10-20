@@ -19,12 +19,19 @@ pub extend ArchiveLayer with @debug.Debug::{to_repr}
 pub fn extract_layers(
   archive : BytesView,
   entry : DockerArchiveEntry,
+  on_layer~ : (ArchiveLayer) -> Unit = fn(_) { () },
 ) -> Array[ArchiveLayer] raise DockerCliError {
   let layers = []
   for path in entry.layers {
     let data = read_entry_bytes(archive, path)
     match data {
-      Some(bytes) => layers.push({ path, bytes, })
+      Some(bytes) => {
+        let layer = { path, bytes, }
+        // 一层解出来的那一刻就交出去：几百 MB 的层读完要几秒，
+        // 等全部读完再统一报，用户看到的就是「保存完了，然后什么都没发生」。
+        on_layer(layer)
+        layers.push(layer)
+      }
       None => raise Archive("manifest.json references a missing layer: \{path}")
     }
   }
