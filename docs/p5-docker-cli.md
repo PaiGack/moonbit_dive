@@ -49,12 +49,18 @@ pub(open) trait ImageSource {
 - **不整体读进 `String`**：`run_cli` 走 `read_from_process` 拿 `Bytes`；
   `save_to_file` 再进一步，stdout 直接 `redirect_to_file`，大镜像不驻留内存
 - 退出码与 stderr 透传：`Backend(name, code, stderr)`，排查不靠猜
-- 超时与中断：`with_timeout_opt` 包住「spawn + 读两个流 + wait」，
-  超时后 `hard_cancel()` 给子进程 SIGKILL
-- **默认超时 30s**（`default_timeout_ms`），不是「不设超时」：
+- 超时与中断：**量的是空闲，不是总时长**（issue #94）。每读到一块数据就把
+  `IdleClock` 重置，只有「连续这么久一个字节都没有」才 `hard_cancel()`
+  给子进程 SIGKILL。`docker pull` 拉个大镜像几十秒很正常，进度一直在刷，
+  按总时长砍会把正常操作误判成卡死
+- 落盘路径（`save_to_file`）也走管道而不是 `redirect_to_file` 直连文件：
+  直连的话父进程看不见任何字节，「有输出就不算卡死」对它无从谈起
+- **默认 30s 空闲预算**（`default_timeout_ms`），不是「不设超时」：
   `/var/run/docker.sock` 由外层转发时，socket 在、`connect` 也成功，
   但对端不通——没有超时就会停在「等状态行」上永远不返回（见 issue #42）。
   `cmd/main --timeout <秒>` 可调大，只认正整数
+- 超时文案带三个数：`no output for <空闲> (idle timeout <预算>, ran <总耗时>)`。
+  空闲≈总耗时 = 一句话都没有；空闲≪总耗时 = 一直在动、最后这一步卡住了
 
 #### 三个工具的差异（issue #86）
 

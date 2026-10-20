@@ -169,7 +169,7 @@ fn cli() -> @argparse.Command {
       ),
       @argparse.OptionArg(
         "timeout",
-        about="seconds to allow a single docker call with --from-image (default: 30)",
+        about="seconds a docker call may go without any output (default: 30)",
       ),
       @argparse.OptionArg(
         "archive-format",
@@ -567,7 +567,7 @@ fn describe_stage(options : Options, stage : @docker_cli.FetchStage) -> Unit {
         eprintln("[docker] will pull the image if it is missing locally")
       }
       eprintln(
-        "[docker] timeout: \{options.docker_timeout_ms / 1000}s per call",
+        "[docker] timeout: \{options.docker_timeout_ms / 1000}s of silence per call",
       )
       eprintln(
         "[docker] a backend that cannot serve the image hands off to the next candidate",
