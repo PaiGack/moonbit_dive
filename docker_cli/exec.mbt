@@ -95,9 +95,10 @@ async fn[X] spawn_with_retry(
         group,
         program,
         args,
-        stdin=@process.redirect_from_file("/dev/null"),
+        stdin=null_stdin(),
         stdout=out_write,
         stderr=err_write,
+        no_console_window~,
         cancel_handler=@process.hard_cancel(),
       )
     catch {
@@ -315,9 +316,10 @@ async fn[X] spawn_to_file_with_retry(
         group,
         program,
         args,
-        stdin=@process.redirect_from_file("/dev/null"),
+        stdin=null_stdin(),
         stdout~,
         stderr=err_write,
+        no_console_window~,
         cancel_handler=@process.hard_cancel(),
       )
     catch {
@@ -346,3 +348,66 @@ async fn[X] spawn_to_file_with_retry(
     raise ExecutableNotFound(program)
   }
 }
+
+///|
+/// 子进程的 stdin：一个**立刻 EOF** 的空输入。
+///
+/// 原来这里写死 `@process.redirect_from_file("/dev/null")`，在 Windows 上是一行
+/// 走不通的死码：那边没有 `/dev/null`，`open` 报 ENOENT，`spawn` 于是在真正
+/// `CreateProcess` 之前就抛错。用户看到的是与 docker 毫无关系的
+/// `OSError("@process.redirect_from_file(): \"/dev/null\": The system cannot
+/// find the path specified.")`——issue #94 里那条报错就是这么来的。
+///
+/// `docker` / `podman` / `nerdctl` 的 `inspect` / `save` / `pull` 都不读 stdin，
+/// 给个读到 EOF 的输入就够了，两个平台各用自己最便宜的做法。
+///
+/// POSIX 那半边要 await（`redirect_from_file` 是 async 的），所以整个函数
+/// 也是 async 的。`try ... noraise` 是为了把底层 `Error` 收成 `Backend`：
+/// 调用点在 `raise DockerCliError` 的上下文里，直接冒 `Error` 会类型不匹配，
+/// 而「这台机器连 /dev/null 都打不开」也不值得单独给一种错误。
+#cfg(not(platform="windows"))
+async fn null_stdin() -> &@process.ProcessInput raise DockerCliError {
+  let opened : Result[&@process.ProcessInput, Error] = try
+    @process.redirect_from_file("/dev/null")
+  catch {
+    err => Err(err)
+  } noraise {
+    stdin => Ok(stdin)
+  }
+  match opened {
+    Ok(stdin) => stdin
+    Err(err) => raise Backend("null stdin", -1, err.to_string())
+  }
+}
+
+///|
+/// Windows 版：自己开一对管道，立刻把写端关掉。
+///
+/// 读端此刻就是「已到 EOF」，子进程不管怎么读都只会读到 0 字节。
+/// 不用 `NUL` 设备文件：那要求子进程真的按路径打开一次设备，
+/// 而这里连文件名都不用编。
+///
+/// 写端必须在这里关掉——不关，读端就永远等不到 EOF，
+/// 子进程一旦读 stdin 会卡住，外面那层超时才收场。
+#cfg(platform="windows")
+fn null_stdin() -> &@process.ProcessInput raise {
+  let (read_end, write_end) = @process.write_to_process()
+  write_end.close()
+  read_end
+}
+
+///|
+/// 起子进程时要不要压掉新控制台窗口。
+///
+/// `@process.spawn` 的 `no_console_window` 默认关，非 Windows 上无副作用。
+/// 不打开的话，`dive` 在 Windows 终端里每 `save` 一次都可能闪一个黑框——
+/// 原版 dive 也是这么收的。
+///
+/// 平台判断和 `probe.mbt` 里的一致，用 `#cfg` 而不是运行时：
+/// 这里只需要一个常量，不值得每次 spawn 都去翻环境变量。
+#cfg(platform="windows")
+let no_console_window : Bool = true
+
+///|
+#cfg(not(platform="windows"))
+let no_console_window : Bool = false

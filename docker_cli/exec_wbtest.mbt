@@ -103,3 +103,25 @@ async test "chunked read reassembles bytes across chunk boundaries" {
   remove_fake_cli(program)
   remove_temp_bytes(payload_path)
 }
+
+///|
+/// 子进程的 stdin 必须是「立刻 EOF」，而不是一个打不开的路径。
+///
+/// 守的是 issue #94 的根因：这里原来写死 `redirect_from_file("/dev/null")`，
+/// 在 Windows 上 `open` 直接 ENOENT，`spawn` 连 `CreateProcess` 都没走到就抛错，
+/// 用户拿到的是一句与 docker 无关的
+/// `OSError("@process.redirect_from_file(): \"/dev/null\": ...")`。
+///
+/// 两个平台各有一份实现（`#cfg`），但契约是同一条：
+/// 给的是什么路径不重要，子进程读 stdin **立刻就是 EOF**、不卡住。
+async test "child stdin is an immediate EOF, not a device path" {
+  let program = write_fake_cli(
+    "#!/bin/sh\nwc -c < /dev/stdin 2>/dev/null || echo 0\n",
+  )
+  let (code, stdout, _stderr) = run_cli(program, [], 0) catch {
+    err => fail("run_cli should not fail on its own stdin: \{err}")
+  }
+  assert_eq(code, 0)
+  assert_eq(@utf8.decode(stdout).trim(), "0")
+  remove_fake_cli(program)
+}
