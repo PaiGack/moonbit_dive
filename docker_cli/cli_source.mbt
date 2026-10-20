@@ -32,6 +32,7 @@ impl ImageSource for DockerCliSource with fn inspect(self, reference) {
     self.program,
     inspect_args(self.tool, reference),
     self.timeout_ms,
+    stage="docker inspect \{reference}",
   )
   if code != 0 {
     raise self.inspect_failure(reference, code, stderr)
@@ -80,12 +81,93 @@ fn DockerCliSource::inspect_failure(
 }
 
 ///|
+/// CLI 侧的流式 save：stdout 边读边写进 `sink`，内存里不留整段归档。
+///
+/// 这是 `--from-image` 真正走的那条——`ImageSource::save` 返回 `Bytes`
+/// 的形态留给测试与小镜像。用管道而不是 `redirect_to_file` 直连文件，
+/// 是因为父进程必须看得见字节：看不见就没法区分「导出很慢但一直在动」
+/// 和「卡死了」，而那正是 issue #94 的核心。
+pub async fn DockerCliSource::save_into(
+  self : DockerCliSource,
+  reference : String,
+  sink : &ArchiveSink,
+) -> Unit raise DockerCliError {
+  guard_reference(reference)
+  let writer = SinkWriter::new(sink)
+  run_cli_to_writer(
+    self.program,
+    save_args(self.tool, reference),
+    writer,
+    self.timeout_ms,
+    stage="docker save \{reference}",
+  )
+  if writer.written == 0 {
+    // docker save 对未知镜像会安静地吐一个空 tar；这里当失败处理更实在。
+    // 退出码非 0 的情况 `run_cli_to_writer` 已经带着 stderr 抛过了。
+    raise Backend(self.program, 0, "save produced an empty archive")
+  }
+}
+
+///|
+/// `ArchiveSink` → `@io.Writer` 的适配层，顺便记下写了多少字节。
+///
+/// 需要一个中间类型而不是直接 `impl @io.Writer for ArchiveSink`：
+/// MoonBit 不允许给 trait 直接写 impl，而这里想要的恰恰是
+/// 「任意 sink 都能当 writer 用」。
+priv struct SinkWriter {
+  sink : &ArchiveSink
+  mut written : Int32
+}
+
+///|
+fn SinkWriter::new(sink : &ArchiveSink) -> SinkWriter {
+  { sink, written: 0, }
+}
+
+///|
+impl @io.Writer for SinkWriter with fn write_once(
+  self,
+  buf : Bytes,
+  offset~ : Int32,
+  len~ : Int32,
+) -> Int32 {
+  self.sink.write(buf[offset:offset + len].to_owned())
+  self.written = self.written + len
+  len
+}
+
+///|
+/// 让 `run_cli_to_file` 的流式逻辑也吃 `@io.Writer`：同一个循环、
+/// 同一个空闲计时，只是终点从文件换成任意 sink。
+pub async fn run_cli_to_writer(
+  program : String,
+  args : Array[String],
+  writer : &@io.Writer,
+  timeout_ms : Int32,
+  stage~ : String = "",
+) -> Unit raise DockerCliError {
+  let clock = IdleClock::new()
+  let (code, _, stderr, _) = run_capture(
+    program,
+    args,
+    timeout_ms,
+    sink=Stream(writer),
+    clock~,
+    stage~,
+  )
+  if code != 0 {
+    raise Backend(program, code, bytes_to_string(stderr))
+  }
+}
+
+///|
 impl ImageSource for DockerCliSource with fn save(self, reference) {
   guard_reference(reference)
   let (code, stdout, stderr) = run_cli(
     self.program,
     save_args(self.tool, reference),
     self.timeout_ms,
+    stage="docker save \{reference}",
   )
   if code != 0 {
     raise Backend(self.program, code, bytes_to_string(stderr))
@@ -104,6 +186,7 @@ impl ImageSource for DockerCliSource with fn pull(self, reference) {
     self.program,
     pull_args(reference),
     self.timeout_ms,
+    stage="docker pull \{reference}",
   )
   if code != 0 {
     raise Backend(self.program, code, bytes_to_string(stderr))
@@ -184,6 +267,7 @@ pub async fn DockerCliSource::save_to_file(
     save_args(self.tool, reference),
     output_path,
     self.timeout_ms,
+    stage="docker save \{reference}",
   )
   if code != 0 {
     raise Backend(self.program, code, "save failed")

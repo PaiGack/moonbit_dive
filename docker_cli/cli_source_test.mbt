@@ -435,3 +435,102 @@ async test "podman save pins docker-archive on both memory and file paths" {
   remove_temp_bytes(archive_path)
   @fs.rmdir(dir, recursive=true)
 }
+
+///|
+/// 回归（issue #94 第二轮）：`save` 阶段闷头干很久、一个字节都不吐时，
+/// 空闲超时必须说清楚**卡在 save 上**。
+///
+/// 现场是 `docker save` 对着一个刚拉完、本地已 inspect 得通的镜像，
+/// 导出大层时 docker 自己不出进度（它在写磁盘 / 算 tar），于是 stdout
+/// 30 秒没有新字节。用户看到的却是把 `trying cli:...` 之后整段静默
+/// 记到「卡住了」，看不出到底卡在哪一步——因为 `save` 这一步没有任何提示。
+async test "cli backend names the save stage when it goes silent" {
+  let script =
+    #|#!/bin/sh
+    #|case "$1" in
+    #|  inspect)
+    #|    echo '[{"Id":"sha256:local"}]'
+    #|    ;;
+    #|  save)
+    #|    sleep 30
+    #|    ;;
+    #|esac
+    #|
+  let program = write_fake_cli(script)
+  let source = @docker_cli.DockerCliSource::new(program, timeout_ms=300)
+  let error = try {
+    source.save("example:latest") |> ignore
+    fail("save should time out")
+  } catch {
+    err => err
+  }
+  let text = error.to_string()
+  assert_true(text.contains("cancelled"))
+  assert_true(text.contains("idle timeout 300ms"))
+  // 卡在哪一步必须写在文案里：只报「超时了」，用户没法判断是 inspect 慢、
+  // pull 卡住还是 save 在闷头攒 tar
+  assert_true(text.contains("docker save example:latest"))
+  remove_fake_cli(program)
+}
+
+///|
+/// `save_into`：归档边读边写进 sink，内存里不留整段，字节一个不少。
+async test "cli backend streams save into a sink" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit\n"),
+  ])
+  let archive = build_docker_archive([("beef", layer)])
+  let archive_path = write_temp_bytes("stream.tar", archive)
+  let program = write_fake_cli(
+    fake_inspect_and_save(archive_path, "[{\"Id\":\"sha256:beef\"}]"),
+  )
+  let source = @docker_cli.DockerCliSource::new(program)
+  // 用临时文件当 sink：既验「写进去了」，也验它不是攒完再一次性倒出来
+  let temp = @docker_cli.TempArchive::create() catch {
+    err => fail("temp: \{err}")
+  }
+  source.save_into("example:latest", temp) catch {
+    err => fail("save_into should succeed: \{err}")
+  }
+  let readback = temp.read_back() catch { err => fail("read back: \{err}") }
+  assert_eq(readback, archive)
+  temp.discard()
+  remove_fake_cli(program)
+  remove_temp_bytes(archive_path)
+}
+
+///|
+/// 换后端重试时临时文件必须被截回 0。
+///
+/// 不截的话，第一条后端写了半截（`Cancelled` 正好落在中途）、第二条接着往后
+/// 追加，最后拼出一个「前一半是 A、后一半是 B」的归档。它能被 tar 读出开头，
+/// 错得比报错更难查——所以这里直接钉字节相等。
+async test "cli backend truncates the temp archive between retries" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit\n"),
+  ])
+  let archive = build_docker_archive([("beef", layer)])
+  let archive_path = write_temp_bytes("retry2.tar", archive)
+  let program = write_fake_cli(
+    fake_inspect_and_save(archive_path, "[{\"Id\":\"sha256:beef\"}]"),
+  )
+  let temp = @docker_cli.TempArchive::create() catch {
+    err => fail("temp: \{err}")
+  }
+  // 先模拟「上一条后端写了半截」
+  temp.write(b"garbage-from-a-dead-backend") catch {
+    err => fail("write: \{err}")
+  }
+  temp.rewind() catch {
+    err => fail("rewind: \{err}")
+  }
+  let source = @docker_cli.DockerCliSource::new(program)
+  source.save_into("example:latest", temp) catch {
+    err => fail("save_into should succeed: \{err}")
+  }
+  let readback = temp.read_back() catch { err => fail("read back: \{err}") }
+  assert_eq(readback, archive)
+  temp.discard()
+  remove_fake_cli(program)
+  remove_temp_bytes(archive_path)
+}
