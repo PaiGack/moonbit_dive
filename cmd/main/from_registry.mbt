@@ -15,6 +15,9 @@ priv struct RegistryOptions {
   token : String?
   /// 同时在途的层数（1 = 逐层串行）
   jobs : Int32
+  /// 临时目录的落点。给了 `-o` 就冲着那个目录去（`<dirname>/.mdive/<dive-*>`），
+  /// 一次拉取的 blob 与归档都在同一个目录下，用户找得到、也认得出是谁建的
+  staging_parent : String?
 }
 
 ///|
@@ -35,11 +38,11 @@ async fn load_from_registry(
   options : Options,
 ) -> @image_ci.ImageSource raise CommandError {
   let registry_options = registry_options(options)
-  let (image, directory) = stream_remote(registry_options)
+  let (image, area) = stream_remote(registry_options)
   // 先把镜像读进内存，**之后**才轮到删临时目录：反过来的话，删掉的正是
   // 紧接着要 `fopen` 的那几个 blob（issue #122 的现场）。
   // 所以是 `defer` 而不是 `errdefer`：成败都得收
-  defer cleanup_streamed(image, directory)
+  defer cleanup_streamed(image, area)
   registry_source(options, image)
 }
 
@@ -83,10 +86,12 @@ fn registry_source(
 }
 
 ///|
-/// 拉一次远端镜像，层落在临时目录里，返回产物与那个目录。
+/// 拉一次远端镜像，层落在临时目录里，返回产物与那批临时目录。
 ///
-/// 不给 `--output`（分析这条路上没有产物）时落点是 `dive-registry-*`；
-/// 给了 `--output` 的用户是想要一份归档，那条路仍然走 `save_remote`。
+/// 落点由 `--output` 决定（见 `staging_area_of`）：给了 `-o` 的用户是在
+/// 自己指定的目录里干活，`-o` 写在那儿，blob 就该写在那儿旁边——
+/// 而不是一个 `/tmp` 下的随机目录。不给 `-o`（分析这条路上没有产物）
+/// 只留**一个** `dive-*` 目录。
 async fn stream_remote(
   options : RegistryOptions,
 ) -> (@registry_cli.StreamedImage, String) raise CommandError {
@@ -103,6 +108,7 @@ async fn stream_remote(
     on_progress=Some(reporter.handle()),
     on_tick=Some(tick),
     jobs=options.jobs,
+    staging_parent=options.staging_parent,
   )
   let image = @registry_cli.stream_image(request) catch {
     err => {
@@ -116,7 +122,58 @@ async fn stream_remote(
 }
 
 ///|
-/// 收掉这次流式拉取建的临时目录。
+/// 这次拉取把临时目录放哪儿：给了 `-o` 就放到 `<它的父目录>/.mdive/`。
+///
+/// 为什么不是一个全局固定的 `~/.mdive/`：`-o` 指哪儿，产物就在哪儿，
+/// 这是 `--save` 的约定；把中间产物搬到另一个地方，只会把「我下到的东西呢」
+/// 变成一个新问题。blob 与归档是同一次动作的两半，就让它们同处一层。
+///
+/// 为什么是 `-o` 的父目录而不是 `-o` 本身：`-o` 是文件（docker-archive）
+/// 或目录（OCI layout），前者没法往里塞东西；统一放进它**父目录**下的
+/// `.mdive/`，两种格式的落点就一致了。
+///
+/// 没有 `-o` 时返回 `None`：落回系统临时目录（`$TMPDIR` 或 `/tmp`），
+/// 仍然是单独一个 `dive-*` 目录。
+fn staging_area_of(output : String) -> String? {
+  if output.is_empty() {
+    return None
+  }
+  let parent = parent_directory(output)
+  if parent.is_empty() {
+    // `-o image.tar`：落在当前目录下，`.` 就是这个「父目录」
+    Some(".mdive")
+  } else if parent == "/" {
+    // 拼接别把根变成 `//`
+    Some("/.mdive")
+  } else {
+    Some("\{parent}/.mdive")
+  }
+}
+
+///|
+/// 路径里最后一个分隔符之前的部分。`/x` 的父目录是 `/`，`x` 没有父目录。
+///
+/// 只按 `/` 切：这套临时目录的落点本来就跟 POSIX 绑定（`@fs.tmpdir` 也是）。
+fn parent_directory(path : String) -> String {
+  let mut cut = -1
+  let mut index = 0
+  for unit in path {
+    if unit == '/' {
+      cut = index
+    }
+    index = index + 1
+  }
+  if cut < 0 {
+    ""
+  } else if cut == 0 {
+    "/"
+  } else {
+    path[:cut].to_owned()
+  }
+}
+
+///|
+/// 收掉这次流式拉取建的临时目录（以及它外面那层 `.mdive/`）。
 ///
 /// 产物归调用方时（给了 `--output`）一个字节都不碰——那条路走的是
 /// `save_remote`，目录里本来也没有我们造的东西。
@@ -133,17 +190,26 @@ async fn cleanup_streamed(
 ///|
 /// 拉一次远端镜像并落盘，返回落盘结果。
 ///
-/// 落盘位置在**临时目录**里：分析链路只认「路径」这个入口（`ImageSource::load`），
-/// 直接塞字节会绕过既有的格式识别（docker-archive / OCI layout / 单层 tar 三种），
+/// 落盘位置在**临时目录**里（`<parent>/dive-*/image.tar`）：
+/// 分析链路只认「路径」这个入口（`ImageSource::load`），直接塞字节会绕过
+/// 既有的格式识别（docker-archive / OCI layout / 单层 tar 三种），
 /// 那正是我们最不该分叉的一段逻辑。
 ///
-/// 临时产物**不在这里收**：装完之后 `ImageSource` 只记偏移，层要等到 `main`
+/// 中间产物**不在这里收**：装完之后 `ImageSource` 只记偏移，层要等到 `main`
 /// 里逐层 `raw_bytes` 才真去读。在这里删，删的就是那份还没人读过的归档
-/// （issue #133）。`/tmp` 会替我们收尾。
+/// （issue #133）。落回 `/tmp` 的那些交给 `/tmp` 收尾；落在 `.mdive/` 里的
+/// 由 `load_from_registry` 读完再收（见 `cleanup_streamed`）。
 async fn save_remote(
   options : RegistryOptions,
-) -> (@registry_cli.SaveResult, String) raise CommandError {
-  let directory = @async_fs.tmpdir(prefix="dive-registry-") catch {
+) -> (@registry_cli.SaveResult, String, String?) raise CommandError {
+  // 中间产物落在 `-o` 旁边：`--save` 的产物只该有一个归属，
+  // 用户去那个目录里就该看得全（`blob 在这儿、归档在 /tmp` 是 #133 的现场）。
+  // `staging_area_of("")` 返回 `None`，那就是回系统临时目录
+  let staging_parent = staging_area_of(options.output)
+  let directory = @registry_cli.make_staging_dir(
+    parent=staging_parent,
+    prefix="dive-registry-",
+  ) catch {
     err =>
       raise CommandError::Registry("cannot create a temp directory: \{err}")
   }
@@ -171,6 +237,7 @@ async fn save_remote(
     on_progress=Some(reporter.handle()),
     on_tick=Some(tick),
     jobs=options.jobs,
+    staging_parent~,
   )
   let result = @registry_cli.save_image(request) catch {
     err => {
@@ -180,7 +247,7 @@ async fn save_remote(
     }
   }
   reporter.finish(failed=false)
-  (result, directory)
+  (result, directory, staging_parent)
 }
 
 ///|
@@ -189,4 +256,22 @@ fn report_saved(result : @registry_cli.SaveResult) -> Unit {
   println(
     "saved \{result.path} (\{result.format}, \{result.bytes} bytes, \{result.layers} layers, \{result.platform})",
   )
+}
+
+///|
+/// `--save` 之后把中间产物的落点说一句：用户手里只有 `-o` 那个文件，
+/// 该知道那堆 blob 在哪儿、下次怎么再看一眼。
+///
+/// 不删是对的：`--save` 的产物可能还要接着被别的工具用，而「看一眼再删」
+/// 这件事该由用户决定，不由我们替他做主。
+fn after_save(directory : String, parent : String?) -> Unit {
+  match parent {
+    Some(parent) =>
+      if @fs.path_exists(directory) {
+        println(
+          "intermediate blobs are in \{directory} (under \{parent}); remove it when you no longer need it",
+        )
+      }
+    None => ()
+  }
 }

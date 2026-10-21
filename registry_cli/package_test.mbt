@@ -38,6 +38,7 @@ async fn sample_image(gzip~ : Bool = true) -> RemoteImage {
     layers,
     platform: None,
     staging: None,
+    staging_parent: None,
     staging_used: false,
   }
 }
@@ -220,6 +221,7 @@ async test "docker-archive unpacks zstd layers like gzip ones" {
     ],
     platform: None,
     staging: None,
+    staging_parent: None,
     staging_used: false,
   }
   let tar = pack_docker_archive(image)
@@ -370,6 +372,7 @@ async fn big_layer_image(size : Int32) -> RemoteImage {
     ],
     platform: None,
     staging: None,
+    staging_parent: None,
     staging_used: false,
   }
 }
@@ -531,6 +534,7 @@ async test "a failed pack leaves no truncated archive behind" {
     ],
     platform: None,
     staging: None,
+    staging_parent: None,
     staging_used: false,
   }
   let path = temp_path("failed")

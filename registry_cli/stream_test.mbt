@@ -662,6 +662,7 @@ async test "a discarded image never deletes a layer that is still on disk" {
       layers: pulled.layers,
       platform: pulled.platform,
       staging: Some(shell),
+      staging_parent: None,
       staging_used: false,
     }
     @registry_cli.discard_image(empty)

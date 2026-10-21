@@ -696,6 +696,10 @@ fn registry_options(options : Options) -> RegistryOptions {
     insecure: options.registry_insecure,
     token: options.registry_token,
     jobs: options.jobs,
+    // 分析这条路没有产物，也就没有「产物旁边」：`staging_parent` 留空，
+    // 落回系统临时目录，仍是单独一个 `dive-*`。`--save` 那条路在
+    // `save_remote` 里按 `-o` 现算落点（`-o` 只在 `--save` 下指落盘位置）
+    staging_parent: None,
   }
 }
 
@@ -722,13 +726,15 @@ async fn save_only(options : Options) -> Unit raise CommandError {
       "input is already a local archive, --save has nothing to do: drop --save to analyze \{options.image}, or give an image reference to save",
     )
   }
-  // `--save` 是唯一一处 `-o` 真的指「镜像写到哪儿」的地方
+  // `--save` 是唯一一处 `-o` 真的指「镜像写到哪儿」的地方。`registry_options`
+  // 出于 #133 已经不再抄 `-o`（那条路 `-o` 只影响报告），这里显式补回来
   let request = {
     ..registry_options(options),
     output: options.output.unwrap_or(""),
   }
-  let result = save_remote(request)
-  report_saved(result.0)
+  let (result, directory, parent) = save_remote(request)
+  report_saved(result)
+  after_save(directory, parent)
 }
 
 ///|

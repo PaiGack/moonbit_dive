@@ -771,6 +771,7 @@ async fn streamed_of(
   image : RemoteImage,
   reference : ImageReference,
 ) -> @registry_cli.StreamedImage raise RegistryError {
+  let staging_parent = image.staging_parent
   let staging = match image.staging {
     Some(directory) => directory
     None => raise Io("streamed image has no staging directory")
@@ -791,7 +792,13 @@ async fn streamed_of(
       size: layer.compressed_size(),
     })
   }
-  { reference: reference.original, config_json, layers, staging, }
+  {
+    reference: reference.original,
+    config_json,
+    layers,
+    staging,
+    staging_parent,
+  }
 }
 
 ///|
@@ -803,22 +810,25 @@ async fn blob_bytes_for_test(blob : PulledBlob) -> Bytes raise RegistryError {
 }
 
 ///|
-/// `workdir`：一次拉取的全部文件都落在 `{workdir}/mdive/{临时目录}/` 里。
+
+///|
+/// 一次拉取的中间产物全在**一个**目录里，并且收得干干净净（issue #133）。
 ///
-/// 目录结构是给「按前缀找自己那一摊」的清理逻辑看的（issue #138）：
-/// `mdive` 是固定的一层，里面那层才是这一次拉取的归属，每次都不一样。
-async test "a pull keeps every blob under workdir/mdive/<fresh dir>" {
+/// 现场是用户在 `/tmp` 下看见好几个 `dive-registry-*` / `dive-blobs-*` 的空壳：
+/// 落点散在系统临时目录的根下，谁也认不出那是什么；层与 `--save` 的归档还各占
+/// 一个。现在给了 `staging_parent` 就只留一层 `{parent}/dive-*`，
+/// `discard_streamed` 连外层一起带走。
+async test "staged blobs live in one parent directory and take it with them" {
   let source = fake_image()
   with_fake_registry(source, body=async fn(host) {
     let reference = @registry_cli.parse_reference("test/image:latest") catch {
       _ => fail("reference should parse")
     }
+    let parent = @fs.tmpdir(prefix="dive-parent-") catch {
+      err => fail("tmpdir: \{err}")
+    }
     let client = RegistryClient::connect(host, insecure=true) catch {
       _ => fail("cannot create the test client")
-    }
-    // 工作区自己造：这次拉取只该在这棵树下落文件
-    let root = @fs.tmpdir(prefix="dive-workdir-test-") catch {
-      err => fail("tmpdir: \{err}")
     }
     let pulled = pull_with_client(
       client,
@@ -826,18 +836,22 @@ async test "a pull keeps every blob under workdir/mdive/<fresh dir>" {
       fallback="http://\{host}",
       options=@registry_cli.PullOptions::new(
         stream_to_disk=true,
-        workdir=Some(root),
+        staging_parent=Some(parent),
       ),
     ) catch {
       err => fail("pull should succeed: \{err.to_string()}")
     }
     client.close()
+    // 落点：`{parent}/dive-blobs-*`，层与 config 都在里面
     let staging = match pulled.staging {
       Some(directory) => directory
-      None => fail("a streamed pull must have a staging directory")
+      None => fail("the layers should be streamed to disk")
     }
-    assert_true(staging.has_prefix(root + "/mdive/"))
-    // 每个 blobs 都该在那个目录里：config 一个、层两个
+    assert_true(staging.has_prefix("\{parent}/"))
+    let entries = @fs.readdir(parent) catch { _ => fail("readdir") }
+    assert_eq(entries.length(), 1)
+    assert_true(entries[0].has_prefix("dive-blobs-"))
+    // 每个 blob 都该在那个目录里：config 一个、层两个
     for blob in pulled.layers {
       let path = match blob.path {
         Some(path) => path
@@ -850,29 +864,99 @@ async test "a pull keeps every blob under workdir/mdive/<fresh dir>" {
       None => fail("the config blob should be on disk too")
     }
     assert_true(config_path.has_prefix(staging + "/"))
-    // 下一次拉取换一个目录：同名的 blob 不会互相踩（连接是另一个）
-    let second_client = RegistryClient::connect(host, insecure=true) catch {
-      err => fail("cannot create the second client: \{err.to_string()}")
+    let image = streamed_of(pulled, reference) catch {
+      err => fail("streaming should succeed: \{err.to_string()}")
     }
-    let again = pull_with_client(
-      second_client,
+    assert_eq(image.staging_parent, Some(parent))
+    // 收掉之后连接点都不剩：既没有半截 blob，也没有一个空壳
+    let _ = discard_local(image)
+    assert_false(@fs.exists(staging))
+    assert_false(@fs.exists(parent))
+  })
+}
+
+///|
+/// 下一次拉取换一个目录：同名（同 digest）的 blob 不会互相踩。
+async test "a second pull gets its own staging directory" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let parent = @fs.tmpdir(prefix="dive-parent-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let first = pull_with_client(
+      RegistryClient::connect(host, insecure=true) catch {
+        _ => fail("cannot create the first client")
+      },
       reference,
       fallback="http://\{host}",
       options=@registry_cli.PullOptions::new(
         stream_to_disk=true,
-        workdir=Some(root),
+        staging_parent=Some(parent),
+      ),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    let second = pull_with_client(
+      RegistryClient::connect(host, insecure=true) catch {
+        _ => fail("cannot create the second client")
+      },
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        staging_parent=Some(parent),
       ),
     ) catch {
       err => fail("the second pull should succeed: \{err.to_string()}")
     }
-    second_client.close()
-    let second = match again.staging {
+    let staging = match first.staging {
+      Some(directory) => directory
+      None => fail("the first pull must have a staging directory")
+    }
+    let again = match second.staging {
       Some(directory) => directory
       None => fail("the second pull must have a staging directory")
     }
-    assert_true(second.has_prefix(root + "/mdive/"))
-    assert_false(second == staging)
-    let _ = discard_paths([staging, second, root])
+    assert_false(again == staging)
+    let paths : Array[String] = [staging, again, parent]
+    let _ = discard_paths(paths)
+  })
+}
+
+///|
+/// `streamed_of` 造出来的 `StreamedImage` 要带上外层：不带的话
+/// `discard_streamed` 只删里面那层，`{parent}` 就变成用户眼里的空壳。
+async test "streamed_of carries the staging parent through" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let parent = @fs.tmpdir(prefix="dive-parent-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let pulled = pull_with_client(
+      RegistryClient::connect(host, insecure=true) catch {
+        _ => fail("cannot create the test client")
+      },
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        staging_parent=Some(parent),
+      ),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    assert_eq(pulled.staging_parent, Some(parent))
+    let image = streamed_of(pulled, reference) catch {
+      err => fail("streaming should succeed: \{err.to_string()}")
+    }
+    let _ = discard_local(image)
+    assert_false(@fs.exists(parent))
   })
 }
 
@@ -884,7 +968,7 @@ async test "a pull keeps every blob under workdir/mdive/<fresh dir>" {
 async test "staged blobs are named after what they are" {
   let source = fake_image()
   with_fake_registry(source, body=async fn(host) {
-    let root = @fs.tmpdir(prefix="dive-blob-name-test-") catch {
+    let parent = @fs.tmpdir(prefix="dive-blob-name-test-") catch {
       err => fail("tmpdir: \{err}")
     }
     // `stream_image` 自己按引用去连 host：测试里端口是随机的，只能借明文连接
@@ -892,7 +976,7 @@ async test "staged blobs are named after what they are" {
       @registry_cli.StreamRequest::new(
         reference="\{host}/test/image:latest",
         insecure=true,
-        workdir=Some(root),
+        staging_parent=Some(parent),
       ),
     ) catch {
       err => fail("streaming should succeed: \{err.to_string()}")
@@ -903,7 +987,7 @@ async test "staged blobs are named after what they are" {
       assert_true(@fs.exists(layer.path))
     }
     @registry_cli.discard_streamed(image)
-    let _ = discard_paths([root])
+    assert_false(@fs.exists(parent))
   })
 }
 

@@ -17,6 +17,8 @@ pub(all) struct SaveRequest {
   jobs : Int32
   /// 边下边写盘（层先进临时文件），见 `PullOptions::stream_to_disk`
   stream_to_disk : Bool
+  /// 临时目录的落点，见 `PullOptions::staging_parent`
+  staging_parent : String?
 }
 
 ///|
@@ -31,6 +33,7 @@ pub fn SaveRequest::new(
   on_tick~ : (() -> Unit noraise)? = None,
   jobs~ : Int32 = 4,
   stream_to_disk~ : Bool = true,
+  staging_parent~ : String? = None,
 ) -> SaveRequest {
   {
     reference,
@@ -43,6 +46,7 @@ pub fn SaveRequest::new(
     on_tick,
     jobs,
     stream_to_disk,
+    staging_parent,
   }
 }
 
@@ -105,6 +109,7 @@ pub async fn save_image(
     on_tick=request.on_tick,
     concurrency=request.jobs,
     stream_to_disk=request.stream_to_disk,
+    staging_parent=request.staging_parent,
   )
 
   // 拉取中途失败：`pull_image` 自己会收掉临时目录，这里只管「拉到了之后」
@@ -226,8 +231,9 @@ pub(all) struct StreamRequest {
   on_progress : ((PullEvent) -> Unit)?
   on_tick : (() -> Unit noraise)?
   jobs : Int32
-  /// 临时目录的根：落点是 `{workdir}/mdive/{临时目录}/`，`None` 用系统临时目录
-  workdir : String?
+  /// 临时目录的父目录。缺省是系统临时目录（`$TMPDIR` 或 `/tmp`）；
+  /// 给了就落在 `{parent}/dive-*`，与 `--save` 的产物同处一层
+  staging_parent : String?
 }
 
 ///|
@@ -239,9 +245,18 @@ pub fn StreamRequest::new(
   on_progress~ : ((PullEvent) -> Unit)? = None,
   on_tick~ : (() -> Unit noraise)? = None,
   jobs~ : Int32 = 4,
-  workdir~ : String? = None,
+  staging_parent~ : String? = None,
 ) -> StreamRequest {
-  { reference, platform, insecure, token, on_progress, on_tick, jobs, workdir, }
+  {
+    reference,
+    platform,
+    insecure,
+    token,
+    on_progress,
+    on_tick,
+    jobs,
+    staging_parent,
+  }
 }
 
 ///|
@@ -270,8 +285,11 @@ pub(all) struct StreamedImage {
   reference : String
   config_json : String
   layers : Array[StreamedBlob]
-  /// 临时目录；`discard_streamed` 收它
+  /// 这一次拉取的全部中间产物所在的目录；`discard_streamed` 收它
   staging : String
+  /// `staging` 外面那一层（`{parent}/dive-*` 的 `parent`）。
+  /// 缺省落点（系统临时目录）时为 `None`——那里没有我们建的外层
+  staging_parent : String?
 } derive(Eq, Debug)
 
 ///|
@@ -303,7 +321,7 @@ pub async fn stream_image(
     on_tick=request.on_tick,
     concurrency=request.jobs,
     stream_to_disk=true,
-    workdir=request.workdir,
+    staging_parent=request.staging_parent,
   )
   let image = pull_image(reference, options~)
   // 这之后无论成败，临时目录都不归 `RemoteImage` 管了：成功时归调用方
@@ -359,11 +377,15 @@ pub async fn stream_image(
     // 临时目录的归属交给调用方：`discard_streamed` 收它。
     // 这里不再调 `discard_image`——那会把刚拿到的 blob 一起删掉
     staging,
+    staging_parent: request.staging_parent,
   }
 }
 
 ///|
 /// 收掉一次流式拉取的临时目录。调用方必须在**读完之后**调。
+///
+/// 外层（`{parent}/dive-*`）也顺手收掉：里面这时已经空了，删得掉。
+/// 不删就会在用户指定的目录里留下一个空壳，正是 issue #133 看到的那一幕。
 pub async fn discard_streamed(image : StreamedImage) -> Unit noraise {
-  discard_directory(image.staging)
+  discard_staging(image.staging, image.staging_parent)
 }

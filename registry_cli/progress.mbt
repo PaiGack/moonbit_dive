@@ -14,6 +14,9 @@ pub(all) enum PullEvent {
   LayerProgress(index~ : Int32, received~ : Int64, total~ : Int64)
   /// 一层结束
   LayerDone(index~ : Int32, bytes~ : Int64)
+  /// 层的落点定了：这一批中间产物都在这儿（`dive-blobs-*` 或用户指定的目录）。
+  /// 报出来是为了让「下到哪儿去了」有答案——700MB 的 blob 不该是个谜
+  Staged(directory~ : String)
   /// 整体已经拿到多少（压缩后字节）。并发拉取时它是唯一可信的整体口径：
   /// 渲染层靠「完成层之和 + 当前层」自己推算，多层交错时必然算错。
   Progress(received~ : Int64, total~ : Int64)
@@ -56,6 +59,7 @@ pub impl Show for PullEvent with fn to_string(self) {
       }
       "overall \{human_bytes(received)} / \{human_bytes(total)}\{percent}"
     }
+    Staged(directory~) => "staging in \{directory}"
     Packing(note~) => note
     Writing(path~, bytes~) => "writing \{path} (\{human_bytes(bytes)})"
   }

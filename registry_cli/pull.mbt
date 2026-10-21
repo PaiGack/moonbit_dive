@@ -17,17 +17,14 @@ pub struct PullOptions {
   /// 代价是「一次磁盘写 + 一次磁盘读」——OCI layout 直接把它抄过去，
   /// docker-archive 则要读回来解压。换来的是 700MB 的层不再要求一整块内存。
   stream_to_disk : Bool
-  /// 临时目录的根：一次拉取的全部文件（config + 每一层）都落在
-  /// `{workdir}/mdive/{临时目录}/` 里，`None` 表示用系统临时目录（`/tmp`）。
-  ///
-  /// 目录每次都不同：`mdive` 这一层是给「按前缀找自己那一摊」的清理逻辑看的，
-  /// 里面那一层才是这一次拉取的归属。
-  workdir : String?
   /// 同时在途的层数。1 = 老行为（逐层串行），0 也按 1 处理。
   ///
   /// 并发只对「多层小层」有收益：单层镜像一点不快，
   /// 省下来的大头是 CDN 的每连接限速与首字节延迟，不是带宽。
   concurrency : Int32
+  /// 临时目录的父目录；缺省用系统临时目录。
+  /// 给了就落在 `{parent}/dive-*`，一次拉取的东西全在同一个可见的目录里
+  staging_parent : String?
 }
 
 ///|
@@ -40,7 +37,7 @@ pub fn PullOptions::new(
   on_tick~ : (() -> Unit noraise)? = None,
   concurrency~ : Int32 = 4,
   stream_to_disk~ : Bool = true,
-  workdir~ : String? = None,
+  staging_parent~ : String? = None,
 ) -> PullOptions {
   {
     platform,
@@ -50,13 +47,13 @@ pub fn PullOptions::new(
     on_tick,
     concurrency,
     stream_to_disk,
-    workdir,
+    staging_parent,
   }
 }
 
 ///|
 pub impl Show for PullOptions with fn to_string(self) {
-  "PullOptions(insecure=\{self.insecure}, concurrency=\{self.concurrency}, stream_to_disk=\{self.stream_to_disk}, workdir=\{self.workdir})"
+  "PullOptions(insecure=\{self.insecure}, concurrency=\{self.concurrency}, stream_to_disk=\{self.stream_to_disk}, staging_parent=\{self.staging_parent})"
 }
 
 ///|
@@ -150,7 +147,10 @@ pub(all) struct RemoteImage {
   /// 流式落盘时层所在的临时目录；`None` 表示字节都在内存里，无需清理。
   /// 可写：`spill_layers_to_disk` 可能在打包前才把目录建出来
   mut staging : String?
-  /// `staging` 这个目录这次真的被用过吗。
+  /// 临时目录的父目录（`{parent}/dive-*` 的外层）；缺省落点时为 `None`
+  /// （`spill_layers_to_disk` 中途才建目录时照着它走，见 `pull_with_client`）
+  staging_parent : String?
+  /// `staging` 这个目录这一次真的落进了东西吗。
   ///
   /// 「建了目录」与「往里写过字节」是两件事：目录在 `pull_with_client` 里
   /// 一开始就建好了，一层都没落地时它是个空壳。空壳归我们，随便删；
@@ -247,9 +247,11 @@ pub async fn pull_with_client(
   notify(options, Plan(layers=manifest.layers.length(), bytes=plan_bytes))
   // 流式落盘的落点：放在临时目录，生命周期跟 `RemoteImage` 绑死
   let staging = if options.stream_to_disk {
-    let directory = create_staging_dir(options.workdir, "dive-blobs-") catch {
-      err => raise Io("cannot create a staging directory: \{err}")
-    }
+    let directory = make_staging_dir(
+      parent=options.staging_parent,
+      prefix="dive-blobs-",
+    )
+    notify(options, Staged(directory~))
     Some(directory)
   } else {
     None
@@ -257,10 +259,13 @@ pub async fn pull_with_client(
   // 这次有没有字节真落进 `staging`。`false` 时那是个空壳，收掉它不伤任何人；
   // `true` 时它装着别人手上的层
   let used : Ref[Bool] = { val: false, }
-  // 拉一半失败：临时目录里的半截 blob 不能留着。**写过东西才删**——一个还能
-  // 用的目录不该因为一次半途而废的拉取被清空（issue #133）
+  // 拉一半失败：空壳照收，落了东西就留着。
+  //
+  // 不能一律删：写进去的字节此刻可能正被按路径用着（`--save` 打包读的就是
+  // `PulledBlob::path`），整棵清空等于把还没人读完的层从脚下抽走（issue #133）。
+  // 收尾口径只有一处（`discard_image` 看 `staging_used`），这里跟着走。
   errdefer (match staging {
-    Some(directory) => if used.val { discard_directory(directory) }
+    Some(directory) => if !used.val { discard_directory(directory) }
     None => ()
   })
   let (config, layers) = fetch_all(
@@ -283,6 +288,7 @@ pub async fn pull_with_client(
     // 服务端没说是哪个平台，硬记成请求参数只会让报告说谎（见 `choose_manifest`）
     platform: picked_platform,
     staging,
+    staging_parent: options.staging_parent,
     staging_used: used.val,
   }
 }
@@ -310,12 +316,12 @@ pub async fn spill_layers_to_disk(
         let directory = match pending {
           Some(directory) => directory
           None => {
-            let created = create_staging_dir(None, "dive-blobs-") catch {
-              err =>
-                raise Io(
-                  "cannot create a staging directory to free \{blob.digest}: \{err}",
-                )
-            }
+            // 落点跟着 `RemoteImage` 已有的那层走：`--save` 先落盘再打包时，
+            // 落点该和归档在同一个目录下（`spill` 本身不知道该去哪儿）
+            let created = make_staging_dir(
+              parent=image.staging_parent,
+              prefix="dive-blobs-",
+            )
             image.staging = Some(created)
             pending = Some(created)
             created
@@ -347,7 +353,20 @@ pub async fn discard_image(image : RemoteImage) -> Unit noraise {
     return
   }
   match image.staging {
-    Some(directory) => discard_directory(directory)
+    Some(directory) => discard_staging(directory, image.staging_parent)
+    None => ()
+  }
+}
+
+///|
+/// 收掉一次拉取的临时目录，顺手收掉它外面那层（`.mdive/` 之类）。
+///
+/// 外层只在**空了**才删得掉：`--save` 的归档就落在同一条目录下，那时候
+/// 这次 `rmdir` 会失败——这正是我们要的，产物归用户，不由我们替他决定去留。
+async fn discard_staging(directory : String, parent : String?) -> Unit noraise {
+  discard_directory(directory)
+  match parent {
+    Some(parent) => discard_if_empty(parent)
     None => ()
   }
 }
@@ -355,6 +374,16 @@ pub async fn discard_image(image : RemoteImage) -> Unit noraise {
 ///|
 async fn discard_directory(directory : String) -> Unit noraise {
   try @fs.rmdir(directory, recursive=true) catch {
+    _ => ()
+  } noraise {
+    _ => ()
+  }
+}
+
+///|
+/// 删一个空目录；里面还有东西就不动它（`rmdir` 自己会失败，这里咽掉即可）。
+async fn discard_if_empty(directory : String) -> Unit noraise {
+  try @fs.rmdir(directory) catch {
     _ => ()
   } noraise {
     _ => ()
@@ -1022,48 +1051,6 @@ async fn remove_quietly(path : String) -> Unit noraise {
 }
 
 ///|
-/// 一次拉取的落点目录：`{根}/mdive/{临时目录}/`。
-///
-/// `mdive` 这一层是给「按前缀找自己那一摊」的清理逻辑看的，里面那层才是
-/// 这一次拉取的归属——每次拉取都不一样，所以两次拉取不会互相踩。
-/// `root` 为 `None` 时根就是系统临时目录（`/tmp`）。
-async fn create_staging_dir(
-  root : String?,
-  prefix : String,
-) -> String raise RegistryError {
-  let base = match root {
-    Some(text) if !text.is_empty() => "\{text}/mdive"
-    _ => return @fs.tmpdir(prefix~) catch { err => raise Io("\{err}") }
-  }
-  @fs.mkdir(base, recursive=true, allow_exist=true) catch {
-    err => raise Io("\{base}: \{err}")
-  }
-  // `tmpdir` 只会往系统临时目录里建，名字还带 pid：这里在 `mdive/` 下自己造一层，
-  // 结构才是 `{根}/mdive/{临时目录}/`。撞名就重试（概率极低，但撞上不能不管）
-  let mut suffix = 0
-  while suffix < 64 {
-    let directory = "\{base}/\{prefix}\{suffix}"
-    let taken = try @fs.exists(directory) catch {
-      err => raise Io("\{directory}: \{err}")
-    } noraise {
-      exists => exists
-    }
-    if !taken {
-      let created = try @fs.mkdir(directory) catch {
-        err => raise Io("\{directory}: \{err}")
-      } noraise {
-        _ => true
-      }
-      if created {
-        return directory
-      }
-    }
-    suffix = suffix + 1
-  }
-  raise Io("\{base}: cannot create a staging directory")
-}
-
-///|
 /// staging 目录里一个 blob 的文件名。用 digest 的 hex 当名字：不同层不会撞，
 /// 出事时一眼能看出这半个文件是谁的。
 fn staged_blob_path(directory : String, digest : String) -> String {
@@ -1651,4 +1638,45 @@ fn strip_scheme(origin : String) -> String {
   } else {
     origin
   }
+}
+
+///|
+/// 在指定目录下开一个这次拉取专用的临时目录，返回它的路径。
+///
+/// 为什么要给落点：默认的 `@fs.tmpdir` 把事情摊在 `/tmp` 根下，
+/// 一次拉取就留下一个 `dive-blobs-*` / `dive-registry-*` 目录。
+/// 用户既不知道该去 `/tmp` 里找，也认不出那一堆随机后缀是干什么的——
+/// issue #133 里看到的「几个文件夹都是空的」就是它们。
+///
+/// 给了 `parent` 就落在 `parent` 里一层：`{parent}/{prefix}*` 只有一个目录，
+/// 镜像的全部中间产物（压缩 blob、`--save` 的归档）都在它里面。
+pub async fn make_staging_dir(
+  parent~ : String? = None,
+  prefix~ : String = "dive-",
+) -> String raise RegistryError {
+  match parent {
+    Some(parent) => {
+      @fs.mkdir(parent, recursive=true, allow_exist=true) catch {
+        err => raise Io("cannot create \{parent}: \{err}")
+      }
+      let path = "\{parent}/\{prefix}\{unique_suffix()}"
+      @fs.mkdir(path, permission=0o700) catch {
+        err => raise Io("cannot create \{path}: \{err}")
+      }
+      path
+    }
+    None =>
+      @fs.tmpdir(prefix~) catch {
+        err => raise Io("cannot create a temporary directory: \{err}")
+      }
+  }
+}
+
+///|
+/// 一个够用的唯一后缀：单调时钟的纳秒值（每毫秒递增，撞不到前一次的目录）。
+///
+/// `@fs.tmpdir` 那套（`dive-foo.893.9d53d17c`）只能用在系统临时目录下；
+/// 这里要落在用户给的父目录里，得自己起名。
+fn unique_suffix() -> String {
+  @async.now().to_string()
 }

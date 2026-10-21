@@ -7,7 +7,6 @@ import {
   "PaiGack/dive/tui",
   "moonbit-community/tty",
   "moonbitlang/async",
-  "moonbitlang/async/fs" @async_fs,
   "moonbitlang/core/argparse",
   "moonbitlang/x/fs",
 }

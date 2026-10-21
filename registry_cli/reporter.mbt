@@ -57,6 +57,10 @@ pub struct PullReporter {
   mut speed : Double
   /// 上一次真正往终端写的时刻（限频用；`None` = 还没写过）
   mut painted_at : Int64?
+  /// 已经收过尾（`finish` 过了）。收尾之后再来的进度格一律丢掉：
+  /// 那一刻 `\r` 回头重画的就是「downloaded N in Xs」那一行，
+  /// 收尾信息会被一个百分比就地覆盖掉
+  mut finished : Bool
 }
 
 ///|
@@ -103,6 +107,7 @@ pub fn PullReporter::with_clock(
     speed_mark: None,
     speed: 0.0,
     painted_at: None,
+    finished: false,
   }
 }
 
@@ -168,6 +173,10 @@ fn write_stderr(text : String) -> Unit noraise {
 /// 进度行写 stderr：报告可能走 stdout 被管道 / 重定向消费，
 /// 混进去的 `\r` 会让下游拿到一堆控制字符（也是为什么进度默认不该进报告）。
 pub fn PullReporter::render(self : PullReporter, event : PullEvent) -> Unit {
+  // 收尾是最后一句话：之后的进度只说明「还有尾巴没落地」，不该盖掉它
+  if self.finished {
+    return
+  }
   match event {
     Started(reference~) => self.line("pulling \{reference}")
     Plan(layers~, bytes~) => {
@@ -225,6 +234,7 @@ pub fn PullReporter::render(self : PullReporter, event : PullEvent) -> Unit {
         None => self.overall_line()
       }
     }
+    Staged(directory~) => self.line("staging in \{directory}")
     Packing(note~) => self.line(note)
     Writing(path~, bytes~) =>
       self.line("writing \{path} (\{human_bytes(bytes)})")
@@ -240,6 +250,7 @@ pub fn PullReporter::finish(
   self : PullReporter,
   failed~ : Bool,
 ) -> Unit noraise {
+  self.finished = true
   if self.pending_line {
     write_stderr("\n")
     self.pending_line = false

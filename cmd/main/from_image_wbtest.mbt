@@ -646,6 +646,7 @@ async test "a streamed image survives to the analysis path" {
       },
     ],
     staging: directory,
+    staging_parent: None,
   }
   let source = registry_source(
     parse_options(["demo:latest", "--no-tui"]),
