@@ -152,17 +152,29 @@ pub fn Analysis::total_bytes(self : Analysis) -> Int32 {
 /// base image 的内容被覆盖不该算用户的账。
 ///
 /// 口径与 `total_bytes` 同源，只是砍掉第 0 层：累加每层的 `written_bytes`
-/// **减去**该层吃掉的旧内容（`wasted` + `erased`），剩下的才是净写入。
-/// 层数 ≤ 1 时没有用户层，返回 0。
+/// **减去**该层吃掉的旧内容（`wasted` + `erased`）——`erased` 是 opaque 那一栏，
+/// 与覆盖那条账互不重叠。层数 ≤ 1 时没有用户层，返回 0。
+///
+/// 结果夹在 0 以上：用户层写得比删得少时（「上来先清掉半个基础镜像」），
+/// 净写入是负数，而它是 `user wasted` 的分母——负分母会让百分比失真，
+/// 也会把「省了空间」读成「写了 -22GB」。减到 0 只是记账下限，不是谎报：
+/// 分母为 0 时 `user_wasted_percent` 直接返回 0。
 pub fn Analysis::user_bytes(self : Analysis) -> Int32 {
   let mut total = 0
   for usage in self.usages {
     if usage.layer == 0 {
       continue
     }
-    total = total + usage.written_bytes - usage.wasted_bytes
+    total = total +
+      usage.written_bytes -
+      usage.wasted_bytes -
+      usage.erased_bytes
   }
-  total
+  if total < 0 {
+    0
+  } else {
+    total
+  }
 }
 
 ///|
@@ -204,7 +216,8 @@ pub fn Analysis::waste_ranking(
 /// 值 `0` 表示「这一层把它删了」（whiteout / opaque），但不代表它没占过空间：
 /// 那 0 会参与 min 的计算，原大小则早已计入 cumulative。
 pub(all) struct VersionTable {
-  versions : Map[String, Array[Int32]]
+  /// 路径 -> (层下标 -> 该层的字节数)。稀疏：只记真正写过的层。
+  versions : Map[String, Map[Int32, Int32]]
 } derive(Eq, Debug)
 
 ///|

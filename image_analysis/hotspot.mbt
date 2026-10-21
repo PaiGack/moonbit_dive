@@ -32,38 +32,57 @@ pub extend Hotspot with Show::{to_string, output}
 ///
 /// `depth` 限制返回的目录深度（`1` 只看根的直接子目录），便于把报告压到
 /// 可读的篇幅；`limit` 限制条数，传负数表示不截断。
+///
+/// 口径是「一次父链上卷」而不是「每个目录扫一遍全表」：每个文件沿它的祖先
+/// 各记一笔，代价是 `文件数 × 深度`，与目录数无关（issue #122）。
+/// 老写法在 10⁵ 文件 / 10⁴ 目录的镜像上是 10⁹ 次前缀比较，几十秒起步。
 pub fn hotspots(
   tree : @layer_tree.FileTree,
   depth~ : Int32 = 1,
   limit~ : Int32 = 10,
 ) -> Array[Hotspot] {
-  let files = file_sizes(tree)
-  let result = []
-  for path in tree.paths() {
-    let node = match tree.get(path) {
-      Some(node) => node
-      None => continue
-    }
-    if !node.is_dir() {
-      continue
-    }
-    if depth >= 0 && @layer_tree.path_depth(path) > depth {
-      continue
-    }
-    let mut total = 0
-    let mut count = 0
-    for file_path, size in files {
-      if @layer_tree.path_is_under(file_path, path) {
-        total = total + size
-        count = count + 1
+  let result : Array[Hotspot] = []
+  let paths = tree.paths()
+  let cumulative : Map[String, Int32] = Map([])
+  let counted : Map[String, Int32] = Map([])
+  for path, size in file_sizes(tree) {
+    // `/a/b/c` -> `/a/b` -> `/a`：每级祖先都记一笔。根不在结果里，
+    // 深度越界的层只跳过自己，更浅的祖先照记（`depth` 只裁剪输出）
+    let mut current = @layer_tree.parent_path(path)
+    while current != "/" {
+      if depth < 0 || @layer_tree.path_depth(current) <= depth {
+        let total : Int32 = match cumulative.get(current) {
+          Some(total) => total
+          None => 0
+        }
+        cumulative.set(current, total + size)
+        let seen : Int32 = match counted.get(current) {
+          Some(total) => total
+          None => 0
+        }
+        counted.set(current, seen + 1)
       }
+      current = @layer_tree.parent_path(current)
     }
-    result.push({
-      path,
-      cumulative_bytes: total,
-      files: count,
-      wasted_bytes: 0,
-    })
+  }
+  // 只出候选：目录、且在 `depth` 之内。根不算（它不在 `paths()` 里，且全量没有信息量）
+  for path in paths {
+    let is_dir = match tree.get(path) {
+      Some(node) => node.is_dir()
+      None => false
+    }
+    if !is_dir || (depth >= 0 && @layer_tree.path_depth(path) > depth) {
+      continue
+    }
+    let bytes : Int32 = match cumulative.get(path) {
+      Some(total) => total
+      None => 0
+    }
+    let files : Int32 = match counted.get(path) {
+      Some(total) => total
+      None => 0
+    }
+    result.push({ path, cumulative_bytes: bytes, files, wasted_bytes: 0, })
   }
   result.sort_by(fn(left, right) {
     if left.cumulative_bytes != right.cumulative_bytes {

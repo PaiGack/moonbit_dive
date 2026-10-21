@@ -175,6 +175,12 @@ fn node_differs(previous : Node, current : Node) -> Bool {
 ///
 /// 每个节点都重建（类型、大小、权限、属主、内容指纹一并拷贝），因此快照与后续层的
 /// 写入互相隔离；只拷节点不拷历史，`snapshot` 的用途是拿「某一时刻的形状」去比。
+///
+/// 为什么不按路径共享节点（issue #122 的第 5 项试过）：`FileTree` 对外暴露
+/// `get` / `root().children`，拿到的是 `Node` 引用，而 `apply_layer` 覆写路径时
+/// 只改字段、不换新节点（要保住 `parent.children` 里那一份）。一旦共享，
+/// 「先快照、再叠层」就会把快照里的节点一起改掉，`diff_snapshots` 全判没动过。
+/// 真要共享，得先把 P2 的节点全部改成「覆写即换新节点」，那是另一个量级的改动。
 pub fn FileTree::snapshot(self : FileTree) -> FileTree {
   let copy = FileTree::new()
   for path, node in self.nodes {
