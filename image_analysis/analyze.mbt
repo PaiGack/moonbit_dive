@@ -43,7 +43,7 @@ fn snapshot_paths(tree : @layer_tree.FileTree) -> Map[String, Int32] {
   let paths : Map[String, Int32] = Map([])
   for path in tree.paths() {
     let size = match tree.get(path) {
-      Some(node) => if node.is_file() { node.size } else { 0 }
+      Some(node) => if node.is_file() { node.info.size } else { 0 }
       None => 0
     }
     paths.set(path, size)
@@ -108,7 +108,7 @@ fn Ledger::finish(
   let mut total = 0
   for path in tree.paths() {
     match tree.get(path) {
-      Some(node) => if node.is_file() { total = total + node.size }
+      Some(node) => if node.is_file() { total = total + node.info.size }
       None => ()
     }
   }
@@ -241,7 +241,7 @@ fn Ledger::sync_sizes(
       Some(node) => {
         // 目录 / 链接在树上的大小恒为 0，`is_file()` 拦住它们只是为了让
         // 「大小取树上那一份」这件事只对常规文件发生
-        size.size = if node.is_file() { node.size } else { 0 }
+        size.size = if node.is_file() { node.info.size } else { 0 }
         size.writes = size.writes + 1
         size.deleted = false
         size.current_layer = Some(layer)
@@ -277,7 +277,7 @@ fn apply_to_snapshot(
   let next = before.copy()
   for entry in plan.entries {
     let size = match tree.get(entry.path) {
-      Some(node) => if node.is_file() { node.size } else { 0 }
+      Some(node) => if node.is_file() { node.info.size } else { 0 }
       None => 0
     }
     next.set(entry.path, size)
@@ -371,8 +371,8 @@ pub fn file_sizes(tree : @layer_tree.FileTree) -> Map[String, Int32] {
   for path in tree.paths() {
     match tree.get(path) {
       Some(node) =>
-        if node.is_file() && node.size > 0 {
-          result.set(path, node.size)
+        if node.is_file() && node.info.size > 0 {
+          result.set(path, node.info.size)
         }
       None => ()
     }

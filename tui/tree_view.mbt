@@ -201,11 +201,11 @@ fn flatten(tree : @layer_tree.FileTree, diff : @layer_tree.Diff?) -> Array[Row] 
       // `/usr/bin/sh` 深度是 3；`/` 自身已排除，用去掉前导 `/` 后的段数
       depth: segment_count(path),
       is_dir: node.is_dir(),
-      size: node.size,
-      layer: node.layer,
+      size: node.info.size,
+      layer: node.info.layer,
       status,
-      mode: node.mode,
-      mtime: node.mtime,
+      mode: node.info.mode,
+      mtime: node.info.mtime,
     })
   }
   rows

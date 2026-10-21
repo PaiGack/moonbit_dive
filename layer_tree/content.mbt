@@ -97,8 +97,7 @@ pub fn FileTree::scan_content(
   raws : Array[Bytes],
 ) -> Unit noraise {
   for _, node in self.nodes {
-    node.digest = None
-    node.files = []
+    self.set({ ..node, digest: None, files: [], })
   }
   for index, raw in raws {
     let scan = content_scan(raw)
@@ -108,16 +107,21 @@ pub fn FileTree::scan_content(
         None => continue
       }
       // 路径已经被更后面的层改写：这一层的内容不再代表终值
-      if node.layer != index {
+      if node.info.layer != index {
         continue
       }
       let previous = match node.digest {
         Some(previous) => previous.changes
         None => 0
       }
-      node.digest = Some({ changes: previous + 1, hash, })
-      let size = if hash is Some(_) { node.size } else { 0 }
-      node.files.push({ layer: index, size, hash, })
+      let size = if hash is Some(_) { node.info.size } else { 0 }
+      let files = node.files.copy()
+      files.push({ layer: index, size, hash, })
+      self.set({
+        ..node,
+        digest: Some({ changes: previous + 1, hash, }),
+        files,
+      })
     }
   }
 }

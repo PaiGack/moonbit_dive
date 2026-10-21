@@ -89,8 +89,8 @@ async test "subtree keeps only the requested prefix" {
 }
 
 ///|
-/// 子视图里的节点不能被后续层污染（拷贝而非引用）。
-async test "subtree nodes are copied" {
+/// 子视图里的节点与源视图共用一个不可变节点：谁都改不到谁。
+async test "subtree shares immutable nodes with its view" {
   let views = browse_layers([build_tar([File("a.txt", "hello")])]) catch {
     err => fail(err.to_string())
   }
@@ -99,12 +99,15 @@ async test "subtree nodes are copied" {
     Some(node) => node
     None => fail("expected /a.txt")
   }
-  node.size = 999
+  assert_eq(node.info.size, 5)
+  // 换节点只影响这一棵树：视图里那份还是原样的
+  subtree.set(node.with_info({ ..node.info, size: 999, }))
   let original = match views[0].tree.get("/a.txt") {
     Some(node) => node
     None => fail("expected /a.txt in view")
   }
-  assert_eq(original.size, 5)
+  assert_eq(original.info.size, 5)
+  assert_eq(subtree.require("/a.txt").info.size, 999)
 }
 
 ///|

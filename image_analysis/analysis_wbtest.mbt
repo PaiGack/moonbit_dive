@@ -119,7 +119,7 @@ async test "opaque directory erases previous content but keeps the new writes" {
   ])
   assert_true(tree.get("/etc/old.conf") is None)
   assert_true(tree.get("/etc/stale.conf") is None)
-  assert_eq(tree.require("/etc/new.conf").size, 2)
+  assert_eq(tree.require("/etc/new.conf").info.size, 2)
   assert_eq(analysis.final_file_bytes, 2)
   assert_eq(analysis.usages[1].erased_bytes, 15)
   assert_eq(analysis.deleted_wasted, 15)
@@ -136,7 +136,7 @@ async test "same-layer rewrites only count once" {
       @layer_tree.TarEntrySpec::File("dup", "1234567890"),
     ]),
   ])
-  assert_eq(tree.require("/dup").size, 10)
+  assert_eq(tree.require("/dup").info.size, 10)
   assert_eq(analysis.final_file_bytes, 10)
   assert_eq(analysis.usages[0].written_bytes, 10)
   assert_eq(analysis.usages[0].added_paths, 1)

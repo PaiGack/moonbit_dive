@@ -42,7 +42,7 @@ async test "zstd: the decompressed layer applies to a file tree" {
   )
   assert_eq(tree.size(), 2)
   match tree.get("/etc/motd") {
-    Some(node) => assert_eq(node.size, 16)
+    Some(node) => assert_eq(node.info.size, 16)
     None => fail("/etc/motd is missing from the applied tree")
   }
 }

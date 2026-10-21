@@ -81,7 +81,8 @@ pub async fn apply_layers_with_diffs(
     let raw = decompress_layer(stream, algorithm) catch {
       err => raise Decompress(err)
     }
-    // whiteout 只在树的增量上可见，因此逐层「先复制、再应用、再比对」
+    // whiteout 只在树的增量上可见，因此逐层「先快照、再应用、再比对」。
+    // 快照按路径共享没动过的节点，这一步不再是一份全量拷贝
     let before = tree.snapshot()
     apply_layer(tree, raw, index) catch {
       err => raise Tar(err)
@@ -153,11 +154,11 @@ fn node_differs(previous : Node, current : Node) -> Bool {
   // 元数据逐项比。注意这里先各自算成具名变量再合：
   // 多行 `||` 链直接写在 `if` 条件里时，实测后半段不参与短路
   // （`a ||\n b ||\n c` 只按第一项判），所以不省这两步
-  let kind_differs = previous.kind != current.kind
-  let mode_differs = previous.mode != current.mode
-  let uid_differs = previous.uid != current.uid
-  let gid_differs = previous.gid != current.gid
-  let size_differs = previous.size != current.size
+  let kind_differs = previous.info.kind != current.info.kind
+  let mode_differs = previous.info.mode != current.info.mode
+  let uid_differs = previous.info.uid != current.info.uid
+  let gid_differs = previous.info.gid != current.info.gid
+  let size_differs = previous.info.size != current.info.size
   if kind_differs || mode_differs || uid_differs || gid_differs || size_differs {
     return true
   }
@@ -173,38 +174,38 @@ fn node_differs(previous : Node, current : Node) -> Bool {
 ///|
 /// 把当前树复制一份，用于逐层比对。
 ///
-/// 每个节点都重建（类型、大小、权限、属主、内容指纹一并拷贝），因此快照与后续层的
-/// 写入互相隔离；只拷节点不拷历史，`snapshot` 的用途是拿「某一时刻的形状」去比。
+/// 节点不可变（见 `Node` 的注释），于是「复制」可以是**按路径共享**：
+/// 没动过的路径直接指向同一份 `Node`，`children` 数组、`digest`、`files`
+/// 一概不拷。后面任何一层想改某个路径，都是换一个新 `Node` 顶掉
+/// `nodes` 里的那一项，快照手里那份一个字节都不会变。
 ///
-/// 为什么不按路径共享节点（issue #122 的第 5 项试过）：`FileTree` 对外暴露
-/// `get` / `root().children`，拿到的是 `Node` 引用，而 `apply_layer` 覆写路径时
-/// 只改字段、不换新节点（要保住 `parent.children` 里那一份）。一旦共享，
-/// 「先快照、再叠层」就会把快照里的节点一起改掉，`diff_snapshots` 全判没动过。
-/// 真要共享，得先把 P2 的节点全部改成「覆写即换新节点」，那是另一个量级的改动。
+/// 所以这里拷的是「一张路径表」与树的记账（层数、历史、统计），
+/// 不拷节点。issue #122 的第 5 项要的就是这一步：原写法每层全量
+/// 重建节点，`层数 × 节点数` 的分配在十万级路径上是实打实的开销。
 pub fn FileTree::snapshot(self : FileTree) -> FileTree {
   let copy = FileTree::new()
   for path, node in self.nodes {
-    if path == "/" {
-      continue
-    }
-    let cloned = Node::new(
-      node.path,
-      node.kind,
-      size=node.size,
-      mode=node.mode,
-      uid=node.uid,
-      gid=node.gid,
-      layer=node.layer,
-      mtime=node.mtime,
-    )
-    cloned.digest = node.digest
-    cloned.files = node.files.copy()
-    copy.nodes.set(path, cloned)
-    copy.attach(cloned)
+    copy.nodes.set(path, node)
   }
+  // 根连同它的 `children` 一起共享：`root().children` 拿到的必须是
+  // 快照那一刻的形状。`FileTree::new` 先造了棵空树，这里盖掉它
+  copy.nodes.set("/", self.root())
+  copy.orphans = self.orphans.copy()
   copy.layers = self.layers
+  copy.history = self.history
+  // 统计是可变结构（逐层累加），必须自己留一份，否则两份树共用一个数组
+  copy.layer_stats = self.layer_stats.map(fn(stat) {
+    {
+      layer: stat.layer,
+      changed_paths: stat.changed_paths,
+      changed_bytes: stat.changed_bytes,
+      deleted_paths: stat.deleted_paths,
+    }
+  })
   copy
 }
+
+///|
 
 ///|
 /// 聚合比较：把 `base` 到 `layer` 这一段区间的改动**累积**成一份 diff。
