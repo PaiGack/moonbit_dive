@@ -339,7 +339,7 @@ async test "cli inspect separates missing from broken" {
 /// 三家 `inspect` 说「本地没有」的原话不一样，都要认成 `ImageNotFound`。
 ///
 /// 漏一条的代价不是文案难听：把「本地没有」判成「后端坏了」，
-/// 该拉的镜像会直接判死（`--from-image` 默认先 inspect 判缺失再拉）。
+/// 该拉的镜像会直接判死（镜像引用默认先 inspect 判缺失再拉）。
 /// 这些字符串是从各家 CLI 的实际输出里抄的，不是编的。
 async test "inspect maps each tool's missing-image wording to ImageNotFound" {
   let cases = [

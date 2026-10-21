@@ -1,7 +1,7 @@
 ///|
-/// `--from-registry` / `--save` 分支的选项。
+/// 远端镜像 / `--save` 分支的选项。
 ///
-/// 两个动作共用一组参数：`--save` 只落盘、`--from-registry` 落盘后继续分析。
+/// 两个动作共用一组参数：`--save` 只落盘，镜像引用那条路落盘后继续分析。
 /// 合成一个结构是因为它们面对的是同一件事——「远端 registry 里的镜像」，
 /// 拆成两套参数只会让两个分支的写法慢慢漂移。
 priv struct RegistryOptions {
@@ -19,6 +19,9 @@ priv struct RegistryOptions {
 
 ///|
 /// 远端 registry → 内存里的镜像来源：落盘到临时目录，再走既有 `ImageSource::load`。
+///
+/// 位置参数是镜像引用、而这台机器又没有 docker 时走这条路（issue #109）；
+/// `--save` 直接调 `save_remote`，不经过这里。
 ///
 /// 落成文件再读回来是**故意的**：三种输入格式（docker-archive / OCI layout /
 /// 单层 tar）的识别逻辑只有一份，不该为「内存里的镜像」再写一套。

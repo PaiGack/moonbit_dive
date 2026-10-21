@@ -5,7 +5,7 @@
 /// `SSL_CTX_set_default_verify_paths`，后者**只在系统装了 CA 包时**才成功
 /// （Debian 系是 `ca-certificates`）。缺了它，`@http.Client` 的构造函数直接抛，
 /// 表现是 `cannot create an HTTP client for <host>`——一句话把「机器没装 CA 包」
-/// 说成「连不上 registry」，`--from-image` 那条已经不依赖网络的通路也跟着红掉。
+/// 说成「连不上 registry」，本地归档那条已经不依赖网络的通路也跟着红掉。
 ///
 /// 所以这里把「证书到底在哪」摊开：能读到一份就用它，实在没有才退到系统默认。
 /// 找到的那条路径会随报告一起打出来，排查时不用猜。

@@ -12,7 +12,7 @@ MoonBit 重写 [wagoodman/dive](https://github.com/wagoodman/dive)（Go，MIT）
 - `image_ci`：镜像体积门禁规则 DSL 与 CLI（exit code / CI 注解）——**已落地**，见 [`image_ci/README.mbt.md`](image_ci/README.mbt.md)
 - `docker_cli`：Docker Engine 封装（docker/podman/nerdctl CLI 后端 + unix socket Engine 后端），把镜像名变成 tar/layout（独立包，不被前四包依赖）
 - `registry_cli`：直接连 registry 拉镜像（OCI Distribution Pull），落成本地 tar / OCI layout，
-  **不依赖本地 docker**（`--from-registry` / `--save`，native only）
+  **不依赖本地 docker**（镜像引用在没有 docker 时自动走它，`--save` 也走它；native only）
 - `tui`：全屏交互式看树（基于 `moonbit-community/tty`，native only），alternate screen + 带边框分栏，
   树与详情可 `Tab` 切焦点、`?` 出帮助，把逐层视图接成可上下走、可折叠、可切层的画面；
   键鼠都能用（点击选行 / 滚轮滚面板 / 右键切展开）
@@ -33,33 +33,31 @@ moon run --target native cmd/main -- demo-image.tar --layer 1 --path /app
 
 # 全屏交互式看树（TUI）：上下走行、折叠目录、左右切层
 moon run --target native cmd/main -- demo-image.tar --tui
-moon run --target native cmd/main -- nginx:latest --from-image --tui
+moon run --target native cmd/main -- nginx:latest --tui
 
 # 按效率看路径：谁把 efficiency 分数拉下来的
 moon run --target native cmd/main -- demo-image.tar --efficiency
 moon run --target native cmd/main -- demo-image.tar --efficiency --top 20 --path /app
 moon run --target native cmd/main -- demo-image.tar --efficiency --format json
 
-# 不落盘直接分析在线镜像：位置参数当镜像名，走 docker_cli 取归档
-moon run --target native cmd/main -- nginx:latest --from-image
-moon run --target native cmd/main -- nginx:latest --from-image --verbose
-# 完全离线：本地缺镜像也不拉，一次网络请求都不发
-moon run --target native cmd/main -- nginx:latest --from-image --no-pull
+# 不落盘直接分析在线镜像：位置参数不是本地路径，就当镜像名
+moon run --target native cmd/main -- nginx:latest
+moon run --target native cmd/main -- nginx:latest --verbose
+# 完全离线：一次网络请求都不发（不 pull、不连 registry）
+moon run --target native cmd/main -- nginx:latest --no-pull
 # 单次 docker 调用最多等多久（秒，默认 30），拉大镜像时调大
-moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
+moon run --target native cmd/main -- nginx:latest --timeout 300
 
-# 直接连 registry 拉镜像（不碰本地 docker）：存成 tar 或 OCI layout
-moon run --target native cmd/main -- --save --from-registry -o nginx.tar library/nginx:1.27
-moon run --target native cmd/main -- --save --from-registry --archive-format oci -o ./nginx-oci library/nginx:1.27
-# 拉下来直接分析，一条命令出报告
-moon run --target native cmd/main -- --from-registry library/nginx:1.27
+# 只把镜像存成 tar 或 OCI layout，不分析（`--save` 只对镜像引用生效）
+moon run --target native cmd/main -- --save -o nginx.tar library/nginx:1.27
+moon run --target native cmd/main -- --save --archive-format oci -o ./nginx-oci library/nginx:1.27
 # 多架构选平台 / 自建 http registry / 私有仓库
-moon run --target native cmd/main -- --save --from-registry --platform linux/arm64 -o x.tar ghcr.io/owner/repo:tag
-moon run --target native cmd/main -- --save --from-registry --insecure-registry -o x.tar localhost:5000/team/app:dev
+moon run --target native cmd/main -- --save --platform linux/arm64 -o x.tar ghcr.io/owner/repo:tag
+moon run --target native cmd/main -- --save --insecure-registry -o x.tar localhost:5000/team/app:dev
 # 同时在途的层数（默认 4；1 = 逐层串行，排障用）
-moon run --target native cmd/main -- --save --from-registry --jobs 8 -o nginx.tar library/nginx:1.27
+moon run --target native cmd/main -- --save --jobs 8 -o nginx.tar library/nginx:1.27
 # 根证书不在系统默认位置：指定一份 PEM（`https://` registry 都要校验证书）
-DIVE_CA_BUNDLE=/path/to/ca-bundle.crt moon run --target native cmd/main -- --save --from-registry -o x.tar registry.example.com/team/app:1.0
+DIVE_CA_BUNDLE=/path/to/ca-bundle.crt moon run --target native cmd/main -- --save -o x.tar registry.example.com/team/app:1.0
 ```
 
 给了 `--layer` / `--path` 就不做门禁判定，只出那一层的树；`--layer` 从 0 起，
@@ -76,11 +74,20 @@ DIVE_CA_BUNDLE=/path/to/ca-bundle.crt moon run --target native cmd/main -- --sav
 两个都给（`image.wastedBytes` 与 `image.wasted.{overwritten,deleted}`），
 外加 dive 的 `image.userWastedPercent`（分母剔掉 base image）。
 
-`--from-registry` 走的是**另一条数据源**：自己当 registry 客户端，
-`token → manifest(index 按平台选) → blobs` 三段 HTTP，把镜像直接拉下来落成 tar 或 OCI layout，
-全程不碰 daemon。`--save` 表示「只拉不分析」，`-o` 是落盘位置
-（docker-archive 写文件，`--archive-format oci` 写目录）；不给 `--save` 就落临时目录、
-分析完即删。
+**位置参数自己说它是什么**（[#124](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/124)）：
+`-` 是 stdin，存在的路径是本地归档 / OCI layout（一步都不碰网络），其余当镜像引用。
+不再有 `--from-image` / `--from-registry` 两个开关可挑。
+
+镜像引用先问 docker：`inspect` 说本地有就 `save`，说没有就 `pull` 一次再 `save`；
+直到**这台机器一个 docker 后端都没有**，才自己连 registry ——
+自己当客户端，`token → manifest(index 按平台选) → blobs` 三段 HTTP 把镜像拉下来，
+产物同样是 docker-archive tar，不碰 daemon。两者顺序不能对调：`docker save` 要求镜像
+已经在 daemon 里。
+
+`--save` 是「只取不分析」，`-o` 是落盘位置（docker-archive 写文件，
+`--archive-format oci` 写目录）。它**只对镜像引用生效**：位置参数本来就指向一份本地
+归档时会按参数错退 2——`--save` 不落盘还硬跑的唯一动机是想看网络通不通，
+把一个已有的 tar 悄悄写进临时目录是最糟的一种「成功」。
 
 拉取默认**边下边写盘**：层先落到临时文件（内存峰值是一块 64 KiB），
 OCI layout 直接把它抄过去、docker-archive 再读回来解压；
@@ -88,18 +95,23 @@ OCI layout 直接把它抄过去、docker-archive 再读回来解压；
 进度行在 stderr，带整体字节、滑动窗口速度，失败时交代断在第几层。
 细节见 [`docs/p7-registry-cli.md`](docs/p7-registry-cli.md)。
 
-`--from-image` 把位置参数当镜像名：本地缺这个镜像时**默认先拉一次**再取，
-对齐原版 dive（Go）——那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就
-`docker pull` 一次。要完全离线（绝不发起网络请求、`inspect` 说没有就直接 `save`）
-加 `--no-pull`。
+镜像引用默认会「本地缺就先拉一次」再取，对齐原版 dive（Go）——那边没有 `--pull` 开关，
+`ImageInspect` 报 not-found 就 `docker pull` 一次。`--no-pull` 一句话：
+**本次运行绝不发起任何出网请求**。它拦的只有 `pull` 与 registry 直拉；
+`inspect` / `save` 是纯本地操作，照常执行。所以它既不是「只看本地文件」，
+也不是「禁止连 daemon」。
+
+`--no-pull` 下的两种失败分开报：「本地没这个镜像」用户该 `docker pull`
+（或去掉开关），「这台机器没有 docker」用户该装 docker —— 前者是
+`image error: no such image locally ...`，后者是 `docker error: ...` 加安装提示。
 
 这台机器上**一个 docker 后端都没有**（没装 docker / podman / nerdctl，也没有可用的
-daemon socket）时，`--from-image` 会自己连 registry，走的就是 `--from-registry` 那条路
+daemon socket）时，镜像引用会自己连 registry
 （[#109](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/109)）：
 
 ```bash
 # 没有 docker 也能跑：自动从 registry 拉
-moon run --target native cmd/main -- docker.cnb.cool/owner/repo:tag --from-image
+moon run --target native cmd/main -- docker.cnb.cool/owner/repo:tag
 # --no-pull 关掉这个兜底：不上网就是不上网，直接报错并给安装提示
 ```
 
@@ -118,7 +130,7 @@ moon run --target native cmd/main -- docker.cnb.cool/owner/repo:tag --from-image
 免得中间那段沉默被当成卡死。
 
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
-docker save 产物、OCI Image Layout 目录、单层 tar（或加 `--from-image` 给镜像名）。
+docker save 产物、OCI Image Layout 目录、单层 tar，或者一个镜像引用（`nginx:latest`）。
 
 `--tui` 打开全屏交互式看树，**键位逐条对齐原版 dive**
 （`cmd/dive/cli/internal/ui/v1/key/config.go` 的 `DefaultBindings()`）：

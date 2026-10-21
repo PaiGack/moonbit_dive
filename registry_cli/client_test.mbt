@@ -67,7 +67,7 @@ async test "path-relative location is rejected with a readable message" {
 /// 而 `HttpReply` 会跨过好几个 `await` 才被消费。native 后端的事件循环里
 /// 那条连接早被判成「当前任务的活」之外的东西，再读就是
 /// `Bad file descriptor`——换票（token endpoint）恒定踩中，
-/// 于是 `dive --from-registry` 在真机上必挂（issue #97 的 CI 就是这里红的）。
+/// 于是 `dive <ref>` 走 registry 那条路在真机上必挂（issue #97 的 CI 就是这里红的）。
 ///
 /// 现在正文只可能在 `get` 里读一次，`read_body` 是纯取值，二次取也不会重放连接。
 async test "a reply carries its body; reading it twice is harmless" {

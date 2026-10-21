@@ -93,7 +93,7 @@ async test "README example" {
 moon run --target native cmd/main -- demo-image.tar --tui
 
 # 在线镜像：先取归档，再进交互
-moon run --target native cmd/main -- nginx:latest --from-image --tui
+moon run --target native cmd/main -- nginx:latest --tui
 
 # 从指定层开始看（`--layer` 同时是 TUI 的起始层）
 moon run --target native cmd/main -- demo-image.tar --tui --layer 0

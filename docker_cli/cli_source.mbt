@@ -83,7 +83,7 @@ fn DockerCliSource::inspect_failure(
 ///|
 /// CLI 侧的流式 save：stdout 边读边写进 `sink`，内存里不留整段归档。
 ///
-/// 这是 `--from-image` 真正走的那条——`ImageSource::save` 返回 `Bytes`
+/// 这是镜像引用真正走的那条——`ImageSource::save` 返回 `Bytes`
 /// 的形态留给测试与小镜像。用管道而不是 `redirect_to_file` 直连文件，
 /// 是因为父进程必须看得见字节：看不见就没法区分「导出很慢但一直在动」
 /// 和「卡死了」，而那正是 issue #94 的核心。

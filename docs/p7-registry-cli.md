@@ -14,24 +14,28 @@ issue [#65](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/65)。
 
 ```bash
 # 只保存，不分析（最接近「直接 save 镜像」）
-dive --save --from-registry -o nginx.tar library/nginx:1.27
+dive --save -o nginx.tar library/nginx:1.27
 
 # 保存成 OCI layout（无损搬运，可直接推回 registry）
-dive --save --from-registry --archive-format oci -o ./nginx-oci library/nginx:1.27
+dive --save --archive-format oci -o ./nginx-oci library/nginx:1.27
 
 # 拉下来直接分析，一条命令出报告（不用先存盘再喂进去）
-dive --from-registry library/nginx:1.27
+dive library/nginx:1.27
 
 # 多架构镜像选平台；自建 registry 走 http
-dive --save --from-registry --platform linux/arm64 -o x.tar ghcr.io/owner/repo:tag
-dive --save --from-registry --insecure-registry -o x.tar localhost:5000/team/app:dev
+dive --save --platform linux/arm64 -o x.tar ghcr.io/owner/repo:tag
+dive --save --insecure-registry -o x.tar localhost:5000/team/app:dev
 
 # 私有仓库：token 走环境变量，别写在命令行里（会进 shell history）
-DIVE_REGISTRY_TOKEN=... dive --save --from-registry -o x.tar registry.example.com/team/app:1.0
+DIVE_REGISTRY_TOKEN=... dive --save -o x.tar registry.example.com/team/app:1.0
 
 # 根证书不在系统默认位置时（容器镜像里很常见），指定一份 PEM
-DIVE_CA_BUNDLE=/path/to/ca-bundle.crt dive --save --from-registry -o x.tar registry.example.com/team/app:1.0
+DIVE_CA_BUNDLE=/path/to/ca-bundle.crt dive --save -o x.tar registry.example.com/team/app:1.0
 ```
+
+位置参数不是本地路径就当镜像引用：先问 docker（本机有就 `save`，没有就 `pull` 一次），
+一个 docker 后端都没有时才走本包直连 registry。`--no-pull` 把后两条路一起关掉
+（本次运行绝不出网）。`--save` 只对镜像引用生效：给一份已存在的本地归档会按参数错退 2。
 
 **TLS 根证书**：`https://` registry 要校验对端证书，机器上得有 CA 包
 （Debian 系 `apt install ca-certificates`）。缺了它握手一定失败，
@@ -42,12 +46,15 @@ DIVE_CA_BUNDLE=/path/to/ca-bundle.crt dive --save --from-registry -o x.tar regis
 报错里会写明用的是哪份 bundle，别让「缺 CA 包」看起来像「网络坏了」。
 `--insecure-registry` 走 `http://` 且不校验证书，这条路上不读任何 bundle。
 
-`--from-registry` 与 `--from-image` 是两个不同的数据源，别混：
+镜像引用有两条数据源，顺序固定——先 docker，一个后端都没有时才换本包：
 
-| | 数据源 | 依赖 |
-|---|---|---|
-| `--from-image` | 本机 daemon 里已有的镜像 | docker daemon 或 docker/podman/nerdctl |
-| `--from-registry` | 远端 registry | 只要网络 |
+| 顺序 | 数据源 | 依赖 | 什么时候走 |
+|---|---|---|---|
+| ① | 本机 daemon 里的镜像（`inspect` → `save`，缺了先 `pull`） | docker daemon 或 docker/podman/nerdctl | 探测得到后端 |
+| ② | 远端 registry（本包直拉） | 只要网络 | ①一条能走的路都没有，且没给 `--no-pull` |
+
+顺序不能对调：`docker save` 要求镜像已在 daemon 里，把本包拉到的 tar 再喂进 daemon
+纯属绕圈。两条路的产物都是 docker-archive tar，谁拿到就谁往下走。
 
 ## 2. 链路
 
@@ -95,7 +102,7 @@ write_image                    解压即写盘：docker-archive（层解压）�
 **平台只在 index 里认。** 直接返回 manifest 时，服务端没声明平台，
 我们的 `RemoteImage.platform` 就是空——请求参数只是「想要什么」，不是「拿到了什么」。
 
-**`--from-registry` 走临时文件再读回来。** 三种输入格式（docker-archive / OCI layout /
+**本包直拉的产物走临时文件再读回来。** 三种输入格式（docker-archive / OCI layout /
 单层 tar）的识别逻辑只有 `ImageSource::load` 一份，不为「内存里的镜像」再写一套。
 分析完立刻删；用户给了 `-o` 就留着。
 
@@ -133,7 +140,7 @@ write_image                    解压即写盘：docker-archive（层解压）�
 手工验过的真实链路（不依赖本地 docker）：
 
 ```bash
-dive --save --from-registry -o hello.tar library/hello-world:latest   # 1 层
-dive --from-registry library/nginx:1.27                               # 7 层 / 190MB
-dive --save --from-registry --archive-format oci -o layout library/hello-world:latest
+dive --save -o hello.tar library/hello-world:latest   # 1 层
+dive library/nginx:1.27                               # 7 层 / 190MB
+dive --save --archive-format oci -o layout library/hello-world:latest
 ```

@@ -38,45 +38,60 @@ async test "top rejects non-numeric input" {
 }
 
 ///|
-/// `--from-image` / `--no-pull` / `--verbose` 默认关；给了要能认出来。
+/// `--no-pull` / `--verbose` 默认关；给了要能认出来。
 /// 「本地缺镜像就拉」是默认行为（对齐原版 dive），所以默认 `no_pull = false`。
-async test "from-image and verbose flags are parsed" {
+async test "no-pull and verbose flags are parsed" {
   let options = parse_options(["nginx:latest"])
-  assert_false(options.from_image)
   assert_false(options.no_pull)
   assert_false(options.verbose)
+  // 没有「这像不像镜像名」的开关了：位置参数怎么解释由它自己的形态决定
+  assert_eq(kind_of_input("nginx:latest"), Reference)
 
-  let options = parse_options(["nginx:latest", "--from-image", "--verbose"])
-  assert_true(options.from_image)
+  let options = parse_options(["nginx:latest", "--verbose", "--no-pull"])
   assert_true(options.verbose)
+  assert_true(options.no_pull)
   // 这两个开关不该动到别的选项
   assert_eq(options.image, "nginx:latest")
   assert_eq(options.format, "text")
   assert_eq(options.layer, None)
-  // 不给 `--no-pull` 就保持默认「缺了就拉」
-  assert_false(options.no_pull)
 }
 
 ///|
-/// `--no-pull` 单独给（没有 `--from-image`）也解析得出来，但取归档时不生效：
-/// 位置参数仍是文件，链路完全不碰 docker。
-async test "no-pull is parsed but inert without from-image" {
+/// `--no-pull` 现在**总是**有意义：它拦的是「出网」，不是「这个开关生效不生效」。
+/// 位置参数是本地文件时它照样能解析，只是那一路本来就不联网。
+async test "no-pull is parsed for either kind of input" {
   let options = parse_options(["demo.tar", "--no-pull"])
   assert_true(options.no_pull)
-  assert_false(options.from_image)
+  assert_eq(kind_of_input("demo.tar"), Reference)
 
-  let options = parse_options(["nginx:latest", "--from-image", "--no-pull"])
+  let options = parse_options(["nginx:latest", "--no-pull"])
   assert_true(options.no_pull)
-  assert_true(options.from_image)
 }
 
 ///|
-/// 不给 `--from-image` 时，位置参数原样保留（当文件路径用）。
-async test "image positional is kept as-is without from-image" {
+/// 位置参数**原样保留**：解释它的是 `kind_of_input`，不是解析阶段。
+async test "the image positional is kept as-is" {
   let options = parse_options(["./demo.tar", "--format", "json"])
   assert_eq(options.image, "./demo.tar")
-  assert_false(options.from_image)
   assert_eq(options.format, "json")
+  let options = parse_options(["nginx:latest"])
+  assert_eq(options.image, "nginx:latest")
+}
+
+///|
+/// 三档判定（issue #124）：`-` 是 stdin，存在的路径是本地输入，其余当镜像引用。
+async test "the positional is classified into stdin, local path or reference" {
+  assert_eq(kind_of_input("-"), Stdin)
+  assert_true(is_local_input("-"))
+  // 仓库里一定存在的东西：拿它当「路径存在」
+  assert_eq(kind_of_input("moon.mod"), LocalPath)
+  assert_true(is_local_input("moon.mod"))
+  assert_eq(kind_of_input("cmd"), LocalPath)
+  // 不存在的路径不会退化成「本地文件」，而是被当成镜像名——
+  // 这正是「文件名打错」与「镜像名」共用一条入口时能给出的最好答案
+  assert_eq(kind_of_input("/definitely/not/here.tar"), Reference)
+  assert_false(is_local_input("/definitely/not/here.tar"))
+  assert_eq(kind_of_input("nginx:latest"), Reference)
 }
 
 ///|
@@ -109,12 +124,12 @@ async test "aggregate flag defaults to off and is independent" {
 ///|
 /// `--jobs` 默认 4（并发拉几层），给了就按给的算。
 async test "jobs defaults to 4 and can be overridden" {
-  let options = parse_options(["nginx:latest", "--from-registry"])
+  let options = parse_options(["nginx:latest"])
   assert_eq(options.jobs, 4)
   // 1 = 逐层串行：是一条要留着的退路
-  let options = parse_options(["nginx:latest", "--from-registry", "--jobs", "1"])
+  let options = parse_options(["nginx:latest", "--jobs", "1"])
   assert_eq(options.jobs, 1)
   // 给的数字不该顺手改掉别的选项
-  assert_true(options.from_registry)
+  assert_false(options.save)
   assert_eq(options.image, "nginx:latest")
 }

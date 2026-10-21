@@ -48,7 +48,7 @@ pub(open) trait ImageSource {
   报 `not found on PATH`，用户写死的程序根本不会被调用
 - **不整体读进 `String`**：`run_cli` 走 `read_from_process` 拿 `Bytes`；
   需要落盘时再进一步，走 `ArchiveSink` 边读边写，大镜像不驻留内存
-- **`--from-image` 的主路径是流式的**：`save_into` 把 `docker save` 的
+- **镜像引用的主路径是流式的**：`save_into` 把 `docker save` 的
   stdout 一块块倒进 `ArchiveSink`（`TempArchive` = 临时文件），
   只有最后一步 `read_back` 才把归档读成 `Bytes` 交给 P2——因为
   `ImageSource::from_tar_bytes` 吃的是字节。返回 `Bytes` 的旧入口
@@ -90,7 +90,7 @@ docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都�
 - **错误判定**：`inspect` 的 stderr 决定「本地没有」还是「工具坏了」。
   判成前者才走「缺了就拉」，判成后者该换路。三家的原话都要收
   （`image not known` 是 podman 独有的），否则装了 podman 的机器上
-  `--from-image` 的默认拉取永远触发不了。反过来，连不上 daemon / 权限不够
+  镜像引用的默认拉取永远触发不了。反过来，连不上 daemon / 权限不够
   仍是 `Backend`，不能因为文案里恰好有 `not found` 就被误判成「本地没有」
 - `pull`：参数三家一致；失败文案不一致但**一律报 `Backend`**（带 stderr），
   不翻成 `ImageNotFound`——「本地有没有」只由 `inspect` 回答
@@ -117,21 +117,21 @@ docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都�
 ### 与四包的接线
 
 - 产物统一收敛到既有输入格式：docker-archive tar，**不改 P1–P4 的输入契约**
-- `cmd/main` 用 **显式开关** `--from-image` 把镜像名接到本包
-  （见 [#28](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/28)）：
+- `cmd/main` 把**位置参数**接到本包：不存在的路径就当镜像引用
+  （[#124](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/124)，
+  早先那个 `--from-image` 开关已经删掉）：
 
   ```bash
-  # 显式声明「这是镜像名」，走本包取归档后再进 P2/P3/P4
-  moon run --target native cmd/main -- nginx:latest --from-image
+  # 位置参数不是本地路径 ⇒ 当镜像名，走本包取归档后再进 P2/P3/P4
+  moon run --target native cmd/main -- nginx:latest
   # 后端与探测过程可见（选择 / 试哪条 / 拉 / 存 / [ok]|[no] 逐行，走 stderr）
-  moon run --target native cmd/main -- nginx:latest --from-image --verbose
-  # 本地缺镜像时默认先拉一次（对齐原版 dive）；--no-pull 关掉，纯离线绝不发网络请求
-  moon run --target native cmd/main -- nginx:latest --from-image
-  moon run --target native cmd/main -- nginx:latest --from-image --no-pull
+  moon run --target native cmd/main -- nginx:latest --verbose
+  # 本地缺镜像时默认先拉一次（对齐原版 dive）；--no-pull 关掉，纯离线绝不出网
+  moon run --target native cmd/main -- nginx:latest --no-pull
   # 单次 docker 调用的超时（秒），默认 30；拉大镜像时调大
-  moon run --target native cmd/main -- nginx:latest --from-image --timeout 300
+  moon run --target native cmd/main -- nginx:latest --timeout 300
   # 与既有开关组合，行为不变
-  moon run --target native cmd/main -- nginx:latest --from-image --rules rules.json --format annotations
+  moon run --target native cmd/main -- nginx:latest --rules rules.json --format annotations
   ```
 
   取到归档后走既有的 `ImageSource::from_tar_bytes`，**不新开分析链路**。
@@ -140,8 +140,8 @@ docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都�
 
 - **没有 docker 时自动改走 registry**（[#109](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/109)）：
   一台机器上既没有可用的 daemon socket、PATH 上也没有 docker / podman / nerdctl 时，
-  `--from-image` 不再直接失败，而是把同一个位置参数交给 `registry_cli` 直连拉取
-  （`--from-registry` 的那条路，落临时文件再走 `ImageSource::load`）。
+  镜像引用不再直接失败，而是把同一个位置参数交给 `registry_cli` 直连拉取
+  （落临时文件再走 `ImageSource::load`）。
 
   判据是**探测记录里有没有 `[ok]` 的候选**（`docker_cli.no_backend_at_all`），
   不是「错误类型是不是 `NoBackend`」：后端序列会在取归档阶段继续往下试，
@@ -149,23 +149,24 @@ docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都�
   `NoBackend`——那种情况 docker 是**在**的，回退只会拿一场注定失败的 registry
   拉取盖住真正的原因。`--no-pull` 关掉这个兜底：那个开关的语义是「不上网」，
   而直连 registry 是最彻底的上网。
-- **不做自动魔数嗅探**：只认显式 `--from-image`，避免「给个文件却去连 daemon」这种意外行为。
-  原先设想的「探测顺序里自动识别镜像名」不再做。
+- **判定只看本地文件系统**：`@fs.path_exists` 三档（`-` / 路径存在 / 其余），
+  判定这一步不依赖 docker —— 「这像不像镜像名」不该去连 daemon 才知道。
+  本地的路径一步都不碰网络，所以「给个文件却去连 docker」这种意外行为不会发生。
 - **本地缺镜像默认就拉**（对齐原版 dive，见 issue #44）：Go 版没有 `--pull` 开关，
   `ImageInspect` 报 not-found 就直接 `docker pull` 一次。这里同样把「缺了就拉」
-  作为 `--from-image` 的默认行为，`--no-pull` 用来关掉（纯离线）。
+  作为镜像引用的默认行为，`--no-pull` 用来关掉（纯离线）。
   触发条件是 `inspect` 说本地没有，**不是**「`save` 失败了就拉」——
   `save` 的失败面太宽（daemon 卡住、权限、磁盘满），
   一律去拉会拿一次不必要的网络请求盖住真正的错误。
   本地已有时不多做一次 `pull`，一次 `inspect` 判缺失即可。
 - 单独成包，**不进入 P1–P4 依赖链**；只用默认离线能力时 `dive x.tar` 的链路不受影响
 - 本包只有 native 入口（子进程 / unix socket），因此 `cmd/main` 也声明
-  `supported_targets = "-all+native"`；`--from-image` 的端到端覆盖见
+  `supported_targets = "-all+native"`；镜像引用的端到端覆盖见
   `cmd/main/from_image_wbtest.mbt`（fake docker 走 PATH 探测，不依赖真实 daemon）
 
 ## 排查：「跑起来没有任何输出」
 
-`--from-image` 下有两处会表现成「卡住、什么都没打」，成因完全不同，
+镜像引用下有两处会表现成「卡住、什么都没打」，成因完全不同，
 别混着猜（issue #42 来回了几轮才拆开）：
 
 1. **取归档那一步超时** —— 转发进来的 socket `_ping` 答得好、`inspect`
@@ -205,15 +206,17 @@ docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都�
 | `docker save` 出来的 tar 能被 P2 的 `apply_layers_with_diffs` 直接吃下，端到端一个用例 | ✅ | `pipeline_test.mbt` |
 | 大镜像走流式路径，不把整层读进内存 | ✅ | `save_to_file_memory_test.mbt`：100MB fixture + `/proc/self/status` |
 | README 给出「后端探测 → inspect → save → 分析」的完整命令与预期输出 | ✅ | `docker_cli/README.mbt.md`（示例被测试跑一遍） |
-| `cmd/main --from-image` 端到端跑出体积报告（可 fake CLI） | ✅ | `cmd/main/from_image_wbtest.mbt`：fake docker 走 PATH 探测 → 既有链路 |
+| `dive <ref>` 端到端跑出体积报告（可 fake CLI） | ✅ | `cmd/main/from_image_wbtest.mbt`：fake docker 走 PATH 探测 → 既有链路 |
 | 无 daemon 时错误明确、exit 2、不 panic、不吞 stderr | ✅ | `cmd/main/from_image_wbtest.mbt` + `docker_cli/errors.mbt` 的 `Show` |
-| 不给 `--from-image` 时行为完全不变 | ✅ | `cli_wbtest.mbt`：默认 `from_image=false`，走文件路径 |
+| 位置参数三档判定：`-` / 存在的路径 / 其余当镜像名 | ✅ | `cli_wbtest.mbt`：`kind_of_input` + `is_local_input` |
+| 本地路径一步都不碰网络（PATH 上没有 docker 也照样读） | ✅ | `from_image_wbtest.mbt`：`an existing path never touches docker` |
 | Engine `pull` 的 raw-stream 错误判定（`errorDetail` / `error`） | ✅ | `engine_test.mbt` + `transport_test.mbt` |
-| `--from-image`（默认）本地缺失时先拉再取，已有则不动 | ✅ | `pipeline_test.mbt` + `cmd/main/from_image_wbtest.mbt` |
-| `--no-pull` 绝不在本地缺镜像时拉取（纯离线） | ✅ | `cmd/main/from_image_wbtest.mbt` |
+| 镜像引用本地缺失时先拉再取，已有则不动 | ✅ | `pipeline_test.mbt` + `cmd/main/from_image_wbtest.mbt` |
+| `--no-pull` = 绝不出网：不 `pull`、不连 registry，`inspect` / `save` 照常 | ✅ | `cmd/main/from_image_wbtest.mbt` + `NoLocalImage` 分类用例 |
+| `--no-pull` 下「本地没有」与「没有 docker」报两种错 | ✅ | `from_image_wbtest.mbt`：`classify_docker_error` |
 | socket 通 `_ping` 但取不到归档时换下一条候选；「没有镜像」与「后端坏了」分开 | ✅ | `transport_test.mbt` + `cli_source_test.mbt` |
 | `moon check` / `moon test` 全绿 | ✅ | 587 个用例（native），见 `scripts/ci.sh` |
-| CI 里有真实镜像 + 真实 CLI 后端的对拍 | ✅ | `scripts/docker-cli-probe.sh`：手搓最小 OCI layout → `docker load` → `inspect` / `save` / `--from-image` / `--from-registry` 四条通路 |
+| CI 里有真实镜像 + 真实 CLI 后端的对拍 | ✅ | `scripts/docker-cli-probe.sh`：手搓最小 OCI layout → `docker load` → `inspect` / `save` / `dive <ref>`（命中 / 缺失 / 无 daemon）四条通路 |
 
 ## CI 里的真实后端对拍
 
@@ -229,8 +232,8 @@ docker 改了输出结构，假 CLI 一样全绿。
 - **不碰共享 daemon 的仓库名**：CNB 的 socket 常常是外层转发进来的，
   里面可能有别人的镜像。脚本只按 ID 操作自己 `load` 进去的那一个，跑完按名清掉。
 - **四条通路**：`inspect` / `save` 的参数形态与归档结构 →
-  `dive --from-image`（本地命中不联网、`--no-pull` 不许上网、缺了就拉）→
-  `dive --from-registry`（不碰 daemon 的 registry 直拉）。
+  `dive <ref>`（本地命中不联网、`--no-pull` 不许上网、缺了就拉）→
+  `dive <ref>`（无 daemon 时 registry 直拉，不碰 daemon）。
 - **没有 daemon 就跳过**：脚本 exit 77，`scripts/ci.sh` 据此放行而不是判红。
   但「有 docker 却取不到镜像」必须是红的——那才是真问题。
 
@@ -254,7 +257,7 @@ docker 改了输出结构，假 CLI 一样全绿。
 3. ~~**Engine 后端的 `pull`**~~ → 见 issue #42：
    `POST /images/create` 的 raw-stream **真解析**（`pull_error_of_stream`），
    HTTP 200 之后 daemon 吐的 `errorDetail` 不再被当成成功；
-   `cmd/main --from-image` 本地缺镜像时默认先 `inspect` 判缺失、再 `pull`、最后 `save`
+   `cmd/main` 的镜像引用本地缺镜像时默认先 `inspect` 判缺失、再 `pull`、最后 `save`
    （对齐原版 dive；`--no-pull` 关掉拉取）。进度事件本身仍不打日志（输出归调用方管）。
 5. **「探测通过」不等于「这条路推得动」** → 见 issue #42 的第二层：
    转发进来的 socket 可以 `_ping` 答得好好的，真去取归档才发现对端没有镜像。

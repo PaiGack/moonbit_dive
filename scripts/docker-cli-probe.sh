@@ -8,13 +8,16 @@
 # 少 `--format json`）、或者 docker 改了输出结构，假 CLI 一样全绿。
 #
 # 所以这里起一个真 daemon（CNB 的 `services: docker` / GitHub Actions 的 runner
-# 自带），用**一份手搓的最小镜像**当固定输入，走四条 CLI 通路：
+# 自带），用**一份手搓的最小镜像**当固定输入，走四条通路：
 #
 #   1. `docker_cli` 的 `inspect` / `save` 参数形态（podman / nerdctl 的差异在这条上被钉住）
-#   2. `dive --from-image`：镜像是本地已有 → 不拉，直接取归档出报告
-#   3. `dive --from-image`：镜像不在本地 → 先 pull 再取（`--no-pull` 时不许上网）
-#   4. `dive --from-registry`：自己连 registry 拉，产出 tar 后能读出同一份内容
+#   2. `dive <ref>`：镜像是本地已有 → 不拉，直接取归档出报告
+#   3. `dive <ref>`：镜像不在本地 → 先 pull 再取（`--no-pull` 时不许上网）
+#   4. `dive <ref>`：没有 daemon → 自己连 registry 拉，产出 tar 后能读出同一份内容
 #   5. zstd 层：同一份最小镜像换成 `tar+zstd` 层，走一遍「解压 → 建树 → 出报告」
+#
+# 位置参数自己判别输入（issue #124）：`-` 是 stdin，存在的路径是本地归档，
+# 其余当镜像引用。所以下面每条都不用再带 `--from-image` / `--from-registry`。
 #
 # 退出码：0 全过；77 表示环境里没有可用的 daemon（**跳过**，不算失败）；
 # 其它表示真失败。CI 里没有 daemon 的机器不该因为「没装 docker」变红。
@@ -67,7 +70,7 @@ if ! "$DOCKER_BIN" version --format '{{.Server.Version}}' >/dev/null 2>&1; then
 fi
 command -v python3 >/dev/null 2>&1 || fail "需要 python3 生成 tar 固定内容"
 
-# CA 包不是本仓库的依赖，但少了它 `--from-registry` 一定握手失败。
+# CA 包不是本仓库的依赖，但少了它 registry 直拉一定握手失败。
 # 这跟「没装 docker」是同一类事：环境缺件，不是代码坏了。所以在最前面就
 # 认定它，把 5 与 6 两节跳过并说清怎么办，而不是等到第 5 节变成一句红。
 #
@@ -377,10 +380,10 @@ pass "save：manifest.json + layer.tar 可解析，标记文件在层里"
 # 在 CI 上通常没装，但参数表本身可以逐条核。
 "$DIVE" --help >/dev/null 2>&1 || fail "dive --help 跑不通"
 
-# ------------------------------------ 3. --from-image：本地已有镜像 --
+# ---------------------------------- 3. dive <ref>：本地已有镜像 --
 say ''
-say "${BOLD}== dive --from-image（本地命中，不联网）==${RESET}"
-"$DIVE" "$IMAGE_REF" --from-image --format json --verbose \
+say "${BOLD}== dive <ref>（本地命中，不联网）==${RESET}"
+"$DIVE" "$IMAGE_REF" --format json --verbose \
   >"$work/local.json" 2>"$work/local.log" ||
   fail "本地镜像分析失败：$(tail -5 "$work/local.log")"
 python3 - "$work/local.json" <<'PY' || fail "本地镜像的报告不对"
@@ -393,16 +396,20 @@ pass "本地命中：出了 JSON 报告"
 grep -q '\]' "$work/local.log" || fail "--verbose 没打后端探测记录：$(cat "$work/local.log")"
 pass "探测记录可见：$(head -1 "$work/local.log")"
 
-# `--no-pull` 是「纯离线」的承诺：镜像本地没有时必须直接失败，不许偷偷上网
-"$DIVE" "dive-ci-absent:none" --from-image --no-pull >/dev/null 2>"$work/nopull.log" &&
+# `--no-pull` 是「绝不出网」的承诺：镜像本地没有时必须直接失败，不许偷偷上网，
+# 也不许偷偷改走 registry。两种失败要分开报：这条是「本地没有」，
+# 文案落在 image error 上而不是 docker 的安装提示。
+"$DIVE" "dive-ci-absent:none" --no-pull >/dev/null 2>"$work/nopull.log" &&
   fail "--no-pull 对不存在的镜像竟然成功了"
-pass "--no-pull：不存在的镜像直接失败，不联网"
+grep -q 'image error' "$work/nopull.log" ||
+  fail "--no-pull 下本地缺失应报 image error（本地没有这个镜像）：$(cat "$work/nopull.log")"
+pass "--no-pull：不存在的镜像直接失败，不联网，报的是「本地没有」"
 
-# -------------------------------- 4. --from-image：缺了就拉（真网络） --
+# ------------------------------ 4. dive <ref>：缺了就拉（真网络） --
 say ''
-say "${BOLD}== dive --from-image（缺了就拉：$REMOTE_REF）==${RESET}"
+say "${BOLD}== dive <ref>（缺了就拉：$REMOTE_REF）==${RESET}"
 "$DOCKER_BIN" rmi -f "$REMOTE_REF" >/dev/null 2>&1 || true
-if "$DIVE" "$REMOTE_REF" --from-image --format json --verbose \
+if "$DIVE" "$REMOTE_REF" --format json --verbose \
     >"$work/remote.json" 2>"$work/remote.log"; then
   pass "缺了就拉：pull + save + 分析全通"
 else
@@ -416,17 +423,18 @@ else
   fi
 fi
 
-# ------------------------------ 5. --from-registry：零 daemon 冷路径 --
+# ------------------------------ 5. 零 daemon 冷路径 --
 # 这条不该依赖本地 docker：`registry_cli` 自己走 HTTP 拉 blob 再打包。
-# 现状里它也是整条链路唯一「完全不需要 daemon」的入口。
+# 整条链路里唯一「完全不需要 daemon」的入口——「不装 docker 也能分析在线镜像」
+# 就是靠它。`--save` 只对镜像引用生效，正好是这里的用法。
 say ''
-say "${BOLD}== dive --from-registry（不碰本地 daemon）==${RESET}"
+say "${BOLD}== dive <ref> --save（不碰本地 daemon）==${RESET}"
 if [ -z "$ca_bundle" ]; then
   say "${YELLOW}skip${RESET} 没有 CA 包，连不了 https registry"
-elif "$DIVE" "$REMOTE_REF" --from-registry --save --output "$work/registry.tar" \
+elif "$DIVE" "$REMOTE_REF" --save --output "$work/registry.tar" \
     --format json >"$work/registry.json" 2>"$work/registry.log"; then
-  [ -s "$work/registry.tar" ] || fail "--from-registry --save 没落盘"
-  python3 - "$work/registry.tar" <<'PY' || fail "--from-registry 的产物不是合法 docker-archive"
+  [ -s "$work/registry.tar" ] || fail "--save 没落盘"
+  python3 - "$work/registry.tar" <<'PY' || fail "registry 的产物不是合法 docker-archive"
 import json, sys, tarfile
 with tarfile.open(sys.argv[1]) as tar:
     manifest = json.load(tar.extractfile("manifest.json"))
@@ -438,7 +446,7 @@ else
       "$work/registry.log"; then
     say "${YELLOW}skip${RESET} 连不上 registry（离线环境），跳过这条"
   else
-    fail "--from-registry 失败：$(tail -5 "$work/registry.log")"
+    fail "registry 直拉失败：$(tail -5 "$work/registry.log")"
   fi
 fi
 
@@ -569,7 +577,7 @@ PY
 
     # 关键一条：dive 自己把这一层解出来。标记文件在 tar 里，
     # 解压少一个字节都读不到它。
-    "$DIVE" "$ZSTD_REF" --from-image --format json --verbose \
+    "$DIVE" "$ZSTD_REF" --format json --verbose \
       >"$work/zstd.json" 2>"$work/zstd.log" ||
       fail "zstd 层分析失败：$(tail -5 "$work/zstd.log")"
     # 报告是体积账（路径按目录归并），所以这里断两条：
@@ -581,7 +589,7 @@ import json, sys
 data = json.load(open(sys.argv[1]))
 assert data.get("version") == 1, "报告格式变了？"
 PY
-    "$DIVE" "$ZSTD_REF" --from-image --no-pull >"$work/zstd.txt" 2>"$work/zstd-text.log" ||
+    "$DIVE" "$ZSTD_REF" --no-pull >"$work/zstd.txt" 2>"$work/zstd-text.log" ||
       fail "zstd 层的文本报告失败：$(tail -5 "$work/zstd-text.log")"
     grep -q '^  L0: +1 ' "$work/zstd.txt" ||
       fail "zstd 层解出来的路径数不是 1：$(head -5 "$work/zstd.txt")"
@@ -589,11 +597,11 @@ PY
       fail "zstd 层的字节数不对（应该是一个 12 字节的标记文件）：$(head -5 "$work/zstd.txt")"
     pass "zstd 层：解压 + 建树 + 报告，标记文件按 12 字节记到 L0"
 
-    # `--from-image` 走的是 docker save 出来的归档；归档里的层被 docker
+    # 这条走的是 docker save 出来的归档；归档里的层被 docker
     # 重新压过（docker 一律压 gzip），所以这条不能证明「我们解了 zstd」。
-    # 真正吃 zstd blob 的是 `--from-registry` 这条冷路径——但那条要网络，
-    # 这里用 `--from-image` 的产物做交叉验证就够了：两边读到的标记文件必须一样。
-    "$DIVE" "$IMAGE_REF" --from-image --format json \
+    # 真正吃 zstd blob 的是第 5 节那条 registry 冷路径——但那条要网络，
+    # 这里用本地镜像的产物做交叉验证就够了：两边读到的标记文件必须一样。
+    "$DIVE" "$IMAGE_REF" --format json \
       >"$work/plain-again.json" 2>/dev/null ||
       fail "对照镜像分析失败"
     pass "对照：gzip / 未压缩层的报告路径仍然正常"
@@ -608,7 +616,7 @@ fi
 # 明文 80 在这里只是「对方说要 https / 要跳一跳」，能不能拿到 token
 # 才是「有没有退回已知能走的那个 origin」的答案。
 say ''
-say "${BOLD}== --from-registry（明文 registry：换票与重定向都要退回已知 origin）==${RESET}"
+say "${BOLD}== 镜像引用（明文 registry：换票与重定向都要退回已知 origin）==${RESET}"
 # 端口 18080 是随手挑的：会与真实 registry 撞车的概率小到可以忽略
 PLAIN_PORT=${DIVE_TEST_PLAIN_PORT:-18080}
 mkdir -p "$work/plainsrv"
@@ -715,7 +723,7 @@ python3 "$work/plainsrv/server.py" "$PLAIN_PORT" >"$work/plainsrv/log" 2>&1 &
 plain_pid=$!
 sleep 1
 if kill -0 "$plain_pid" 2>/dev/null; then
-  if "$DIVE" "127.0.0.1:$PLAIN_PORT/test/plain:latest" --from-registry \
+  if "$DIVE" "127.0.0.1:$PLAIN_PORT/test/plain:latest" \
       --insecure-registry --save --output "$work/plain.tar" --format json \
       >"$work/plain.json" 2>"$work/plain.log"; then
     python3 - "$work/plain.tar" <<'PY' || fail "明文 registry 的产物不是合法 docker-archive"

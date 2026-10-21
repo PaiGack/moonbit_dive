@@ -1,20 +1,26 @@
 ///|
-/// `dive` 的只读分析入口：`dive <image> [--rules rules.json] [--layer N] [--path P] [--efficiency]`。
+/// `dive` 的只读分析入口：`dive <image|archive> [--rules rules.json] [--layer N] [--path P] [--efficiency]`。
 ///
 /// 链路是 P1/P2 → P3 → P4 的串接：
 ///
-/// 1. 读本地镜像产物（docker save / OCI layout / 单层 tar / stdin）
+/// 1. 拿到镜像归档（本地 tar / OCI layout / stdin，或者一个镜像引用）
 /// 2. 逐层解压后喂给 `layer_tree` 叠树
 /// 3. `image_analysis` 出体积报告
 /// 4. `image_ci` 按规则判定，输出人类可读 / JSON / CI 注解
 ///
-/// `--from-image` 时的「本地没有就先拉」默认**开着**，对齐原版 dive（Go）：
-/// 那边没有 `--pull` 开关，`ImageInspect` 报 not-found 就 `docker pull` 一次。
-/// 想完全离线（不给任何网络请求）就用 `--no-pull`。
+/// **位置参数自己说它是什么**（issue #124），不再靠 `--from-image` /
+/// `--from-registry` 两个开关挑路：
 ///
-/// 这台机器上**一个 docker 后端都没有**时，`--from-image` 会自己连 registry
-/// （issue #109）：位置参数本来就是镜像名，没道理因为少装一个 docker 就停在这里。
-/// 回退走的是 `--from-registry` 同一条路，`--no-pull` 能把它关掉。
+/// - `-` → stdin
+/// - 路径存在（文件或目录）→ 本地归档 / OCI layout，一步都不碰网络
+/// - 其余 → 当成镜像引用
+///
+/// 「镜像引用」这一档里先问 docker（`inspect` 说本地有就 `save`，说没有就先 `pull`
+/// 一次再 `save`），**这台机器上一个 docker 后端都没有**时才自己连 registry
+/// （issue #109）。两条路的产物都是 docker-archive tar，谁拿到就谁往下走。
+///
+/// `--no-pull` 一句话：本次运行绝不发起任何出网请求。`inspect` / `save` 是纯本地操作，
+/// 照常执行；只有 `pull` 与 registry 直拉被拦下。
 ///
 /// `--layer` / `--path` / `--aggregate` / `--efficiency` 是 dive 交互界面的只读替身：
 /// 没有 TUI，但能逐层看文件树、按目录下钻、按「多写了几份」看哪条路径拖了效率。
@@ -35,8 +41,8 @@ async fn main {
     }
   }
   let options = Options::from_matches(matches)
-  // `--save` 是「只拉不分析」：拿远端 registry 的镜像落成 tar / OCI layout 就结束，
-  // 不走进分析链路。它会先于 `load_source` 判定，免得为了保存去解一遍镜像
+  // `--save` 是「只取不分析」：把镜像落成 tar / OCI layout 就结束，不走进分析链路。
+  // 先于 `load_source` 判定，免得为了保存去解一遍镜像
   if options.save {
     save_only(options) catch {
       err => {
@@ -46,8 +52,8 @@ async fn main {
     }
     exit_process(@image_ci.exit_ok)
   }
-  // `--from-image` 要先连 daemon / 起子进程取归档，这一步是 async；
-  // 其余（读文件、分析）都是同步的，取到字节后走进既有链路。
+  // 判定在前（见 `load_source`）：本地路径直接读文件，镜像引用才去连 docker / registry。
+  // 取归档是 async，读文件与分析都是同步的，取到字节后走进同一条链路。
   let source = load_source(options) catch {
     err => {
       report_error(err)
@@ -177,20 +183,20 @@ fn cli() -> @argparse.Command {
       ),
       @argparse.OptionArg(
         "archive-format",
-        about="--from-registry output format: docker-archive (default) or oci",
+        about="with --save: output format, docker-archive (default) or oci",
         default_values=["docker-archive"],
       ),
       @argparse.OptionArg(
         "platform",
-        about="--from-registry target platform, os/arch[/variant] (default: linux + this machine's arch)",
+        about="image reference: target platform, os/arch[/variant] (default: linux + this machine's arch)",
       ),
       @argparse.OptionArg(
         "registry-token",
-        about="--from-registry bearer token (default: $DIVE_REGISTRY_TOKEN)",
+        about="registry bearer token for image pulls (default: $DIVE_REGISTRY_TOKEN)",
       ),
       @argparse.OptionArg(
         "jobs",
-        about="--from-registry how many layers to download at once (default: 4, 1 = one at a time)",
+        about="how many layers to download from the registry at once (default: 4, 1 = one at a time)",
         default_values=["4"],
       ),
     ],
@@ -200,24 +206,16 @@ fn cli() -> @argparse.Command {
         about="show per-path efficiency (cumulative - min), sorted desc, instead of the gate",
       ),
       @argparse.FlagArg(
-        "from-image",
-        about="treat the positional as an image reference: docker/podman/nerdctl or the docker socket, falling back to the registry when there is no docker at all",
-      ),
-      @argparse.FlagArg(
-        "from-registry",
-        about="treat the positional as a remote image reference and pull it straight from the registry (no docker daemon)",
-      ),
-      @argparse.FlagArg(
         "save",
-        about="with --from-registry: only save the image to --output, do not analyze it",
+        about="only save the image reference to --output, do not analyze it",
       ),
       @argparse.FlagArg(
         "no-pull",
-        about="with --from-image, do not pull a missing image and do not fall back to the registry (offline: never touch the network)",
+        about="never touch the network in this run: no docker pull, no registry fetch",
       ),
       @argparse.FlagArg(
         "verbose",
-        about="print the docker backend probing log to stderr (with --from-image)",
+        about="print the docker/registry backend log to stderr",
       ),
       @argparse.FlagArg(
         "tui",
@@ -229,13 +227,13 @@ fn cli() -> @argparse.Command {
       ),
       @argparse.FlagArg(
         "insecure-registry",
-        about="--from-registry against a plain-http registry (also skips TLS verification)",
+        about="image reference against a plain-http registry (also skips TLS verification)",
       ),
     ],
     positionals=[
       @argparse.PositionArg(
         "image",
-        about="docker save tar, OCI layout directory, - for stdin, or an image reference with --from-image",
+        about="docker save tar, OCI layout directory, - for stdin, or an image reference like nginx:latest",
       ),
     ],
   )
@@ -251,10 +249,10 @@ struct Options {
   layer : Int32?
   path : String?
   efficiency : Bool
-  /// 把位置参数当镜像名，走 `docker_cli` 取归档
-  from_image : Bool
-  /// `--no-pull`：`--from-image` 时本地缺镜像也不拉、探测不到 docker 也不回退 registry，
-  /// 绝不发起网络请求
+  /// `--no-pull`：本次运行绝不发起网络请求。
+  ///
+  /// 拦的只有「需要出网」的那两步——`docker pull` 与 registry 直拉；
+  /// `inspect` / `save` 是纯本地操作，照常执行。
   no_pull : Bool
   /// 打 `docker_cli` 的后端探测记录
   verbose : Bool
@@ -264,10 +262,7 @@ struct Options {
   /// （对齐原版 dive 的 `Ctrl+A` / 聚合档）。只影响 `--layer` 分支，
   /// 不给这个开关时输出与从前逐字节一致
   aggregate : Bool
-  /// `--from-registry`：把位置参数当远端镜像引用，自己连 registry 拉归档。
-  /// 与 `--from-image` 的区别是**完全不碰 docker daemon**（issue #65）
-  from_registry : Bool
-  /// `--save`：拉完就落盘，不做分析
+  /// `--save`：只落盘，不做分析。只对镜像引用生效——输入已经是本地归档时无从谈起
   save : Bool
   /// 落盘格式：`docker-archive`（默认）或 `oci`
   archive_format : @registry_cli.ArchiveFormat
@@ -302,12 +297,10 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     layer: layer_of(matches),
     path: optional_value(matches, "path"),
     efficiency: flag_of(matches, "efficiency"),
-    from_image: flag_of(matches, "from-image"),
     no_pull: flag_of(matches, "no-pull"),
     verbose: flag_of(matches, "verbose"),
     tui: flag_of(matches, "tui"),
     aggregate: flag_of(matches, "aggregate"),
-    from_registry: flag_of(matches, "from-registry"),
     save: flag_of(matches, "save"),
     archive_format: archive_format_of(matches),
     platform: optional_value(matches, "platform"),
@@ -443,14 +436,23 @@ fn registry_options(options : Options) -> RegistryOptions {
 }
 
 ///|
-/// `--save`：只拉不分析。
+/// `--save`：只取不分析。
 ///
-/// 没给 `-o` 就直接报参数错：`--save` 不落盘的唯一理由是想看网络能不能通，
-/// 那用 `--from-registry` 更直接。悄悄写进一个会被删掉的临时目录最糟。
+/// 只对**镜像引用**生效。位置参数本来就是个本地归档时，`--save` 没有任何意义
+/// （它就在你手上），这里直接按参数错拒绝——照旧的理由：不落盘还硬跑的唯一
+/// 动机是想看网络通不通，而把一个已有的 tar 悄悄写进临时目录是最糟的一种“成功”。
+///
+/// `-o` 在 `--save` 下就是落盘位置，不和 `--format html -o report.html` 抢：
+/// 那条 `-o` 只在分析态生效（`--save` 压根不出报告）。
 async fn save_only(options : Options) -> Unit raise CommandError {
   if options.output is None {
     raise CommandError::Registry(
       "--save needs -o/--output: give the file (docker-archive) or directory (oci) to write",
+    )
+  }
+  if is_local_input(options.image) {
+    raise CommandError::Image(
+      "input is already a local archive, --save has nothing to do: drop --save to analyze \{options.image}, or give an image reference to save",
     )
   }
   let result = save_remote(registry_options(options))
@@ -492,9 +494,16 @@ fn parse_non_negative_int(text : String) -> Int32? {
 suberror CommandError {
   Image(String)
   Analysis(String)
-  /// `--from-image` 取归档失败：探测不到后端、子进程失败、镜像名不合法等
+  /// 走 docker 后端取归档失败：子进程失败、超时、镜像名不合法等
   Docker(String)
-  /// `--from-registry` / `--save` 失败：认证、404、digest 不符、落盘失败等
+  /// 镜像引用这条路走不通：本地没有这个镜像（`--no-pull` 下没法拉），
+  /// 或者这台机器一个 docker 后端都没有。
+  ///
+  /// 与 `Docker` 分开是因为这是**用户该做的下一步不同**：前者该 `docker pull`，
+  /// 后者该装 docker（或者允许出网走 registry）。都塞进一句 `Docker` 时，
+  /// 只能靠文案里有没有 `no usable docker backend` 来分辨。
+  NoLocalImage(String)
+  /// registry 拉取 / `--save` 失败：认证、404、digest 不符、落盘失败等
   Registry(String)
 } derive(Eq, Debug)
 
@@ -506,36 +515,90 @@ fn report_error(error : CommandError) -> Unit {
     Analysis(message) => eprintln("analysis error: \{message}")
     // `DockerCliError` 的 `Show` 已经带了安装提示，这里只补一句「怎么绕过」
     Docker(message) => eprintln("docker error: \{message}")
+    NoLocalImage(message) => eprintln("image error: \{message}")
     Registry(message) => eprintln("registry error: \{message}")
   }
 }
 
 ///|
-/// 拿到待分析的镜像来源。
+/// 位置参数的三种形态。判定只做三档，见 `load_source`。
+enum InputKind {
+  /// `-`：从 stdin 读
+  Stdin
+  /// 路径存在（文件或目录）：本地归档 / OCI layout，一步都不碰网络
+  LocalPath
+  /// 其余：当镜像引用（`nginx:latest`、`docker.cnb.cool/x/y:tag`）
+  Reference
+} derive(Eq, Debug)
+
+///|
+/// 这个位置参数是不是一份**已经存在**的本地输入（stdin 或路径）。
 ///
-/// 两条路：
-/// - 默认：把位置参数当文件 / 目录 / `-`，走 `ImageSource::load`，完全不碰 docker
-/// - `--from-image`：把位置参数当镜像引用，走 `docker_cli` 取 docker-archive 字节，
-///   再喂给既有的 `ImageSource::from_tar_bytes`——**不新开分析链路**
+/// 只问本地文件系统，不依赖 `docker_cli`：判定不该为了「这像不像镜像名」
+/// 去连 daemon。`@fs.path_exists` 在 native 上是 `stat`，够用。
+fn is_local_input(image : String) -> Bool {
+  match kind_of_input(image) {
+    Reference => false
+    _ => true
+  }
+}
+
+///|
+/// 三档判定。`-` 是 stdin 的约定写法（`ImageSource::load` 也认这一个），
+/// 其余「存在即本地、否则当镜像引用」。
 ///
-/// 显式开关优先：不给 `--from-image` 就绝不连 daemon，
-/// 避免「给个文件却去连 docker」这种意外行为。
+/// 必须在 `ImageSource::load` **之前**判：对不存在的路径，load 会一路走到
+/// `fopen` 失败，报「cannot read nginx:latest: No such file or directory」——
+/// 对打错文件名的人这是人话，对镜像名就纯属误导。
+fn kind_of_input(image : String) -> InputKind {
+  if image == "-" {
+    Stdin
+  } else if @fs.path_exists(image) {
+    LocalPath
+  } else {
+    Reference
+  }
+}
+
+///|
+/// 拿到待分析的镜像来源。位置参数自己说它是什么（issue #124）：
 ///
-/// `--from-image` 下本地缺镜像默认会拉一次（对齐原版 dive），
-/// `--no-pull` 关掉它——关掉后就是纯离线，`docker save` 找不到就是找不到。
+/// - `-` → stdin
+/// - 路径存在 → 本地归档 / OCI layout，完全不碰 docker
+/// - 其余 → 镜像引用：先问 docker，一个后端都没有时才自己连 registry（issue #109）
+///
+/// 「镜像引用」这一档里先 `inspect`（纯本地）：本地有就 `save`，没有就 `pull` 一次
+/// 再 `save`——对齐原版 dive（Go），那边没有 `--pull` 开关，`ImageNotFound` 就拉一次。
+/// `--no-pull` 把 `pull` 与 registry 直拉一起关掉，`inspect` / `save` 照常。
+///
+/// 产物统一是 docker-archive tar：`docker save` 与 `registry_cli` 落的是同一形态，
+/// 谁拿到就谁往下走，**不会**为了「统一先塞进 daemon」再 `docker load` 一遍。
 async fn load_source(
   options : Options,
   env~ : Map[String, String] = @docker_cli.process_env(),
   candidates? : Array[@docker_cli.BackendCandidate],
 ) -> @image_ci.ImageSource raise CommandError {
-  if options.from_registry {
-    return load_from_registry(options)
+  match kind_of_input(options.image) {
+    Stdin | LocalPath =>
+      @image_ci.ImageSource::load(options.image) catch {
+        err => raise CommandError::Image(err.to_string())
+      }
+    Reference => load_reference(options, env~, candidates?)
   }
-  if !options.from_image {
-    return @image_ci.ImageSource::load(options.image) catch {
-      err => raise CommandError::Image(err.to_string())
-    }
-  }
+}
+
+///|
+/// 镜像引用这一档：docker 优先，完全没有后端时才改走 registry。
+///
+/// 顺序不能对调，也不能「先弄进 daemon 再 save」：`DockerCliSource::save` 走的是
+/// `docker save <ref>`，镜像必须已经在 daemon 里——把 registry 直拉到的 tar 再喂进
+/// daemon 纯属绕圈。两条路的产物都是 docker-archive tar，这才是「零 daemon 分析」
+/// 还能成立的前提（issue #124 第 6 节）。
+async fn load_reference(
+  options : Options,
+  env~ : Map[String, String],
+  candidates? : Array[@docker_cli.BackendCandidate],
+) -> @image_ci.ImageSource raise CommandError {
   // `save` 期间只说「开始」不说「进度」，用户手上唯一的线索就是这行耗时。
   // 装上钩子之后，收尾时会补一句「多久、最长静默多久、多少字节」——
   // 这是判断该不该调 `--timeout` 的唯一依据（issue #94）。
@@ -559,15 +622,15 @@ async fn load_source(
     pull_if_missing=!options.no_pull,
     on_stage=fn(stage) { describe_stage(options, stage) },
   ) catch {
-    // 没有 docker 就自己连 registry：`--from-image` 的语义是「这是镜像名」，
-    // 不是「必须走 docker」（issue #109 的兜底）
     err => {
+      // 这台机器一条能走的路都没有：位置参数既然是镜像名，就自己连 registry
+      // （issue #109）。`--no-pull` 在场时不兜——那个开关的意思是「不许上网」。
       if !options.no_pull && @docker_cli.no_backend_at_all(err) {
         return fallback_to_registry(options, err)
       }
-      // 其余（有 docker 但取不到、`--no-pull`、名字非法）都归到 Docker：
-      // `Show` 已经把这些转成人话（含安装提示与子进程 stderr）
-      raise CommandError::Docker(err.to_string())
+      // 有 docker 但取不到（含 `--no-pull` 下本地没有、名字非法）：**不回退**。
+      // 拿一次注定失败的 registry 拉取盖住真正的错，是这里最该防的回归。
+      raise classify_docker_error(options, err)
     }
   }
   // 探测记录走 stderr，别混进报告：报告还可能被 `-o` / 管道消费
@@ -592,7 +655,36 @@ async fn load_source(
 }
 
 ///|
-/// `--from-image` 探测不到任何 docker 后端时的兜底：改走 `--from-registry`。
+/// 把 docker 侧的错误分成两条不同的「下一步」。
+///
+/// `--no-pull` 下的两种失败要分开报：
+/// - **本地没这个镜像**（`ImageNotFound`）→ `NoLocalImage`：用户该 `docker pull` 一次，
+///   或者去掉 `--no-pull` 让它自己拉；
+/// - **这台机器没有 docker**（`NoBackend` 且一个候选都没通过）→ `Docker`：
+///   用户该装 docker，或者允许出网走 registry。
+///
+/// 合并成一句 `Docker` 时，只能靠文案里有没有 `no usable docker backend` 来分辨
+/// （`from_image_wbtest.mbt` 之前正是这么断言）。类型分开之后，
+/// 文案可以只管说人话，判断留给调用方。
+fn classify_docker_error(
+  options : Options,
+  err : @docker_cli.DockerCliError,
+) -> CommandError {
+  match err {
+    @docker_cli.ImageNotFound(reference) =>
+      if options.no_pull {
+        NoLocalImage(
+          "no such image locally: \{reference}, and --no-pull forbids pulling it",
+        )
+      } else {
+        Docker(err.to_string())
+      }
+    _ => Docker(err.to_string())
+  }
+}
+
+///|
+/// 镜像引用这一档买不到 docker 时的兜底：改走 registry 直拉。
 ///
 /// 触发条件只有「这台机器上没有一条能走的路」（见 `no_backend_at_all`），
 /// 而且 `--no-pull` 在场就不兜——那个开关的意思是「不许上网」，
@@ -623,7 +715,7 @@ async fn fallback_to_registry(
 }
 
 ///|
-/// 取归档过程中的阶段回调：`--from-image` 下**边做边打**，而不是等结束再补一份报告。
+/// 取归档过程中的阶段回调：镜像引用那一档**边做边打**，而不是等结束再补一份报告。
 ///
 /// 之前这些行是在 `fetch_archive_verbose` **返回之后**统一打印的，
 /// 于是「will pull / timeout 30s」出现在「已经拉完」之后，读起来像倒放；
@@ -636,7 +728,9 @@ fn describe_stage(options : Options, stage : @docker_cli.FetchStage) -> Unit {
     Resolved(backend) => {
       eprintln("[docker] using \{@docker_cli.ImageBackend::to_string(backend)}")
       if options.no_pull {
-        eprintln("[docker] --no-pull: will not fetch a missing image")
+        eprintln(
+          "[docker] --no-pull: never touch the network (no pull, no registry)",
+        )
       } else {
         eprintln("[docker] will pull the image if it is missing locally")
       }
