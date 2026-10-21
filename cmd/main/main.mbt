@@ -7,7 +7,7 @@
 /// `dive img > out.txt` 这种「stdout 是管道、stdin 还是终端」的情况必须
 /// 在切屏之前就退到文本，否则先切屏、再在主屏打一行错误。
 ///
-/// 一条链只做一遍重活：`--save` 互斥先判 → 取归档 → 解压一次 → 选界面 →
+/// 一条链只做一遍重活：`--save` 先出 → 取归档 → 解压一次 → 选界面 →
 /// 退出后统一出产物（`--format` / `-o` / `--rules` 的退出码）。
 ///
 /// 链路是 P1/P2 → P3 → P4 的串接：
@@ -50,21 +50,12 @@ async fn main {
     }
   }
   let options = Options::from_matches(matches)
-  // `--save` 是「只取不分析」：把镜像落成 tar / OCI layout 就结束，不走进分析链路，
-  // 也就永远不会有界面——它自己的语义就已经是「不用界面」，不需要再加 `--no-tui`。
+  // 「只取不分析」的出口：落成 tar / OCI layout 就结束，不走进分析链路。
   //
-  // 先于 `load_source` 判定，免得为了保存去解一遍镜像；也先于 tty 探测，
-  // 于是「`--save` 要不要界面」这个问题根本不成立：它连选界面那一步都走不到。
-  // 唯一的自相矛盾是**明写**了要界面（没给 `--no-tui`）——那不是「终端会怎样」
-  // 的问题，是参数本身在说两句话，所以在碰数据之前就退 2（issue #128 复盘）。
-  if options.save && options.interactive() {
-    eprintln(
-      "invalid options: --save never opens the layer browser, so --no-tui is redundant with it (drop either one)",
-    )
-    exit_process(@image_ci.exit_config_error)
-    return
-  }
-  // 「只取不分析」的出口：落成 tar / OCI layout 就结束，不走进分析链路
+  // 这条先于 `load_source`，免得为了保存去解一遍镜像；也就先于选界面——
+  // `--save` 自己就带着「不用界面」的意思，`--no-tui` 在它面前是空的：
+  // 顺手写上去（脚本里常这么写）不该退 2，不写也不该被追着要。
+  // 「参数自相矛盾要报错」只出现在**真有两句话**的地方，`--save` 这里没有第二句。
   if options.save {
     save_only(options) catch {
       err => {
@@ -711,6 +702,9 @@ fn registry_options(options : Options) -> RegistryOptions {
 ///
 /// `-o` 在 `--save` 下就是落盘位置，不和 `--format html -o report.html` 抢：
 /// 那条 `-o` 只在分析态生效（`--save` 压根不出报告）。
+///
+/// `--no-tui` 在这里是可写的废话：写了不报错，不写也不会因此打不开界面——
+/// 这条路本来就不开界面。参数校验只拦「真有两句话」的组合（issue #128 / #139）。
 async fn save_only(options : Options) -> Unit raise CommandError {
   if options.output is None {
     raise CommandError::Registry(
