@@ -108,7 +108,12 @@ async test "action_of_key maps the ctrl chords" {
 ///|
 /// `Ctrl+Space` 全折叠 / 再按一次全展开，光标行被折掉时落到最近的祖先。
 async test "apply_action toggles collapse all" {
-  let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
+  let state = AppState::new(
+    two_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=0),
+  )
   assert_false(apply_action(Action::ToggleCollapseAll, state))
   assert_true(state.view.collapsed.contains("/etc"))
   // 再按一次：全展（不是「再折一层」）
@@ -119,7 +124,12 @@ async test "apply_action toggles collapse all" {
 ///|
 /// `Ctrl+U` 只看改写过的行，再按一次撤销（`set_filter` 自带反转）。
 async test "apply_action toggles the modified-only filter" {
-  let state = AppState::new(two_layers(), None, "demo", initial_layer=1)
+  let state = AppState::new(
+    two_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=1),
+  )
   let total = state.view.visible.length()
   assert_false(apply_action(Action::FilterModified, state))
   assert_eq(state.view.only_group(), Some(RowGroup::ModifiedOnly))
@@ -180,7 +190,12 @@ async test "action_of_key maps focus and help keys" {
 ///|
 /// 焦点面板上动作走详情滚动：移动类动作直接反映在滚动偏移上。
 async test "apply_action scrolls the detail pane when it is focused" {
-  let state = AppState::new(two_layers(), None, "demo")
+  let state = AppState::new(
+    two_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(),
+  )
   state.focus = Focus::Detail
   // 详情内容 10 行，窗口 3 行
   state.detail_scroll.set_content(10)
@@ -198,7 +213,7 @@ async test "apply_action scrolls the detail pane when it is focused" {
 ///|
 /// 切焦点与帮助开关都不退出；帮助展开时走行动作被忽略（浮层内容固定）。
 async test "apply_action handles focus switching and the help overlay" {
-  let state = AppState::new([], None, "demo")
+  let state = AppState::new([], None, "demo", start=StartConfig::new())
   assert_false(apply_action(Action::NextFocus, state))
   assert_eq(state.focus, Focus::Detail)
   assert_false(apply_action(Action::NextFocus, state))
@@ -218,7 +233,12 @@ async test "apply_action handles focus switching and the help overlay" {
 ///|
 /// 动作施加到视图上：移动类动作直接反映在光标上，退出返回 true。
 async test "apply_action drives the view and signals quit" {
-  let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
+  let state = AppState::new(
+    two_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=0),
+  )
   state.view.move_to_home()
   state.view.page_height = 10
   assert_false(apply_action(Action::MoveDown, state))
@@ -232,7 +252,12 @@ async test "apply_action drives the view and signals quit" {
 /// 换层动作只在合法范围内生效，且不退出。
 async test "apply_action clamps layer switching" {
   let views = two_layers()
-  let state = AppState::new(views, None, "demo", initial_layer=1)
+  let state = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=1),
+  )
   assert_false(apply_action(Action::PrevLayer, state))
   assert_eq(state.view.layer, 0)
   assert_false(apply_action(Action::NextLayer, state))
@@ -245,7 +270,12 @@ async test "apply_action clamps layer switching" {
 ///|
 /// `s` 切排序口径：切一次按大小，再切一次回名字。
 async test "apply_action toggles the sort order" {
-  let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
+  let state = AppState::new(
+    two_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=0),
+  )
   assert_false(state.view.sort_by_size)
   assert_false(apply_action(Action::ToggleSort, state))
   assert_true(state.view.sort_by_size)
@@ -262,7 +292,12 @@ async test "action_of_key maps the sort key" {
 ///|
 /// 换层保留排序口径：切到大小序再换层，不该悄悄回到名字序。
 async test "layer switching keeps the sort order" {
-  let state = AppState::new(two_layers(), None, "demo", initial_layer=0)
+  let state = AppState::new(
+    two_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=0),
+  )
   ignore(apply_action(Action::ToggleSort, state))
   assert_false(apply_action(Action::NextLayer, state))
   assert_true(state.view.sort_by_size)
@@ -323,7 +358,12 @@ async fn aggregate_layers() -> Array[@layer_tree.LayerView] {
 ///
 /// 这是 issue #69 的第一条验收：换的是「比较区间」，不是数据源。
 async test "switching the compare mode keeps the tree and only re-colours" {
-  let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=2)
+  let state = AppState::new(
+    aggregate_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=2),
+  )
   let paths = state.view.all_rows.map(fn(row) { row.path })
   let statuses = state.view.all_rows.map(fn(row) { row.status })
   assert_false(apply_action(Action::CompareAggregate, state))
@@ -356,7 +396,12 @@ fn status_of_row(state : AppState, path : String) -> RowStatus {
 ///|
 /// 聚合档下 `removed` 有出口：`d` 打开列表，列表内容就是聚合 diff 的 `removed`。
 async test "the removed list is filled from the active compare mode" {
-  let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=2)
+  let state = AppState::new(
+    aggregate_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=2),
+  )
   // 单层档：只有 L2 自己删的那条
   assert_eq(state.removed_paths(), ["/etc/old"])
   ignore(apply_action(Action::CompareAggregate, state))
@@ -376,7 +421,12 @@ async test "the removed list is filled from the active compare mode" {
 ///|
 /// 换层保留档位：在聚合档里换层，不该悄悄回到单层档。
 async test "layer switching keeps the compare mode" {
-  let state = AppState::new(aggregate_layers(), None, "demo", initial_layer=0)
+  let state = AppState::new(
+    aggregate_layers(),
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=0),
+  )
   ignore(apply_action(Action::CompareAggregate, state))
   assert_false(apply_action(Action::NextLayer, state))
   assert_eq(state.view.compare_mode, CompareMode::Aggregate)

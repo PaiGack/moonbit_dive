@@ -13,32 +13,41 @@ MoonBit 重写 [wagoodman/dive](https://github.com/wagoodman/dive)（Go，MIT）
 - `docker_cli`：Docker Engine 封装（docker/podman/nerdctl CLI 后端 + unix socket Engine 后端），把镜像名变成 tar/layout（独立包，不被前四包依赖）
 - `registry_cli`：直接连 registry 拉镜像（OCI Distribution Pull），落成本地 tar / OCI layout，
   **不依赖本地 docker**（镜像引用在没有 docker 时自动走它，`--save` 也走它；native only）
-- `tui`：全屏交互式看树（基于 `moonbit-community/tty`，native only），alternate screen + 带边框分栏，
+- `tui`：全屏交互式看树（基于 `moonbit-community/tty`，native only，**CLI 的默认出口**），alternate screen + 带边框分栏，
   树与详情可 `Tab` 切焦点、`?` 出帮助，把逐层视图接成可上下走、可折叠、可切层的画面；
   键鼠都能用（点击选行 / 滚轮滚面板 / 右键切展开）
 
 ## 用一下
 
+出口只有两个，**默认是界面**（issue #128）：能开界面就开界面，
+`--no-tui` 才走文本。终端不够格（stdin/stdout 有一个不是 tty，或者镜像是从
+stdin 喂进来的）时自动退到文本，并在 stderr 点一句 `tui skipped: ...`。
+
 ```bash
-# 只体检：打印体积报告与一句 gate 结论
+# 默认：开界面（上下走行、折叠目录、左右切层）。没有真终端时自动降级成报告
 moon run --target native cmd/main -- demo-image.tar
+moon run --target native cmd/main -- nginx:latest
+
+# 随时要一份一次性报告：CI / 脚本 / 管道里都该加 --no-tui
+moon run --target native cmd/main -- demo-image.tar --no-tui
+moon run --target native cmd/main -- demo-image.tar --no-tui --rules rules.json
 
 # 门禁：按 rules.json 判定，退出码 0/1/2 分别表示全过 / 有失败 / 规则非法
-moon run --target native cmd/main -- demo-image.tar --rules rules.json
-moon run --target native cmd/main -- demo-image.tar --rules rules.json --format annotations
+moon run --target native cmd/main -- demo-image.tar --no-tui --rules rules.json
+moon run --target native cmd/main -- demo-image.tar --no-tui --rules rules.json --format annotations
 
-# 逐层浏览（dive 交互界面的只读替身）：看第 N 层应用完之后的文件树与这层 diff
-moon run --target native cmd/main -- demo-image.tar --layer 1
-moon run --target native cmd/main -- demo-image.tar --layer 1 --path /app
+# 逐层浏览：看第 N 层应用完之后的文件树与这层 diff
+moon run --target native cmd/main -- demo-image.tar --no-tui --layer 1
+moon run --target native cmd/main -- demo-image.tar --no-tui --layer 1 --path /app
 
-# 全屏交互式看树（TUI）：上下走行、折叠目录、左右切层
-moon run --target native cmd/main -- demo-image.tar --tui
-moon run --target native cmd/main -- nginx:latest --tui
+# 界面里看完一圈，退出时把产物落盘：`-f` / `-o` 在界面那档同样有效
+moon run --target native cmd/main -- demo-image.tar -f json -o report.json
 
 # 按效率看路径：谁把 efficiency 分数拉下来的
 moon run --target native cmd/main -- demo-image.tar --efficiency
-moon run --target native cmd/main -- demo-image.tar --efficiency --top 20 --path /app
-moon run --target native cmd/main -- demo-image.tar --efficiency --format json
+moon run --target native cmd/main -- demo-image.tar --no-tui --efficiency
+moon run --target native cmd/main -- demo-image.tar --no-tui --efficiency --top 20 --path /app
+moon run --target native cmd/main -- demo-image.tar --no-tui --efficiency --format json
 
 # 不落盘直接分析在线镜像：位置参数不是本地路径，就当镜像名
 moon run --target native cmd/main -- nginx:latest
@@ -132,7 +141,7 @@ moon run --target native cmd/main -- docker.cnb.cool/owner/repo:tag
 `moon run` 默认跑 wasm，退出码只有 `--target native` 能传给 shell。输入认三种：
 docker save 产物、OCI Image Layout 目录、单层 tar，或者一个镜像引用（`nginx:latest`）。
 
-`--tui` 打开全屏交互式看树，**键位逐条对齐原版 dive**
+不给 `--no-tui` 就打开全屏交互式看树，**键位逐条对齐原版 dive**
 （`cmd/dive/cli/internal/ui/v1/key/config.go` 的 `DefaultBindings()`）：
 `↑↓`/`jk` 走行，`←→`/`hl` 收起展开，`Space` 折叠展开（`Ctrl+Space` 全折全展），
 `PgUp`/`PgDn` 翻页（`u` 是 `pgup` 别名，`d` 给了删除列表），
@@ -148,8 +157,11 @@ efficiency / wasted / total + versions / cumulative / min / overhead），
 与 `--efficiency` 同一批数字）。
 原版里**不做**的是 `Ctrl+F` 过滤与 `Ctrl+E` 抽文件，理由见
 [`docs/p6-tui.md`](docs/p6-tui.md) 的「与 dive 键位表的差异说明」。
-它进 alternate screen（退出还原终端，异常退出也还原），只支持 native，
-且需要一个真终端（stdin/stdout 都不是 tty 时退 exit 2）。
+它进 alternate screen（退出还原终端，异常退出也还原），只支持 native。
+`stdin`/`stdout` 有一个不是 tty（`dive img > out.txt`、`| cat`），或者镜像是
+从 stdin 喂进来的（`dive - < img.tar`，界面会把 tar 流吃掉）——这三种情况
+都**在进 alternate screen 之前**判掉，落回文本出口，不留半截画面。
+`--rules` 在界面那档同样是门禁：退出码仍是 `0/1/2`。
 详见 [`tui/README.mbt.md`](tui/README.mbt.md) 与 [`docs/p6-tui.md`](docs/p6-tui.md)。
 
 详见 [`docs/`](docs/README.md) 下的设计文档；进度看板见 issue #8；docker cli 封装见 issue #17；

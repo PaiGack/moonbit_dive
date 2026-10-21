@@ -1,5 +1,14 @@
 ///|
-/// `dive` 的只读分析入口：`dive <image|archive> [--rules rules.json] [--layer N] [--path P] [--efficiency]`。
+/// `dive` 的分析入口：`dive <image|archive> [--rules rules.json] [--no-tui] [--layer N] [--path P] [--efficiency]`。
+///
+/// **出口只有两个，默认是界面**（issue #128）：能开界面就开界面（全屏交互式看树），
+/// `--no-tui` 才走文本（CI、脚本、管道）。判定「能不能开」问的是
+/// `isatty(stdin) && isatty(stdout)`，在进 alternate screen **之前**问——
+/// `dive img > out.txt` 这种「stdout 是管道、stdin 还是终端」的情况必须
+/// 在切屏之前就退到文本，否则先切屏、再在主屏打一行错误。
+///
+/// 一条链只做一遍重活：`--save` 互斥先判 → 取归档 → 解压一次 → 选界面 →
+/// 退出后统一出产物（`--format` / `-o` / `--rules` 的退出码）。
 ///
 /// 链路是 P1/P2 → P3 → P4 的串接：
 ///
@@ -41,6 +50,15 @@ async fn main {
     }
   }
   let options = Options::from_matches(matches)
+  // 参数自相矛盾在**碰数据之前**就要说清楚：「给了 `--save` 还想开界面」
+  // 既不能靠「保存优先」悄悄吃掉一边，也不能先把镜像拉下来再报错
+  if options.save && options.interactive() {
+    eprintln(
+      "invalid options: --save and the layer browser cannot be used together (add --no-tui to save only)",
+    )
+    exit_process(@image_ci.exit_config_error)
+    return
+  }
   // `--save` 是「只取不分析」：把镜像落成 tar / OCI layout 就结束，不走进分析链路。
   // 先于 `load_source` 判定，免得为了保存去解一遍镜像
   if options.save {
@@ -61,62 +79,164 @@ async fn main {
       return
     }
   }
-  // `--tui` 走交互式看树：它不是「一份报告」，而是把同一批数据接成可上下走的视图，
-  // 因此单独一条分支，不混进 `run` 的判定链路。退出码只有 0 / 2。
-  if options.tui {
-    run_tui(options, source) catch {
+  if source.layers.is_empty() {
+    report_error(CommandError::Image("image has no layers"))
+    exit_process(@image_ci.exit_config_error)
+    return
+  }
+  // 解压只做一遍：界面要它建树，产物要它算账。两条路共用同一份，谁都不重解
+  // （issue #52 / #128）。`-` 这条也在里面：stdin 到这里已经被读成字节了，
+  // 界面吃不掉它。
+  let layers : Array[BytesView] = []
+  for layer in source.layers {
+    let raw = layer.raw_bytes() catch {
+      err => {
+        report_error(CommandError::Image(err.to_string()))
+        exit_process(@image_ci.exit_config_error)
+        return
+      }
+    }
+    layers.push(raw)
+  }
+  let decompressed = @layer_tree.decompress_layers(layers) catch {
+    err => {
+      report_error(CommandError::Analysis(err.to_string()))
+      exit_process(@image_ci.exit_config_error)
+      return
+    }
+  }
+  // 选界面：给了 `--no-tui` 就走文本（不问 tty）；否则看看终端够不够格。
+  // 开不成界面的原因要留一句给 stderr——静默降级是最难查的一种行为。
+  let notices : Array[String] = []
+  let mut use_tui = options.interactive()
+  if use_tui {
+    match refusal_of_tui(options) {
+      Some(reason) => {
+        use_tui = false
+        notices.push(reason)
+      }
+      None => ()
+    }
+  }
+  let code = if use_tui {
+    run_tui(options, decompressed, notices~) catch {
       err => {
         report_error(err)
         exit_process(@image_ci.exit_config_error)
+        0
       }
     }
-    exit_process(@image_ci.exit_ok)
-  }
-  try run(options, source) catch {
-    error => {
-      report_error(error)
-      exit_process(@image_ci.exit_config_error)
+  } else {
+    try run(options, decompressed, notices~) catch {
+      error => {
+        report_error(error)
+        exit_process(@image_ci.exit_config_error)
+        0
+      }
+    } noraise {
+      code => code
     }
-  } noraise {
-    code => exit_process(code)
+  }
+  exit_process(code)
+}
+
+///|
+/// 这次运行**要不要**界面。
+///
+/// 与「能不能开界面」（`refusal_of_tui`）是分开的两问：`--no-tui` 是用户
+/// 明说的意图，不拿终端状态去顶；反过来，没给 `--no-tui` 也不等于一定开得成。
+fn Options::interactive(self : Options) -> Bool {
+  !self.no_tui
+}
+
+///|
+/// 「开不了界面」的现场判据。
+///
+/// 顺序有讲究：
+///
+/// 1. **stdin 不是终端**——界面要把终端切进 raw mode 读键，不是终端连 `tcgetattr`
+///    都过不去。`dive - < img.tar` 也归这一档：stdin 是 tar 流，界面会把 tar 吃掉
+/// 2. **stdout 不是终端**——`dive img > out.txt` / `| cat`：画面画到管道里
+///    就是一堆 ANSI 垃圾，而报告才是下游要的东西
+///
+/// 两条都在**进 alternate screen 之前**问。`Tty::stdio()` 探不住这个：
+/// 它只是把 fd 包一层，真正炸的是后面的 `with_raw_mode`，那时 `\e[?1049h`
+/// 已经发出去了——先把屏幕切走、再在主屏打一行错误，比直接退到文本难看得多。
+///
+/// 返回 `None` 表示可以开；`Some(原因)` 是给 stderr 的一句话。
+/// 探测本身失败一律当「不是终端」：多降级一次是能看的报告，猜错一次是坏掉的终端。
+fn refusal_of_tui(options : Options) -> String? {
+  if kind_of_input(options.image) == Stdin {
+    return Some(
+      "tui skipped: the image comes from stdin, the browser would eat the stream (add --no-tui to silence this)",
+    )
+  }
+  if !stdin_is_a_terminal() {
+    return Some(
+      "tui skipped: not a tty (stdin is not a terminal, add --no-tui to silence this)",
+    )
+  }
+  if !stdout_is_a_terminal() {
+    return Some(
+      "tui skipped: not a tty (stdout is redirected, add --no-tui to silence this)",
+    )
+  }
+  None
+}
+
+///|
+/// stdin 是不是终端。探测失败按「不是」处理。
+fn stdin_is_a_terminal() -> Bool noraise {
+  stdin_is_tty_ffi() != 0
+}
+
+///|
+/// stdout 是不是终端。探测失败按「不是」处理。
+fn stdout_is_a_terminal() -> Bool noraise {
+  stdout_is_tty_ffi() != 0
+}
+
+///|
+/// `tty_stub.c` 里的 `isatty(fileno(stdin))`。
+extern "C" fn stdin_is_tty_ffi() -> Int32 = "dive_stdin_is_tty"
+
+///|
+/// `tty_stub.c` 里的 `isatty(fileno(stdout))`。
+extern "C" fn stdout_is_tty_ffi() -> Int32 = "dive_stdout_is_tty"
+
+///|
+/// 启动提示统一打在 stderr：stdout 可能正被 `-f json | jq` 消费，
+/// 混进去一句话就是「合法 JSON 却不合法」。
+fn report_notices(notices : Array[String]) -> Unit {
+  for notice in notices {
+    eprintln(notice)
   }
 }
 
 ///|
-/// `--tui` 分支：打开全屏交互式看树（路径 B）。
+/// 界面这一档：把已经解压好的层接成全屏看树（路径 B）。
 ///
-/// 数据全部来自既有链路（`decompress_layers` + `browse_decompressed`
-/// + `analyze_decompressed`），这里只做「解压一遍 → 建视图状态 → 进主循环」。
-/// 终端不可用时按「运行错误」退 2——而不是静默回落到文本输出，
-/// 否则脚本里 `--tui` 会莫名其妙地变成一条一次性的报告。
+/// 数据全部来自既有链路（`browse_decompressed` + `analyze_decompressed`），
+/// 解压已经在 `main` 里做过一遍，这里不再碰原始层。
+///
+/// **返回退出码**：从前它只有 0 / 2（进不去终端就是 2），但 `--rules` 是门禁，
+/// 退出码是产品语义——界面里看完一圈退出，`0/1/2` 该跟文本出口一个口径。
+///
+/// 终端不可用**不在这里报错**：`refusal_of_tui` 已经在切屏前把话说完了，
+/// 走到这里还开不起来（`with_raw_mode` 抛）属于真运行错误，退 2。
 ///
 /// 全屏的进出由 `@tui.run_app` 自己管（进 alternate screen、退出还原），
 /// 这里只提供「raw mode」这一层保护：两者都失效才会把终端留在坏状态。
 async fn run_tui(
   options : Options,
-  source : @image_ci.ImageSource,
-) -> Unit raise CommandError {
+  decompressed : @layer_tree.DecompressedLayers,
+  notices~ : Array[String],
+) -> Int32 raise CommandError {
   let tty = @tty.Tty::stdio() catch {
     _ =>
       raise CommandError::Analysis(
-        "--tui needs a terminal (stdio is not a tty)",
+        "the layer browser needs a terminal (stdio is not a tty)",
       )
-  }
-  if source.layers.is_empty() {
-    raise CommandError::Image("image has no layers")
-  }
-  let layers : Array[BytesView] = []
-  for layer in source.layers {
-    let raw = layer.raw_bytes() catch {
-      err => raise CommandError::Image(err.to_string())
-    }
-    layers.push(raw)
-  }
-  // 先解压一遍，再让两条链路共用它：逐层快照（`browse_decompressed`）
-  // 与跨层统计（`analyze_decompressed`）。解压是 TUI 启动里最贵的一步，
-  // 没有理由为同一批层做两遍（issue #52）。
-  let decompressed = @layer_tree.decompress_layers(layers) catch {
-    err => raise CommandError::Analysis(err.to_string())
   }
   let views = @layer_tree.browse_decompressed(decompressed)
   // 详情面板的数字来自一次完整分析；拿不到就退化成「没有详情」，画面照常可用
@@ -124,11 +244,14 @@ async fn run_tui(
     Some((analysis, report)) => Some(@tui.detail_source_of(analysis, report))
     None => None
   }
-  let initial_layer = match options.layer {
-    Some(layer) => layer
-    None => views.length() - 1
-  }
-  let state = @tui.AppState::new(views, details, options.image, initial_layer~)
+  let start = start_config_of(options, views.length(), notices)
+  let state = @tui.AppState::new(
+    views,
+    details,
+    options.image,
+    start~,
+    notices~,
+  )
   // `with_raw_mode` 保证退出时把终端状态还原，哪怕主循环里抛错；
   // alternate screen 的还原由 `run_app` 的 defer 管（见 `tui/alt_screen.mbt`）。
   // 它自己会抛 OSError（终端状态拿不到时），统一折成「分析错误」好让退出码收敛。
@@ -136,6 +259,143 @@ async fn run_tui(
     err =>
       raise CommandError::Analysis("cannot run the interactive browser: \{err}")
   }
+  let all = []
+  all.append(notices)
+  all.append(state.notices())
+  report_notices(all)
+  // 产物在**离屏之后**才写：界面刚关，终端已经回到主屏，这时候往 stdout
+  // 打 JSON 才是干净的一行；顺序反了就会先画一条被稍后清掉的报告。
+  let artifacts = write_artifacts_of_tui(options, decompressed)
+  match artifacts {
+    // 没要产物：`--rules` 在场就按门禁给 0/1/2，否则 0
+    None => exit_code_of_tui(options, decompressed)
+    // 要了产物：它算的已经是同一份报告，退出码顺手带出来，不再算第二遍
+    Some(result) => @image_ci.exit_code_of(result)
+  }
+}
+
+///|
+/// 界面退出后把 `--format` 要的那份产物写出来。
+///
+/// 为什么要有这一步（issue #128 第一节的第一条硬原则）：界面在场时
+/// `--format` / `-o` 不能只是「被忽略」。交互看完一圈、按 `q` 出来，
+/// 手上该多一份能交给下游的东西——数据本来就全在内存里，零重算。
+///
+/// 口径与文本出口**刻意不同**的只有一处：界面里 `--format` 缺省是 `text`，
+/// 而 `text` 意味着「报告已经在你眼前了」。硬在退出后再打一遍整屏，
+/// 等于把刚看完的东西原样塞进终端回滚区——所以界面只认
+/// `json` / `html` / `annotations`，`-o` 单独给时按 JSON 落盘（`-o` 说明
+/// 你要一份文件，而界面本身不是文件）。
+///
+/// 给了 `--efficiency` 时 `-f json` / `-o` 仍然生效，但导出的是**整份报告**
+/// （文本出口那张 `--efficiency` 专用的表有自己的 JSON 形状，这里不重复造一份）；
+/// 这件事会点一句到 stderr——不静默换语义，也不假装给了 `--efficiency`
+/// 就没人想问整体账。
+///
+/// 返回判定结果：给了 `--rules` 就是规则那一次 `check` 的结果（界面出口的
+/// 退出码从它出，不必在别处再算一遍）；没给规则就是空规则集过一次。
+fn write_artifacts_of_tui(
+  options : Options,
+  decompressed : @layer_tree.DecompressedLayers,
+) -> @image_ci.CheckResult? raise CommandError {
+  if options.format == "text" && options.output is None {
+    return None
+  }
+  if options.efficiency {
+    let target = options.output.unwrap_or("stdout")
+    eprintln(
+      "--efficiency is a view, not a report: writing the whole report instead, to \{target}",
+    )
+  }
+  let format = if options.format == "text" { "json" } else { options.format }
+  let tree = @layer_tree.FileTree::new()
+  let analysis = @image_analysis.analyze_decompressed(tree, decompressed) catch {
+    err => raise CommandError::Analysis(err.to_string())
+  }
+  let report = @image_analysis.build_report(analysis, tree)
+  let ruleset = load_rules(options)
+  let result = ruleset.check(report, tree, image=options.image)
+  match format {
+    "json" => write_report_output(options, result.to_json_string())
+    "html" =>
+      write_report_output(options, @image_analysis.report_to_html(report))
+    "annotations" => write_report_output(options, result.to_annotations())
+    _ => {
+      eprintln(
+        "invalid --format: \{format} (expect text, json, html or annotations)",
+      )
+      exit_process(@image_ci.exit_config_error)
+    }
+  }
+  Some(result)
+}
+
+///|
+/// 命令行那几个开关在界面里各有落点（issue #128 第二节）。
+///
+/// 一条都不能「被忽略」：`--aggregate` 换起始档位，`--path` 定光标落点，
+/// `--efficiency` 把详情面板顶到焦点（那张表本来就画在详情面板里），
+/// `--layer` 是起始层；`--layer` 没给就看最后一层（与文本出口的缺省一致）。
+fn start_config_of(
+  options : Options,
+  total_layers : Int32,
+  notices : Array[String],
+) -> @tui.StartConfig {
+  let layer = match options.layer {
+    Some(layer) => layer
+    None => total_layers - 1
+  }
+  if layer < 0 || layer >= total_layers {
+    notices.push(
+      "--layer \{layer} is out of range: the browser opens the last layer of \{total_layers}",
+    )
+  }
+  {
+    layer,
+    compare_mode: if options.aggregate {
+      @tui.CompareMode::Aggregate
+    } else {
+      @tui.CompareMode::Single
+    },
+    path: options.path,
+    focus: if options.efficiency {
+      @tui.Focus::Detail
+    } else {
+      @tui.Focus::Tree
+    },
+  }
+}
+
+///|
+/// 界面退出后的判定：`--rules` 在场就按规则出退出码，不在场一律 0。
+///
+/// 数字来自内存里那份 `decompressed`，不再解压、不再走一遍 `load_source`。
+/// 给了 `--efficiency` 时**不做**门禁判定——这是文本出口的老口径，
+/// 两个出口对同一个开关得说同一句话。但 `--rules` 与 `--efficiency` 同给时，
+/// 规则不该被悄悄吞掉：点一句到 stderr，然后仍按效率那张表的口径给 0。
+///
+/// `-f json` / `-o` 与 `--rules` 同给时以 `0/1/2` 收尾：产物已经落下了，
+/// 但退出码仍是门禁的——下游看一眼文件、再信一眼退出码，两件事都得对。
+fn exit_code_of_tui(
+  options : Options,
+  decompressed : @layer_tree.DecompressedLayers,
+) -> Int32 raise CommandError {
+  let ruleset = match options.rules {
+    None => return @image_ci.exit_ok
+    Some(_) => load_rules(options)
+  }
+  if options.efficiency {
+    eprintln(
+      "--efficiency view is not a gate: \{options.rules.unwrap()} was loaded but not applied",
+    )
+    return @image_ci.exit_ok
+  }
+  let tree = @layer_tree.FileTree::new()
+  let analysis = @image_analysis.analyze_decompressed(tree, decompressed) catch {
+    err => raise CommandError::Analysis(err.to_string())
+  }
+  let report = @image_analysis.build_report(analysis, tree)
+  @image_ci.exit_code_of(ruleset.check(report, tree, image=options.image))
 }
 
 ///|
@@ -160,17 +420,17 @@ fn cli() -> @argparse.Command {
       @argparse.OptionArg(
         "output",
         short='o',
-        about="write the report to a file instead of stdout (html only, for now)",
+        about="write the report to a file instead of stdout; with the browser it is what gets written on exit",
       ),
       @argparse.OptionArg(
         "layer",
         short='l',
-        about="show the file tree as of layer N (0-based) instead of the gate",
+        about="layer N (0-based): where the browser opens, or with --no-tui which layer to print",
       ),
       @argparse.OptionArg(
         "path",
         short='p',
-        about="restrict the tree/efficiency view to a subtree (default layer: last)",
+        about="restrict the report to a subtree; in the browser it is where the cursor lands",
       ),
       @argparse.OptionArg(
         "top",
@@ -218,8 +478,8 @@ fn cli() -> @argparse.Command {
         about="print the docker/registry backend log to stderr",
       ),
       @argparse.FlagArg(
-        "tui",
-        about="open the interactive layer browser (native only, needs a real terminal)",
+        "no-tui",
+        about="print a one-shot report instead of opening the layer browser (CI / scripts / pipes)",
       ),
       @argparse.FlagArg(
         "aggregate",
@@ -256,8 +516,11 @@ struct Options {
   no_pull : Bool
   /// 打 `docker_cli` 的后端探测记录
   verbose : Bool
-  /// 打开交互式看树（native only）
-  tui : Bool
+  /// `--no-tui`：**不开**界面，走文本。
+  ///
+  /// 默认是开界面（issue #128）：能不能开由 `refusal_of_tui` 现场判，
+  /// 这个开关只是「我就是要文本」，它不问 tty——CI 里就该这么用。
+  no_tui : Bool
   /// `--aggregate`：`--layer` 视图把 diff 换成「相对第 0 层之前的整段累积」
   /// （对齐原版 dive 的 `Ctrl+A` / 聚合档）。只影响 `--layer` 分支，
   /// 不给这个开关时输出与从前逐字节一致
@@ -299,7 +562,7 @@ fn Options::from_matches(matches : @argparse.Matches) -> Options {
     efficiency: flag_of(matches, "efficiency"),
     no_pull: flag_of(matches, "no-pull"),
     verbose: flag_of(matches, "verbose"),
-    tui: flag_of(matches, "tui"),
+    no_tui: flag_of(matches, "no-tui"),
     aggregate: flag_of(matches, "aggregate"),
     save: flag_of(matches, "save"),
     archive_format: archive_format_of(matches),
@@ -769,29 +1032,25 @@ fn analysis_progress(options : Options) -> ((Int32, Int32) -> Unit)? {
 
 ///|
 /// 跑一遍完整链路，返回退出码。
-async fn run(
+fn run(
   options : Options,
-  source : @image_ci.ImageSource,
+  decompressed : @layer_tree.DecompressedLayers,
+  notices~ : Array[String],
 ) -> Int32 raise CommandError {
-  if source.layers.is_empty() {
-    raise CommandError::Image("image has no layers")
-  }
-  let tree = @layer_tree.FileTree::new()
-  let layers : Array[BytesView] = []
-  for layer in source.layers {
-    let raw = layer.raw_bytes() catch {
-      err => raise CommandError::Image(err.to_string())
-    }
-    layers.push(raw)
-  }
+  report_notices(notices)
   if options.efficiency {
-    return run_efficiency_view(options, layers)
+    return run_efficiency_view(options, decompressed)
   }
   if options.layer is Some(_) || options.path is Some(_) || options.aggregate {
-    return run_layer_view(options, layers)
+    return run_layer_view(options, decompressed)
   }
+  let tree = @layer_tree.FileTree::new()
   let on_layer = analysis_progress(options)
-  let analysis = @image_analysis.analyze_layers(tree, layers, on_layer~) catch {
+  let analysis = @image_analysis.analyze_decompressed(
+    tree,
+    decompressed,
+    on_layer~,
+  ) catch {
     err => raise CommandError::Analysis(err.to_string())
   }
   if options.verbose {
@@ -844,13 +1103,13 @@ fn write_report_output(options : Options, text : String) -> Unit {
 /// `--aggregate` 换的是**比较区间**而不是数据源（issue #69）：树仍是第 n 层的，
 /// 但 diff 换成「第 0 层之前到现在这一整段的累积」，与 TUI 的 `Ctrl+A` 同义。
 /// `removed` 不在树上，所以单独列一段——它是「这段区间少了什么」的唯一出口。
-async fn run_layer_view(
+///
+/// 收的是**已经解压好的**层：`main` 里那一遍就够，这里只管从它拍快照。
+fn run_layer_view(
   options : Options,
-  layers : Array[BytesView],
+  decompressed : @layer_tree.DecompressedLayers,
 ) -> Int32 raise CommandError {
-  let views = @layer_tree.browse_layers(layers) catch {
-    err => raise CommandError::Analysis(err.to_string())
-  }
+  let views = @layer_tree.browse_decompressed(decompressed)
   let wanted = match options.layer {
     Some(layer) => layer
     // 只给 `--path` 时默认看最后一层
@@ -965,13 +1224,19 @@ fn layer_view_to_json(
 /// 数字全部来自 `EfficiencyReport.paths`（即 efficiency score 的同一批原料），
 /// 这里只负责渲染与截断。与 `--layer` 一样返回 `exit_ok`：
 /// 这是一张观察用的表，不是判定。
-async fn run_efficiency_view(
+///
+/// 同样收解压好的层：与界面用的那一份是同一批 tar 字节。
+fn run_efficiency_view(
   options : Options,
-  layers : Array[BytesView],
+  decompressed : @layer_tree.DecompressedLayers,
 ) -> Int32 raise CommandError {
   let tree = @layer_tree.FileTree::new()
   let on_layer = analysis_progress(options)
-  let analysis = @image_analysis.analyze_layers(tree, layers, on_layer~) catch {
+  let analysis = @image_analysis.analyze_decompressed(
+    tree,
+    decompressed,
+    on_layer~,
+  ) catch {
     err => raise CommandError::Analysis(err.to_string())
   }
   if options.verbose {

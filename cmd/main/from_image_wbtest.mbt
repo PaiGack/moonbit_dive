@@ -404,7 +404,7 @@ async test "no-pull only folds pull_if_missing" {
   assert_eq(without_pull.image, with_pull.image)
   assert_eq(without_pull.format, with_pull.format)
   assert_eq(without_pull.output, with_pull.output)
-  assert_eq(without_pull.tui, with_pull.tui)
+  assert_eq(without_pull.no_tui, with_pull.no_tui)
   assert_eq(without_pull.docker_timeout_ms, with_pull.docker_timeout_ms)
 }
 

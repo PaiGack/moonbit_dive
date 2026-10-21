@@ -57,8 +57,13 @@ async test "README example" {
   }
   let views = @layer_tree.browse_decompressed(decompressed)
 
-  // 建状态：默认看第 0 层，焦点在树上
-  let state = @tui.AppState::new(views, None, "demo:latest")
+  // 建状态：起始层 / 档位 / 光标落点 / 焦点都收在 StartConfig 里
+  let state = @tui.AppState::new(
+    views,
+    None,
+    "demo:latest",
+    start=@tui.StartConfig::new(),
+  )
   assert_eq(state.view.layer, 0)
   assert_eq(state.view.visible.length(), 2)
   assert_eq(state.focus, @tui.Focus::Tree)
@@ -86,18 +91,35 @@ async test "README example" {
 
 ## 命令行
 
-`--tui` 是 `cmd/main` 的一个开关，与只读报告共用同一条取镜像链路：
+界面是 `cmd/main` 的**默认出口**（issue #128）：能开就开，`--no-tui` 才要文本。
+两条出口共用同一条链路（取归档 → 解压一次 → 分头渲染），谁也不比谁多解一遍：
 
 ```bash
-# 本地 tar
-moon run --target native cmd/main -- demo-image.tar --tui
+# 本地 tar：有真终端就进界面
+moon run --target native cmd/main -- demo-image.tar
 
 # 在线镜像：先取归档，再进交互
-moon run --target native cmd/main -- nginx:latest --tui
+moon run --target native cmd/main -- nginx:latest
 
-# 从指定层开始看（`--layer` 同时是 TUI 的起始层）
-moon run --target native cmd/main -- demo-image.tar --tui --layer 0
+# 一次性的文本报告（CI / 脚本 / 管道）
+moon run --target native cmd/main -- demo-image.tar --no-tui
+
+# 从指定层开始看（`--layer` 就是起始层），光标落在某个子树
+moon run --target native cmd/main -- demo-image.tar --layer 0 --path /app
+
+# 起始档位与焦点：`--aggregate` 起手就是聚合档，`--efficiency` 把详情面板顶到焦点
+moon run --target native cmd/main -- demo-image.tar --aggregate --efficiency
+
+# 退出后出产物：交互看完按 `q`，报告写到文件
+moon run --target native cmd/main -- demo-image.tar -f json -o report.json
 ```
+
+几个边界：
+
+- 终端不够格（stdin/stdout 有一个不是 tty，或者 `dive - < img.tar`）→
+  在进 alternate screen **之前**落回文本，stderr 点一句 `tui skipped: ...`
+- `--save` 与界面同给 → exit 2 的参数错，不让任何一边悄悄赢
+- `--rules` 在界面里照样是门禁：退出码仍是 `0/1/2`
 
 只读侧有同一套档位：`--layer N --aggregate` 出聚合 diff，不给 `--aggregate`
 时输出与从前逐字节一致。文本会单列一段 `removed (not in the tree)`，
