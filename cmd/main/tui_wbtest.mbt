@@ -57,6 +57,24 @@ async test "save without --no-tui still saves, it just never opens the browser" 
 }
 
 ///|
+/// 对拍脚本里那条「不碰 daemon 直拉 registry」的形态（`--save --no-tui -o x`）。
+///
+/// 钉住两件事：`--no-tui` 与 `--save` 一起给不该被当成参数错（互斥只看
+/// 「明说要界面」），以及 `--format json` 之类别的开关掺进来也不改这个结论。
+/// 少了 `--no-tui` 的那一版是故意的参数错——脚本必须写全，CI 才不会红在
+/// 一句「你已经 `--no-tui` 了」上。
+async test "the probe's save invocation passes the config check" {
+  let probe = parse_options([
+    "ghcr.io/owner/repo:tag", "--save", "--no-tui", "--output", "registry.tar", "--format",
+    "json",
+  ])
+  assert_true(probe.save)
+  assert_false(probe.save && probe.interactive())
+  assert_eq(probe.format, "json")
+  assert_eq(probe.output, Some("registry.tar"))
+}
+
+///|
 /// 能不能开界面：`-`（stdin 是 tar）一票否决——界面会把 tar 流吃掉。
 ///
 /// 这一档在问 tty 之前就返回，所以断言与环境无关：哪怕测试跑在真终端里也一样。
@@ -105,6 +123,7 @@ async test "streamed blobs survive the temp cleanup, and the temp dir does not" 
       },
     ],
     staging: directory,
+    staging_parent: None,
   }
   let options = parse_options(["demo:latest", "--no-tui"])
   let source = try registry_source(options, image) catch {
@@ -125,4 +144,29 @@ async test "streamed blobs survive the temp cleanup, and the temp dir does not" 
     bytes => bytes
   }
   assert_eq(plain.length(), layer.length())
+}
+
+///|
+/// `-o` 给了镜像归档就去它旁边干活：一次拉取的东西全在 `{dirname}/.mdive/` 下。
+///
+/// issue #133 的现场是「归档在你这儿，700MB 的 blob 在 `/tmp` 某个随机目录」——
+/// 中间产物跟产物分居两地，谁也说不清哪些文件是一次拉取的。
+async test "the staging area sits next to the -o target" {
+  assert_eq(staging_area_of("/tmp/x/image.tar"), Some("/tmp/x/.mdive"))
+  assert_eq(staging_area_of("/tmp/x/layout"), Some("/tmp/x/.mdive"))
+  // 相对路径：落在当前目录下的 `.mdive/`
+  assert_eq(staging_area_of("image.tar"), Some(".mdive"))
+  // `/image.tar` 的父目录是根，不该拼成 `/.mdive` 之外的东西
+  assert_eq(staging_area_of("/image.tar"), Some("/.mdive"))
+  // 没有产物就没有落点：回系统临时目录，仍是单独一个 `dive-*`
+  assert_eq(staging_area_of(""), None)
+}
+
+///|
+/// 父目录只按 `/` 切：`/x` 的父目录是 `/`，`x` 没有。
+async test "parent_directory splits on the last slash" {
+  assert_eq(parent_directory("/tmp/x/image.tar"), "/tmp/x")
+  assert_eq(parent_directory("a/b"), "a")
+  assert_eq(parent_directory("/x"), "/")
+  assert_eq(parent_directory("x"), "")
 }

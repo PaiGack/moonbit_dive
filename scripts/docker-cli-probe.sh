@@ -432,14 +432,10 @@ fi
 # 整条链路里唯一「完全不需要 daemon」的入口——「不装 docker 也能分析在线镜像」
 # 就是靠它。`--save` 只对镜像引用生效，正好是这里的用法。
 #
-# `--save` 本身是「只落盘」的独立出口，语义上已等于 `--no-tui`；但没给
-# `--no-tui` 就等于「明写着要界面」，属于自相矛盾，直接退 2（issue #128）。
-# 所以凡是被脚本调用的 `--save` 都要带上 `--no-tui`——参数对不对只看 argv，
-# 不看这一次跑在真终端还是管道里。
 say ''
 say "${BOLD}== dive <ref> --save（不碰本地 daemon）==${RESET}"
-# `--save` 就是「只落盘」，命令行里不该再写 `--no-tui`：它在这里是句废话——
-# 而把 `--save` 当成「必须补一句 --no-tui」的那条校验，正是上一次红的原因（issue #139）
+# `--save` 只落盘，`--no-tui` 在它面前是句废话：写与不写都走同一条路，
+# 互斥校验只看显式的 `--tui`（issue #128 / #139）。这里留着只是读起来明白。
 if [ -z "$ca_bundle" ]; then
   say "${YELLOW}skip${RESET} 没有 CA 包，连不了 https registry"
 elif "$DIVE" "$REMOTE_REF" --save --no-tui --output "$work/registry.tar" \

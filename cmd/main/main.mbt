@@ -690,6 +690,7 @@ fn registry_options(options : Options) -> RegistryOptions {
     insecure: options.registry_insecure,
     token: options.registry_token,
     jobs: options.jobs,
+    staging_parent: staging_area_of(options.output.unwrap_or("")),
   }
 }
 
@@ -716,8 +717,9 @@ async fn save_only(options : Options) -> Unit raise CommandError {
       "input is already a local archive, --save has nothing to do: drop --save to analyze \{options.image}, or give an image reference to save",
     )
   }
-  let result = save_remote(registry_options(options))
-  report_saved(result.0)
+  let (result, directory, parent) = save_remote(registry_options(options))
+  report_saved(result)
+  after_save(directory, parent)
 }
 
 ///|
