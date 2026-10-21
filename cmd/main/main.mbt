@@ -50,9 +50,14 @@ async fn main {
     }
   }
   let options = Options::from_matches(matches)
-  // 参数自相矛盾在**碰数据之前**就要说清楚：「给了 `--save` 还想开界面」
-  // 既不能靠「保存优先」悄悄吃掉一边，也不能先把镜像拉下来再报错
-  if options.save && options.interactive() {
+  // 参数自相矛盾在**碰数据之前**就要说清楚：「给了 `--save` 还真要开界面」
+  // 既不能靠「保存优先」悄悄吃掉一边，也不能先把镜像拉下来再报错。
+  //
+  // 判的是「这次运行会不会开界面」而不是「有没有给 `--no-tui`」：没给
+  // `--no-tui` 但 stdin / stdout 不是终端（管道、重定向、stdin 是 tar 流）
+  // 时界面本来就开不成，走的是文本出口，`--save` 一点不冲突——当成参数错
+  // 反而把 `dive img --save -o x.tar > log` 这种正经用法挡在门外。
+  if options.save && browser_would_open(options) {
     eprintln(
       "invalid options: --save and the layer browser cannot be used together (add --no-tui to save only)",
     )
@@ -147,6 +152,15 @@ async fn main {
 /// 明说的意图，不拿终端状态去顶；反过来，没给 `--no-tui` 也不等于一定开得成。
 fn Options::interactive(self : Options) -> Bool {
   !self.no_tui
+}
+
+///|
+/// 这次运行**会不会真的**进界面：要它 + 终端够格，两问都得是「是」。
+///
+/// 参数互斥该问这一问，而不是只问 `interactive()`——「要」但终端不给面子时，
+/// 实际跑的是文本出口，冲突根本不存在。
+fn browser_would_open(options : Options) -> Bool {
+  options.interactive() && refusal_of_tui(options) is None
 }
 
 ///|

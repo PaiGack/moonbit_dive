@@ -127,7 +127,7 @@ async test "the old --tui flag is gone" {
 }
 
 ///|
-/// `--save` 与界面互斥：不给 `--no-tui` 就是 exit 2 的参数错，
+/// `--save` 与界面互斥：真会开界面（要它 + 终端够格）时是 exit 2 的参数错，
 /// 不能让 `--save` 悄悄吃掉界面，也不能让界面悄悄吃掉 `--save`。
 async test "save and the browser are mutually exclusive" {
   let save_only = parse_options([
@@ -135,9 +135,32 @@ async test "save and the browser are mutually exclusive" {
   ])
   assert_true(save_only.save)
   assert_false(save_only.interactive())
-  // 冲突的判定只看这两个开关，与别的一概无关
+  assert_false(browser_would_open(save_only))
+  // 「要不要界面」只看这两个开关，与别的一概无关
   let clash = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
   assert_true(clash.save && clash.interactive())
+}
+
+///|
+/// 「要不要」与「会不会」是两问：`--save` 只在**真的会进界面**时才冲突。
+///
+/// `dive img --save -o x.tar > log` 在管道 / CI 里没有终端，界面本来就开不成，
+/// 走的是文本出口——`--save` 不跟任何东西抢，不该被当成参数错。
+/// 反过来 `dive - --save -o x.tar` 的 stdin 是 tar 流，同理。
+async test "save only clashes when the browser would actually open" {
+  for
+    args in [
+      ["nginx:latest", "--save", "-o", "x.tar"],
+      ["-", "--save", "-o", "x.tar"],
+    ] {
+    let options = parse_options(args)
+    assert_true(options.save)
+    assert_true(options.interactive())
+    // 这条与测试跑在不在终端里无关：`-` 在问 tty 之前就被挡下了
+    if args[0] == "-" {
+      assert_false(browser_would_open(options))
+    }
+  }
 }
 
 ///|
