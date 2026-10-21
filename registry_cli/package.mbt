@@ -332,15 +332,18 @@ async fn package_docker_archive(
   let diff_ids = config.rootfs.diff_ids
   let config_name = "\{hex_of(image.config.digest)}.json"
 
-  let file = open_output(output) catch { err => raise Io("\{output}: \{err}") }
+  // 先写 `*.partial` 再 rename：归档可能有 2 GiB，写到一半被打断时
+  // 用户手里不该出现一个「名字对、内容坏」的 tar（issue #122）
+  let partial = "\{output}.partial"
+  let file = open_output(partial) catch {
+    err => raise Io("\{partial}: \{err}")
+  }
   let tar = @layer_tree.TarWriter::new()
   // 写盘失败要能整份放弃：留一个半个 tar 比直接报错更难收拾，
   // 所以任何一步出错都先把文件关掉，再原样把错误抛上去
   errdefer {
     file.close()
-    @fs.remove(output) catch {
-      _ => ()
-    }
+    remove_quietly(partial)
   }
   let mut position : Int64 = 0L
   let layer_paths : Array[String] = []
@@ -415,6 +418,12 @@ async fn package_docker_archive(
   write_all(file, trailer)
   position = position + 10240L
   file.close()
+  @fs.rename(partial, output, replace=true) catch {
+    err => {
+      remove_quietly(partial)
+      raise Io("\{output}: \{err}")
+    }
+  }
   { path: output, bytes: position, }
 }
 

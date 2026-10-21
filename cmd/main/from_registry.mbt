@@ -38,8 +38,13 @@ async fn load_from_registry(
   if options.verbose {
     eprintln("[registry] parsing \{result.path}...")
   }
+  // 装载失败要把「哪份产物读不出来」带上：`ImageSource::load` 的错只提路径，
+  // 而这条路径是临时目录里的，用户根本没机会去看它（issue #122）
   let source = @image_ci.ImageSource::load(result.path) catch {
-    err => raise CommandError::Image(err.to_string())
+    err =>
+      raise CommandError::Image(
+        "\{result.path} was written (\{result.bytes} bytes, \{result.format}) but cannot be read back: \{err.to_string()}; this looks like a bug in dive save",
+      )
   }
   cleanup_remote(registry_options, directory)
   source
