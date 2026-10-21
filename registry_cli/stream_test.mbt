@@ -89,6 +89,7 @@ async test "a big layer is streamed to disk instead of being held in memory" {
     let pulled = pull_with_client(
       client,
       reference,
+      fallback="http://\{host}",
       options=@registry_cli.PullOptions::new(),
     ) catch {
       err => fail("pull should succeed: \{err.to_string()}")
@@ -475,6 +476,125 @@ async test "a blob that redirects twice is still followed" {
     @fs.rmdir(directory, recursive=true) catch {
       _ => ()
     }
+    server.close()
+  })
+}
+
+///|
+/// 挑战里的 realm 说 `https://`、而它其实只有明文：换票要退回到已知能走的那个 origin。
+///
+/// 现场就是 Docker Hub：realm 是另一个域名（`auth.docker.io`），`https` 建不起 TLS
+/// （CI 镜像里的 CA 包读不出来）时报错只剩一句「token endpoint 连不上」，
+/// 看起来像网络坏了，而 registry 那半边明明是通的。
+///
+/// 这个假 registry 只监听明文：`https://127.0.0.1:<port>/token` 必然连不上，
+/// 于是「能不能拿到 token」本身就是「有没有退回 fallback」的答案。
+#cfg(not(platform="windows"))
+async test "a token realm that claims https falls back to the known origin" {
+  let config = fake_config([
+    @oci_spec.Digest::from_sha256(b"unused diff id").to_string(),
+  ])
+  let blob = Bytes::makei(1024, index => (index % 251).to_byte())
+  let digest = @oci_spec.Digest::from_sha256(blob).to_string()
+  let manifest = truncated_manifest(
+    config~,
+    config_digest=@oci_spec.Digest::from_sha256(config).to_string(),
+    digest~,
+    blob~,
+  )
+  let server = @http.Server(@socket.Addr::new(0x7F000001, 0))
+  let port = server.addr.port()
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      server.run_forever((request, _body, conn) => {
+        let path = request.path
+        let authorized = match
+          request.headers.get(@http.CaseInsensitiveString("authorization")) {
+          Some(value) => value == "Bearer fake-token"
+          None => false
+        }
+        if path.has_prefix("/token") {
+          let body = @encoding.encode(
+            UTF8,
+            Json::object(Map([("token", Json::string("fake-token"))])).stringify(),
+          )
+          let headers = Map([
+            (@http.CaseInsensitiveString("content-type"), "application/json"),
+            (
+              @http.CaseInsensitiveString("content-length"),
+              body.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(body)
+          return
+        }
+        if !authorized && path.contains("/manifests/") {
+          // 挑战故意写 `https://`：明文这边验不过 TLS，只有退回 fallback 才走得通
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("www-authenticate"),
+              "Bearer realm=\"https://127.0.0.1:\{port}/token\",service=\"fake\",scope=\"repository:test/image:pull\"",
+            ),
+            (@http.CaseInsensitiveString("content-length"), "0"),
+          ])
+          conn.send_response(401, "Unauthorized", extra_headers=headers)
+          return
+        }
+        if path.contains("/manifests/") {
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("content-type"),
+              @oci_spec.oci_manifest_media_type,
+            ),
+            (
+              @http.CaseInsensitiveString("content-length"),
+              manifest.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(manifest)
+          return
+        }
+        if path.contains("/blobs/") {
+          let body = if path.has_suffix(digest) { blob } else { config }
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("content-length"),
+              body.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(body)
+          return
+        }
+        conn.send_response(404, "Not Found")
+      })
+    })
+    let host = "127.0.0.1:\{port}"
+    let client = RegistryClient::connect(host, insecure=true) catch {
+      _ => fail("client")
+    }
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let pulled = pull_with_client(
+      client,
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(),
+    ) catch {
+      err =>
+        fail(
+          "the token realm should fall back to the known origin: \{err.to_string()}",
+        )
+    }
+    client.close()
+    let landed = pulled.layers[0].bytes() catch {
+      err => fail("the layer should be readable: \{err.to_string()}")
+    }
+    assert_eq(landed, blob)
+    @registry_cli.discard_image(pulled)
     server.close()
   })
 }

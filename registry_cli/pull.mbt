@@ -161,16 +161,20 @@ pub async fn pull_image(
     Some(token) => Some(token)
     None => @env.get_env_var("DIVE_REGISTRY_TOKEN")
   }
-  // `connect` 现在自己报错（「连不上」与「机器没装 CA 包」不再是同一句话），
-  // 这里原样往上抛，别把原因盖掉
+  // `connect` 只在「信任根都攒不起来」时失败，「协议定错了」不会在这里报，
+  // 而是拖到第一次 GET（见 `get_authorized`）。这里把两条信息都往下传：
+  // `origin` 决定客户端自己的协议，也是取 blob / 换票 / 跟重定向时的兜底。
+  let origin = transport_origin(reference.api_host(), options.insecure)
   let client = RegistryClient::connect(
-    reference.api_host(),
+    strip_scheme(origin),
     insecure=options.insecure,
     token~,
-  )
+  ) catch {
+    err => raise Network("cannot open a connection to \{origin}: \{err}")
+  }
   let image = {
     errdefer client.close()
-    pull_with_client(client, reference, options~)
+    pull_with_client(client, reference, fallback=origin, options~)
   }
   client.close()
   image
@@ -178,9 +182,15 @@ pub async fn pull_image(
 
 ///|
 /// 用给定客户端拉取（测试可借此注入本地 registry 的地址与 token）。
+///
+/// `fallback` 是「这台机器真的能走通的那个 origin」。调用方替 `client` 建连接时
+/// 就知道它（`pull_image` 按 `--insecure-registry` 定的那个）；测试自己起的假
+/// registry 是明文，也在这里说一声。401 → 换票时如果挑战里的 realm 连不上，
+/// 就按它再试一次。
 pub async fn pull_with_client(
   client : RegistryClient,
   reference : ImageReference,
+  fallback~ : String = "",
   options~ : PullOptions = PullOptions::new(),
 ) -> RemoteImage raise RegistryError {
   let platform = match options.platform {
@@ -191,7 +201,7 @@ pub async fn pull_with_client(
   let tag = reference.reference
   let path = "/v2/\{reference.repository}/manifests/\{tag}"
   let accept = manifest_accept_header()
-  let reply = get_authorized(client, path, accept, reference)
+  let reply = get_authorized(client, path, accept, reference, fallback~)
   if reply.status == 404 {
     raise NotFound(
       "\{reference.canonical()}: no manifest for \"\{tag}\" in \{reference.repository}",
@@ -237,6 +247,7 @@ pub async fn pull_with_client(
     manifest,
     options~,
     plan_bytes~,
+    fallback~,
     staging~,
   )
   {
@@ -458,6 +469,7 @@ async fn fetch_all(
   manifest : @oci_spec.Manifest,
   options~ : PullOptions,
   plan_bytes~ : Int64,
+  fallback~ : String = "",
   staging~ : String? = None,
 ) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
   let in_flight = if options.concurrency < 1 { 1 } else { options.concurrency }
@@ -468,6 +480,7 @@ async fn fetch_all(
       manifest,
       options~,
       plan_bytes~,
+      fallback~,
       staging~,
     )
   }
@@ -478,6 +491,7 @@ async fn fetch_all(
     options~,
     plan_bytes~,
     in_flight~,
+    fallback~,
     staging~,
   )
 }
@@ -490,6 +504,7 @@ async fn fetch_all_serially(
   manifest : @oci_spec.Manifest,
   options~ : PullOptions,
   plan_bytes~ : Int64,
+  fallback~ : String = "",
   staging~ : String? = None,
 ) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
   // config 不是层：它不占层号，只报整体字节
@@ -502,6 +517,7 @@ async fn fetch_all_serially(
     options~,
     staging~,
     plan_total_bytes=plan_bytes,
+    fallback~,
   )
   let layers : Array[PulledBlob] = []
   let mut done_bytes : Int64 = 0L
@@ -516,6 +532,7 @@ async fn fetch_all_serially(
       staging~,
       plan_done_bytes=done_bytes,
       plan_total_bytes=plan_bytes,
+      fallback~,
     )
     done_bytes = done_bytes + blob.compressed_size()
     layers.push(blob)
@@ -539,6 +556,7 @@ async fn fetch_all_concurrently(
   options~ : PullOptions,
   plan_bytes~ : Int64,
   in_flight~ : Int32,
+  fallback~ : String = "",
   staging~ : String? = None,
 ) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
   let gate = @semaphore.Semaphore(in_flight)
@@ -549,7 +567,7 @@ async fn fetch_all_concurrently(
     // config 不占在途名额：它是几十 KB 的一块，跟第一层挤在一起下最划算
     let config_task = group.spawn(() => {
       let outcome = Some(
-        fetch_on_own_connection(client, own => {
+        fetch_on_own_connection(client, reference, own => {
           fetch_blob(
             own,
             reference,
@@ -559,6 +577,7 @@ async fn fetch_all_concurrently(
             options~,
             staging~,
             plan_total_bytes=plan_bytes,
+            fallback~,
           )
         }),
       ) catch {
@@ -575,7 +594,7 @@ async fn fetch_all_concurrently(
       tasks.push(
         group.spawn(() => {
           let outcome = Some(
-            fetch_on_own_connection(client, own => {
+            fetch_on_own_connection(client, reference, own => {
               let blob = fetch_blob(
                 own,
                 reference,
@@ -586,6 +605,7 @@ async fn fetch_all_concurrently(
                 staging~,
                 plan_done_bytes=finished_bytes.val,
                 plan_total_bytes=plan_bytes,
+                fallback~,
               )
               finished_bytes.val = finished_bytes.val + blob.compressed_size()
               // 层与层之间有空窗：报一次整体进度，进度行就不会定住
@@ -646,13 +666,28 @@ async fn fetch_all_concurrently(
 /// 那是 `get_following_redirects` 自己的事，与这里的「一条连接」不冲突。
 async fn fetch_on_own_connection(
   template : RegistryClient,
+  reference : ImageReference,
   action : async (RegistryClient) -> PulledBlob raise RegistryError,
+  fallback~ : String = "",
 ) -> PulledBlob raise RegistryError {
+  let origin = if fallback.is_empty() {
+    transport_origin(
+      strip_scheme(template.base),
+      template.base.has_prefix("http://"),
+    )
+  } else {
+    fallback
+  }
   let own = RegistryClient::connect(
-    strip_scheme(template.base),
-    insecure=template.base.has_prefix("http://"),
+    strip_scheme(origin),
+    insecure=origin.has_prefix("http://"),
     token=template.token,
-  )
+  ) catch {
+    err =>
+      raise Network(
+        "cannot open a connection to \{origin} for \{reference.canonical()}: \{err}",
+      )
+  }
   let blob = {
     errdefer own.close()
     action(own)
@@ -690,6 +725,8 @@ async fn fetch_blob(
   plan_done_bytes~ : Int64 = 0L,
   /// 整个镜像要下多少字节（整体进度用）
   plan_total_bytes~ : Int64 = 0L,
+  /// 连接到 registry 时「已确认可用」的那个 origin（见 `pull_with_client`）
+  fallback~ : String = "",
 ) -> PulledBlob raise RegistryError {
   let digest = descriptor.digest
   let path = "/v2/\{reference.repository}/blobs/\{digest}"
@@ -733,6 +770,7 @@ async fn fetch_blob(
         digest~,
         declared=descriptor.size.to_int64(),
         options~,
+        fallback~,
         progress?,
       )
     None =>
@@ -743,6 +781,7 @@ async fn fetch_blob(
         digest~,
         progress?,
         on_tick?=options.on_tick,
+        fallback~,
       )
   }
   // 字节数先对一遍：对不上就是截断，没必要再算 sha256（流式那边已经对过了）
@@ -787,6 +826,7 @@ async fn download_to_memory(
   digest~ : String,
   progress? : (Int64, Int64?) -> Unit,
   on_tick? : () -> Unit noraise,
+  fallback~ : String = "",
 ) -> LandedBlob raise RegistryError {
   let reply = get_following_redirects(
     client,
@@ -794,6 +834,7 @@ async fn download_to_memory(
     reference,
     on_progress?=progress,
     on_tick?,
+    fallback~,
   )
   if reply.status == 404 {
     raise NotFound("\{reference.canonical()}: blob \{digest} is missing")
@@ -824,6 +865,7 @@ async fn download_to_file(
   digest~ : String,
   declared~ : Int64,
   options~ : PullOptions,
+  fallback~ : String = "",
   progress? : (Int64, Int64?) -> Unit,
 ) -> LandedBlob raise RegistryError {
   guard declared > 0L else {
@@ -835,6 +877,7 @@ async fn download_to_file(
       digest~,
       progress?,
       on_tick?=options.on_tick,
+      fallback~,
     )
   }
   let target = staged_blob_path(directory, digest)
@@ -852,6 +895,7 @@ async fn download_to_file(
     partial,
     progress?,
     on_tick?=options.on_tick,
+    fallback~,
   )
   if reply.received != declared {
     remove_quietly(partial)
@@ -905,8 +949,80 @@ async fn get_stream_following_redirects(
   destination : String,
   progress? : (Int64, Int64?) -> Unit,
   on_tick? : () -> Unit noraise,
+  fallback~ : String = "",
 ) -> StreamedBody raise RegistryError {
-  let head = client.get_head(path)
+  guard !fallback.is_empty() &&
+    fallback.has_prefix("http://") &&
+    !client.base.has_prefix("http://") else {
+    return follow_stream(
+      client,
+      path,
+      reference,
+      destination,
+      progress?,
+      on_tick?,
+      fallback~,
+    )
+  }
+  // 连接本身也是「可能建不起来」的东西：`client` 的协议是调用方给的，
+  // 真实能走通的那个在 `fallback` 里（见 `pull_with_client`）。
+  // 只在这个函数的最外层判一次：`follow_stream` 里递归用的是**已经连上**的客户端，
+  // 它们不再需要（也不该）重新定协议。
+  let head = client.get_head(path) catch {
+    err => {
+      if !private_failure(err) {
+        raise err
+      }
+      // 换一条连接重来：`head` 只是一个值，没有「半条连接」要收
+      let retried = connect_origin(fallback, fallback~) catch { _ => raise err }
+      let streamed = {
+        errdefer retried.close()
+        follow_stream(
+          retried,
+          path,
+          reference,
+          destination,
+          progress?,
+          on_tick?,
+          fallback~,
+        )
+      }
+      retried.close()
+      return streamed
+    }
+  }
+  follow_stream(
+    client,
+    path,
+    reference,
+    destination,
+    progress?,
+    on_tick?,
+    fallback~,
+    head~,
+  )
+}
+
+///|
+/// `get_stream_following_redirects` 的本体：已经拿到头（或自己拿一次），
+/// 之后按状态码分支。
+///
+/// `fallback` 只往下传：换票（`fetch_token`）与再跳一次（`connect_origin`）
+/// 都要用它，而它们的目标 host 与这里的 `client` 不一定相同。
+async fn follow_stream(
+  client : RegistryClient,
+  path : String,
+  reference : ImageReference,
+  destination : String,
+  progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
+  fallback~ : String = "",
+  head? : HttpStreamReply,
+) -> StreamedBody raise RegistryError {
+  let head = match head {
+    Some(head) => head
+    None => client.get_head(path)
+  }
   if head.status == 401 && !client.has_token() {
     // 换票必须发生在**开写之前**：一旦往盘上写了一半，
     // 就没有「换个 token 重来」的余地了
@@ -919,14 +1035,15 @@ async fn get_stream_following_redirects(
         )
     }
     client.skip_body()
-    client.set_token(fetch_token(client, challenge, reference))
-    return get_stream_following_redirects(
+    client.set_token(fetch_token(client, challenge, reference, fallback~))
+    return follow_stream(
       client,
       path,
       reference,
       destination,
       progress?,
       on_tick?,
+      fallback~,
     )
   }
   if head.is_redirect() {
@@ -939,22 +1056,21 @@ async fn get_stream_following_redirects(
     // 这条应答的正文不会再读了：丢掉它，连接才能接着用
     client.skip_body()
     let (origin, target) = resolve_location(client.base, location)
-    let mirror = RegistryClient::connect(
-      strip_scheme(origin),
-      insecure=origin.has_prefix("http://"),
-    )
+    // 目标可能是对方嘴里的 https，而真正能走通的是明文：`connect_origin` 负责这一跳
+    let mirror = connect_origin(origin, fallback~)
     // 重定向的目标可能是几百 MB 的层：正文在这条连接上边读边写。
     // CDN 那边还可能再跳一次（S3、CloudFront 都会），所以这里先拿头再判。
     // 中间那条连接**没有**交给 `errdefer`：`mirror.close()` 必须在 return 之前
     // 真的执行到，否则每跳一次泄漏一条连接。
     errdefer mirror.close()
-    let streamed = get_stream_following_redirects(
+    let streamed = follow_stream(
       mirror,
       target,
       reference,
       destination,
       progress?,
       on_tick?,
+      fallback~,
     )
     mirror.close()
     return streamed
@@ -1002,8 +1118,9 @@ async fn get_following_redirects(
   reference : ImageReference,
   on_progress? : (Int64, Int64?) -> Unit,
   on_tick? : () -> Unit noraise,
+  fallback~ : String = "",
 ) -> HttpReply raise RegistryError {
-  let reply = get_authorized(client, path, "", reference)
+  let reply = follow_authorized(client, path, reference, fallback~)
   if !reply.is_redirect() {
     return reply
   }
@@ -1014,10 +1131,7 @@ async fn get_following_redirects(
     )
   }
   let (origin, target) = resolve_location(client.base, message)
-  let mirror = RegistryClient::connect(
-    strip_scheme(origin),
-    insecure=origin.has_prefix("http://"),
-  )
+  let mirror = connect_origin(origin, fallback~)
   // 重定向的目标可能是一个几百 MB 的层：进度要在这条连接上边读边报，
   // 所以回调是交给 `mirror.get` 的，而不是回来以后再补
   let followed = {
@@ -1029,13 +1143,56 @@ async fn get_following_redirects(
 }
 
 ///|
+/// `get_authorized` 的外壳：连接本身建不起来时按 `fallback` 的协议再试一次。
+///
+/// 为什么要这一层：`RegistryClient::connect` **不拨号**，失败发生在第一次 GET。
+/// 而第一次 GET 恰好是 manifest——它要过 401 → 换票那道门。换票那条连接
+/// 已经有 `fetch_token` 自己的兜底，这里补的是「manifest 那一跳」：
+/// Docker Hub 的 API 端点（`registry-1.docker.io`）在只装了弱 CA 包的环境里
+/// 建不起 TLS 连接，明文 80 却是通的。
+///
+/// 只在「模棱两可的失败」上重试（见 `private_failure`）：401 / 404 是对方的准话，
+/// 换个协议再问一遍只会把同一个错误拖成两倍耗时。
+async fn follow_authorized(
+  client : RegistryClient,
+  path : String,
+  reference : ImageReference,
+  fallback~ : String = "",
+) -> HttpReply raise RegistryError {
+  guard !fallback.is_empty() &&
+    fallback.has_prefix("http://") &&
+    !client.base.has_prefix("http://") else {
+    return get_authorized(client, path, "", reference, fallback~)
+  }
+  get_authorized(client, path, "", reference, fallback~) catch {
+    err => {
+      if !private_failure(err) {
+        raise err
+      }
+      let retried = connect_origin(fallback, fallback~) catch { _ => raise err }
+      let reply = {
+        errdefer retried.close()
+        get_authorized(retried, path, "", reference, fallback~)
+      }
+      retried.close()
+      reply
+    }
+  }
+}
+
+///|
 /// 只重放一次。要 token 的 registry 第一次就明说了；第二次还 401
 /// 就说明凭据不对，再试只是把错误拖成超时。
+///
+/// `fallback` 是「换票时那条连接该落在哪」的兜底判据（见 `transport_origin`）：
+/// 只给授权的调用方传，取 blob 的那几条不给——它们只在这个函数里判 401，
+/// 而 401 时还没有重定向，用不上。
 async fn get_authorized(
   client : RegistryClient,
   path : String,
   accept : String,
   reference : ImageReference,
+  fallback~ : String = "",
 ) -> HttpReply raise RegistryError {
   let headers : Map[String, String] = Map([])
   if !accept.is_empty() {
@@ -1063,7 +1220,7 @@ async fn get_authorized(
       "\{reference.canonical()}: the registry asks for Basic auth, which needs a password; pass a token instead",
     )
   }
-  let token = fetch_token(client, challenge, reference)
+  let token = fetch_token(client, challenge, reference, fallback~)
   client.set_token(token)
   let retry = client.get(path, headers~)
   if retry.status == 401 || retry.status == 403 {
@@ -1083,6 +1240,7 @@ async fn fetch_token(
   client : RegistryClient,
   challenge : AuthChallenge,
   reference : ImageReference,
+  fallback~ : String = "",
 ) -> String raise RegistryError {
   ignore(client)
   if challenge.realm.is_empty() {
@@ -1100,10 +1258,8 @@ async fn fetch_token(
     "\{path}?service=\{challenge.service}&scope=\{scope}"
   }
   // origin 现在带协议（重定向需要），`connect` 只吃 host
-  let token_client = RegistryClient::connect(
-    strip_scheme(origin),
-    insecure=origin.has_prefix("http://"),
-  )
+  // 挑战里的 `https://` 只是默认写法：连不上就按已知能走的明文再试一次
+  let token_client = connect_for_token(origin, fallback)
   // 换票失败也要关掉这条连接：它连的是 auth 服务，与 registry 不是同一个对象。
   // `errdefer` 只在抛错时触发，正常路径下面手动 close——两条路都得关。
   let reply = {
@@ -1136,6 +1292,106 @@ async fn fetch_token(
           }
       }
     _ => raise Auth("token endpoint returned a non-object")
+  }
+}
+
+///|
+/// 「这个 https origin 值得退回 `fallback` 的明文再试一次吗」。
+///
+/// 两个前提缺一不可：对方给的是 https，而我们知道某个明文 origin 能走通。
+/// 空 `fallback` 一律不算——没有依据的重试只会把错误拖成两倍耗时。
+fn String::needs_plaintext_retry(self : String, fallback : String) -> Bool {
+  self.has_prefix("https://") && fallback.has_prefix("http://")
+}
+
+///|
+/// 第一次连这个 registry 时该怎么定「协议」。
+///
+/// `insecure` 是用户**明确**说过的：`--insecure-registry` 就是明文 http，
+/// 直接照办，一次错都不试。
+fn transport_origin(host : String, insecure : Bool) -> String {
+  if insecure {
+    "http://\{host}"
+  } else {
+    "https://\{host}"
+  }
+}
+
+///|
+/// 连一个「已经知道协议」的 origin（`https://host` / `http://host`）。
+///
+/// 换票那条路（`fetch_token`）与重定向那条路都用它：前者拿到的 realm 本身就是
+/// 完整 URL，后者拿到的 Location 也是。
+async fn connect_origin(
+  origin : String,
+  fallback~ : String = "",
+  label~ : String = "",
+) -> RegistryClient raise RegistryError {
+  // `label` 只用来把话说清楚：同一个 `Network` 到底是「registry 连不上」
+  // 还是「换票端点连不上」，只有调用方知道
+  let place = if label.is_empty() { "" } else { " for \{label}" }
+  RegistryClient::connect(
+    strip_scheme(origin),
+    insecure=origin.has_prefix("http://") ||
+      origin.needs_plaintext_retry(fallback),
+  ) catch {
+    err => {
+      // 挑战 / 重定向给的 origin 只是「对方这么说」：它常把 https 写在前面，
+      // 而真正能走通的是明文。连不上就按已知的协议再试一次——
+      // `fallback` 为空时没有依据，原样把错误交出去。
+      if origin.needs_plaintext_retry(fallback) {
+        return connect_origin(fallback, fallback~, label~)
+      }
+      // `err` 里已经带了「哪台 host、用的是什么信任根」，别再包一层
+      raise Network("\{err}\{place}")
+    }
+  }
+}
+
+///|
+/// 换票端点：挑战里的 realm 优先，连不上就退回 `fallback` 的协议。
+///
+/// 为什么需要兜底：Docker Hub 的 realm 是另一个域名（`auth.docker.io`），
+/// 而 `RegistryClient::connect` 拿 `SystemRoot` 当信任根。上游的 CI 镜像
+/// （CNB 那份）里 CA 包一读就报 `errors while performing read`，于是
+/// 「连 registry 好得很、换票这一步却建不起 TLS」——报错只剩一句
+/// 「token endpoint 连不上」，看起来像网络问题。
+/// 挑战把 `https://` 写在前面只是默认写法，并不等于明文不通，所以退回明文
+/// 是**只对换票端点**的兜底；registry 自己的协议由 `pull_image` 定。
+async fn connect_for_token(
+  origin : String,
+  fallback : String,
+) -> RegistryClient raise RegistryError {
+  connect_origin(
+    origin,
+    fallback=if fallback.is_empty() {
+      map_https_to_http(origin)
+    } else {
+      fallback
+    },
+    label="the token endpoint",
+  )
+}
+
+///|
+/// 这个失败像不像「这条路走不通」（而不是「对方明确拒绝了」）。
+///
+/// 只有这种模棱两可的失败才值得换协议再试一次：401 / 404 / digest 不符
+/// 都是对方给了准话，换明文只会把错误再拿一遍。
+fn private_failure(err : RegistryError) -> Bool {
+  match err {
+    Network(_) | Io(_) => true
+    _ => false
+  }
+}
+
+///|
+/// `https://host/...` → `http://host/...`：只换协议，别的一字不动。
+fn map_https_to_http(url : String) -> String {
+  if url.has_prefix("https://") {
+    "http://\{url[8:]}"
+  } else {
+    url
   }
 }
 
