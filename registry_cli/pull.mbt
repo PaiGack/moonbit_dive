@@ -12,11 +12,17 @@ pub struct PullOptions {
   /// 每次报完进度后的「立刻画一下」：回调是同步的、写终端是 async 的，
   /// 不把这一格送到 async 上下文里，进度条就只能等下一层才动
   on_tick : (() -> Unit noraise)?
-  /// 边下边写盘：层落到 `@fs.tmpdir` 下的临时文件里，内存不随镜像体积涨。
+  /// 边下边写盘：层落到临时目录里的文件上，内存不随镜像体积涨。
   ///
   /// 代价是「一次磁盘写 + 一次磁盘读」——OCI layout 直接把它抄过去，
   /// docker-archive 则要读回来解压。换来的是 700MB 的层不再要求一整块内存。
   stream_to_disk : Bool
+  /// 临时目录的根：一次拉取的全部文件（config + 每一层）都落在
+  /// `{workdir}/mdive/{临时目录}/` 里，`None` 表示用系统临时目录（`/tmp`）。
+  ///
+  /// 目录每次都不同：`mdive` 这一层是给「按前缀找自己那一摊」的清理逻辑看的，
+  /// 里面那一层才是这一次拉取的归属。
+  workdir : String?
   /// 同时在途的层数。1 = 老行为（逐层串行），0 也按 1 处理。
   ///
   /// 并发只对「多层小层」有收益：单层镜像一点不快，
@@ -34,6 +40,7 @@ pub fn PullOptions::new(
   on_tick~ : (() -> Unit noraise)? = None,
   concurrency~ : Int32 = 4,
   stream_to_disk~ : Bool = true,
+  workdir~ : String? = None,
 ) -> PullOptions {
   {
     platform,
@@ -43,12 +50,13 @@ pub fn PullOptions::new(
     on_tick,
     concurrency,
     stream_to_disk,
+    workdir,
   }
 }
 
 ///|
 pub impl Show for PullOptions with fn to_string(self) {
-  "PullOptions(insecure=\{self.insecure}, concurrency=\{self.concurrency}, stream_to_disk=\{self.stream_to_disk})"
+  "PullOptions(insecure=\{self.insecure}, concurrency=\{self.concurrency}, stream_to_disk=\{self.stream_to_disk}, workdir=\{self.workdir})"
 }
 
 ///|
@@ -239,7 +247,7 @@ pub async fn pull_with_client(
   notify(options, Plan(layers=manifest.layers.length(), bytes=plan_bytes))
   // 流式落盘的落点：放在临时目录，生命周期跟 `RemoteImage` 绑死
   let staging = if options.stream_to_disk {
-    let directory = @fs.tmpdir(prefix="dive-blobs-") catch {
+    let directory = create_staging_dir(options.workdir, "dive-blobs-") catch {
       err => raise Io("cannot create a staging directory: \{err}")
     }
     Some(directory)
@@ -302,7 +310,7 @@ pub async fn spill_layers_to_disk(
         let directory = match pending {
           Some(directory) => directory
           None => {
-            let created = @fs.tmpdir(prefix="dive-blobs-") catch {
+            let created = create_staging_dir(None, "dive-blobs-") catch {
               err =>
                 raise Io(
                   "cannot create a staging directory to free \{blob.digest}: \{err}",
@@ -1014,15 +1022,89 @@ async fn remove_quietly(path : String) -> Unit noraise {
 }
 
 ///|
+/// 一次拉取的落点目录：`{根}/mdive/{临时目录}/`。
+///
+/// `mdive` 这一层是给「按前缀找自己那一摊」的清理逻辑看的，里面那层才是
+/// 这一次拉取的归属——每次拉取都不一样，所以两次拉取不会互相踩。
+/// `root` 为 `None` 时根就是系统临时目录（`/tmp`）。
+async fn create_staging_dir(
+  root : String?,
+  prefix : String,
+) -> String raise RegistryError {
+  let base = match root {
+    Some(text) if !text.is_empty() => "\{text}/mdive"
+    _ => return @fs.tmpdir(prefix~) catch { err => raise Io("\{err}") }
+  }
+  @fs.mkdir(base, recursive=true, allow_exist=true) catch {
+    err => raise Io("\{base}: \{err}")
+  }
+  // `tmpdir` 只会往系统临时目录里建，名字还带 pid：这里在 `mdive/` 下自己造一层，
+  // 结构才是 `{根}/mdive/{临时目录}/`。撞名就重试（概率极低，但撞上不能不管）
+  let mut suffix = 0
+  while suffix < 64 {
+    let directory = "\{base}/\{prefix}\{suffix}"
+    let taken = try @fs.exists(directory) catch {
+      err => raise Io("\{directory}: \{err}")
+    } noraise {
+      exists => exists
+    }
+    if !taken {
+      let created = try @fs.mkdir(directory) catch {
+        err => raise Io("\{directory}: \{err}")
+      } noraise {
+        _ => true
+      }
+      if created {
+        return directory
+      }
+    }
+    suffix = suffix + 1
+  }
+  raise Io("\{base}: cannot create a staging directory")
+}
+
+///|
 /// staging 目录里一个 blob 的文件名。用 digest 的 hex 当名字：不同层不会撞，
 /// 出事时一眼能看出这半个文件是谁的。
 fn staged_blob_path(directory : String, digest : String) -> String {
+  "\{directory}/\{staged_blob_name(digest)}"
+}
+
+///|
+/// 同一个 blob 的文件名（不含目录）：`层` / `配置` —— 就是「它是什么」，
+/// 而不是「它叫什么」。下游拿到的是别人的临时目录，文件名若与内容无关，
+/// 那就只剩「从目录里随便捡一个 blob」（issue #138）这一条脏路可走。
+fn staged_blob_name(digest : String) -> String {
   let colon = digest.find(":")
   let hex = match colon {
     Some(index) => digest[index + 1:].to_owned()
     None => digest
   }
-  "\{directory}/\{hex}.blob"
+  "\{hex}.blob"
+}
+
+///|
+/// 把 blob 的文件名换成「它是什么」（`cfg.blob` / `layer-N.blob`），
+/// 调用方要的是**语义化**的名字，而不是一串 sha256。
+///
+/// 改名是为了让人读得懂一个临时目录：`5b2d…blob` 一堆摆在那里，
+/// 分析失败时没人知道该去看哪一个。digest 本身一个字节也不丢——它还在
+/// `PulledBlob` 上，校验收到的字节时用的是它。
+async fn rename_staged_blob(
+  blob : PulledBlob,
+  target : String,
+) -> Unit raise RegistryError {
+  let source = match blob.path {
+    Some(path) => path
+    None => return
+  }
+  if source == target {
+    return
+  }
+  @fs.rename(source, target, replace=true) catch {
+    err => raise Io("\{target}: \{err}")
+  }
+  blob.path = Some(target)
 }
 
 ///|

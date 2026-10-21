@@ -127,39 +127,41 @@ async test "the old --tui flag is gone" {
 }
 
 ///|
-/// `--save` 与界面互斥：真会开界面（要它 + 终端够格）时是 exit 2 的参数错，
-/// 不能让 `--save` 悄悄吃掉界面，也不能让界面悄悄吃掉 `--save`。
-async test "save and the browser are mutually exclusive" {
-  let save_only = parse_options([
+/// `--save` 与界面不抢，因为它根本走不到选界面那一步（issue #139）。
+///
+/// 曾经这里按「用户明说要界面」退 2：`--save` 而没给 `--no-tui` 就算说错话。
+/// 可 `--no-tui` 在 `--save` 面前不过是句废话，不是第二句相反的话——
+/// 于是 `dive <ref> --save -o x.tar`（CI 探针里就这么写）白退一次 2。
+/// 现在的约定：`--save` 只落盘，写不写 `--no-tui` 都一样。
+async test "save does not care whether --no-tui was given" {
+  let bare = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
+  assert_true(bare.save)
+  assert_true(bare.interactive())
+  let quiet = parse_options([
     "nginx:latest", "--save", "-o", "x.tar", "--no-tui",
   ])
-  assert_true(save_only.save)
-  assert_false(save_only.interactive())
-  assert_false(browser_would_open(save_only))
-  // 「要不要界面」只看这两个开关，与别的一概无关
-  let clash = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
-  assert_true(clash.save && clash.interactive())
+  assert_true(quiet.save)
+  assert_false(quiet.interactive())
+  // 两个都只是「要不要界面」的开关，落盘这件事跟它们无关
+  assert_eq(bare.output, quiet.output)
+  assert_eq(bare.archive_format, quiet.archive_format)
 }
 
 ///|
-/// 「要不要」与「会不会」是两问：`--save` 只在**真的会进界面**时才冲突。
-///
-/// `dive img --save -o x.tar > log` 在管道 / CI 里没有终端，界面本来就开不成，
-/// 走的是文本出口——`--save` 不跟任何东西抢，不该被当成参数错。
-/// 反过来 `dive - --save -o x.tar` 的 stdin 是 tar 流，同理。
-async test "save only clashes when the browser would actually open" {
+/// `--save` 与终端状态无关：本地终端、stdin 是 tar 流、stdout 重定向，
+/// 都该落盘成功。真判据在 `main` 的顺序（`--save` 先于选界面 return），
+/// 这里钉住的是「参数层没有别的暗桩」。
+async test "save is never a config error, whatever the terminal looks like" {
   for
     args in [
       ["nginx:latest", "--save", "-o", "x.tar"],
       ["-", "--save", "-o", "x.tar"],
+      ["nginx:latest", "--save", "-o", "x.tar", "--no-tui"],
+      ["-", "--save", "-o", "x.tar", "--no-tui"],
     ] {
     let options = parse_options(args)
     assert_true(options.save)
-    assert_true(options.interactive())
-    // 这条与测试跑在不在终端里无关：`-` 在问 tty 之前就被挡下了
-    if args[0] == "-" {
-      assert_false(browser_would_open(options))
-    }
+    assert_eq(options.output, Some("x.tar"))
   }
 }
 

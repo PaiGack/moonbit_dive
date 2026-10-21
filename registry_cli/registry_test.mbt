@@ -687,3 +687,234 @@ async test "a missing layer fails the whole concurrent pull" {
     other => fail("expected a blob-level error, got \{other.to_string()}")
   }
 }
+
+///|
+/// `stream_image`：拉下来的层**不打包**，直接是磁盘上的压缩 blob。
+///
+/// 这是 issue #133 的核心断言——分析一个 registry 里的镜像，不该先攒一张
+/// docker-archive，再把它拆回同一批层。
+async test "stream_image leaves compressed blobs on disk without packing" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    // `stream_image` 自己按引用去连 host，测试里随机分配的端口只能显式给
+    let client = RegistryClient::connect(host, insecure=true) catch {
+      _ => fail("cannot create the test client")
+    }
+    let pulled = pull_with_client(
+      client,
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(stream_to_disk=true),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    client.close()
+    // `stream_image` 的产物形态：层只有路径，没有 tar 壳
+    let image = streamed_of(pulled, reference) catch {
+      err => fail("streaming should succeed: \{err.to_string()}")
+    }
+    assert_eq(image.layers.length(), 2)
+    for index, layer in image.layers {
+      assert_eq(layer.digest, pulled.layers[index].digest)
+      let data = @fs.read_file(layer.path) catch {
+        err => fail("layer \{index} should be on disk: \{err}")
+      }
+      let compressed = data.binary()
+      assert_eq(
+        compressed.length().to_int64(),
+        pulled.layers[index].compressed_size(),
+      )
+      assert_eq(compressed, source.layers[index])
+    }
+    // config 是文本，直接带着走
+    assert_true(image.config_json.contains("\"rootfs\""))
+    // 收掉临时目录：产物归调用方，谁拿谁收
+    let paths : Array[String] = []
+    for blob in image.layers {
+      paths.push(blob.path)
+    }
+    let _ = discard_local(image)
+    cleanup_check(image, paths) catch {
+      err => fail("cleanup check failed: \{err}")
+    }
+  })
+}
+
+///|
+/// 收掉一次流式拉取的临时目录（异步函数不能在测试闭包里被裸调用，套一层）。
+async fn discard_local(image : @registry_cli.StreamedImage) -> Unit noraise {
+  @registry_cli.discard_streamed(image)
+}
+
+///|
+/// 收掉流式拉取的临时目录，并确认那些 blob 真的不在了。
+async fn cleanup_check(
+  image : @registry_cli.StreamedImage,
+  paths : Array[String],
+) -> Unit {
+  let _ = discard_local(image)
+  for path in paths {
+    let there = @fs.exists(path)
+    if there {
+      fail("\{path} should have been cleaned up with the staging directory")
+    }
+  }
+}
+
+///|
+/// `pull_with_client` 的产物 → `StreamedImage`：与 `stream_image` 收尾那一段同义，
+/// 只是绕过了「按引用连 host」这一步（测试里端口是随机的）。
+async fn streamed_of(
+  image : RemoteImage,
+  reference : ImageReference,
+) -> @registry_cli.StreamedImage raise RegistryError {
+  let staging = match image.staging {
+    Some(directory) => directory
+    None => raise Io("streamed image has no staging directory")
+  }
+  let config_json = @encoding.decoder(UTF8).decode_lossy(
+    blob_bytes_for_test(image.config),
+  )
+  let layers : Array[@registry_cli.StreamedBlob] = []
+  for layer in image.layers {
+    let path = match layer.path {
+      Some(path) => path
+      None => raise Io("layer \{layer.digest} was not streamed to disk")
+    }
+    layers.push({
+      media_type: layer.media_type,
+      digest: layer.digest,
+      path,
+      size: layer.compressed_size(),
+    })
+  }
+  { reference: reference.original, config_json, layers, staging, }
+}
+
+///|
+/// 文件是否已经不在了（`exists` 会抛，这里折成布尔）。
+
+///|
+async fn blob_bytes_for_test(blob : PulledBlob) -> Bytes raise RegistryError {
+  blob.bytes()
+}
+
+///|
+/// `workdir`：一次拉取的全部文件都落在 `{workdir}/mdive/{临时目录}/` 里。
+///
+/// 目录结构是给「按前缀找自己那一摊」的清理逻辑看的（issue #138）：
+/// `mdive` 是固定的一层，里面那层才是这一次拉取的归属，每次都不一样。
+async test "a pull keeps every blob under workdir/mdive/<fresh dir>" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let client = RegistryClient::connect(host, insecure=true) catch {
+      _ => fail("cannot create the test client")
+    }
+    // 工作区自己造：这次拉取只该在这棵树下落文件
+    let root = @fs.tmpdir(prefix="dive-workdir-test-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let pulled = pull_with_client(
+      client,
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        workdir=Some(root),
+      ),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    client.close()
+    let staging = match pulled.staging {
+      Some(directory) => directory
+      None => fail("a streamed pull must have a staging directory")
+    }
+    assert_true(staging.has_prefix(root + "/mdive/"))
+    // 每个 blobs 都该在那个目录里：config 一个、层两个
+    for blob in pulled.layers {
+      let path = match blob.path {
+        Some(path) => path
+        None => fail("layer \{blob.digest} was not streamed to disk")
+      }
+      assert_true(path.has_prefix(staging + "/"))
+    }
+    let config_path = match pulled.config.path {
+      Some(path) => path
+      None => fail("the config blob should be on disk too")
+    }
+    assert_true(config_path.has_prefix(staging + "/"))
+    // 下一次拉取换一个目录：同名的 blob 不会互相踩（连接是另一个）
+    let second_client = RegistryClient::connect(host, insecure=true) catch {
+      err => fail("cannot create the second client: \{err.to_string()}")
+    }
+    let again = pull_with_client(
+      second_client,
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        workdir=Some(root),
+      ),
+    ) catch {
+      err => fail("the second pull should succeed: \{err.to_string()}")
+    }
+    second_client.close()
+    let second = match again.staging {
+      Some(directory) => directory
+      None => fail("the second pull must have a staging directory")
+    }
+    assert_true(second.has_prefix(root + "/mdive/"))
+    assert_false(second == staging)
+    let _ = discard_paths([staging, second, root])
+  })
+}
+
+///|
+/// 落盘的名字要能读：`cfg.blob` + `layer-N.blob`。
+///
+/// 下游拿到的是别人的一整个临时目录，里面若只有一串 sha256，
+/// 想找一个 blob 就只能靠「目录里随便捡一个」，出事时也读不下去（issue #138）。
+async test "staged blobs are named after what they are" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let root = @fs.tmpdir(prefix="dive-blob-name-test-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    // `stream_image` 自己按引用去连 host：测试里端口是随机的，只能借明文连接
+    let image = @registry_cli.stream_image(
+      @registry_cli.StreamRequest::new(
+        reference="\{host}/test/image:latest",
+        insecure=true,
+        workdir=Some(root),
+      ),
+    ) catch {
+      err => fail("streaming should succeed: \{err.to_string()}")
+    }
+    assert_true(@fs.exists(image.staging + "/cfg.blob"))
+    for index, layer in image.layers {
+      assert_eq(layer.path, "\{image.staging}/layer-\{index}.blob")
+      assert_true(@fs.exists(layer.path))
+    }
+    @registry_cli.discard_streamed(image)
+    let _ = discard_paths([root])
+  })
+}
+
+///|
+/// 收掉一串目录（叶子先删）。
+async fn discard_paths(paths : Array[String]) -> Unit noraise {
+  for path in paths {
+    try @fs.rmdir(path, recursive=true) catch {
+      _ => ()
+    } noraise {
+      _ => ()
+    }
+  }
+}

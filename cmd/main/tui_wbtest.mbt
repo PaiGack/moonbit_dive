@@ -39,19 +39,21 @@ async test "the browser opens the last layer by default and clamps a bad one" {
 }
 
 ///|
-/// `--save` 与界面互斥（第一条硬原则的反面：不静默让谁赢）。
+/// `--save` 不问界面：没给 `--no-tui` 也不是参数错（issue #139）。
 ///
-/// 「互斥」判的是**会不会真开界面**：没给 `--no-tui` 也不算冲突，
-/// 除非终端够格。所以这里只断言两问本身，终端那一半交给
-/// `refusal_of_tui`——它才是不依赖环境的那个判据。
-async test "save without --no-tui is a config error, not a silent choice" {
+/// 互斥要拦的是「真有两句话」的组合。`--save` 只有一句：落盘。
+/// `--no-tui` 在这里是空的，写与不写都该走到同一条落盘路径——
+/// 否则 CI 探针里的 `dive <ref> --save -o x.tar` 会白退一次 2。
+async test "save without --no-tui still saves, it just never opens the browser" {
   let save = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
-  assert_true(save.save && save.interactive())
+  assert_true(save.save)
+  // 开关是「想要界面」的意思，但界面的入口在 `main` 里排在 `--save` 后面
+  assert_true(save.interactive())
   let save_text = parse_options([
     "nginx:latest", "--save", "-o", "x.tar", "--no-tui",
   ])
-  assert_false(save_text.save && save_text.interactive())
-  assert_false(browser_would_open(save_text))
+  assert_true(save_text.save)
+  assert_false(save_text.interactive())
 }
 
 ///|
@@ -69,62 +71,61 @@ async test "an image from stdin never opens the browser" {
 }
 
 ///|
-/// 归档装好之后**不许**再删它所在的那个目录（issue #133）。
+/// 流式拉下来的 blob 活着读到 `ImageSource` 里，临时目录随后才被收掉
+/// （issue #122 的另一半，也是 #128 的现场）。
 ///
-/// 现场长这样：
+/// 现场的上一版长这样：`[registry] parsing .../image.tar...` 下一行
+/// `image error: cannot read image: .../image.tar: No such file or directory`。
+/// 那条路先删临时目录再 `ImageSource::load`，删掉的正是接下来要 `fopen`
+/// 的那份文件；镜像一条都没读到，链路在「选界面」之前就 exit 2 了。
 ///
-/// ```text
-/// [registry] parsing /tmp/dive-registry-xxx/image.tar...
-/// image error: cannot read image: /tmp/dive-registry-xxx/image.tar: No such file or directory
-/// ```
-///
-/// 上一版（#132）把顺序改成了「先 load 再收」，可 `ImageSource::load` 只记
-/// 每层的 `offset`，字节要等到 `main` 里逐层 `raw_bytes` 才真去读。
-/// 于是在这里删目录，删的仍是那份**还没人读过**的归档：
-/// 对本地 tar 是「立刻炸」，对 NFS 上的 `/tmp` 是「永远炸」——删掉一个
-/// 仍被本地进程开着/缓存着的文件时，服务端只会留一个按路径打不开的影子，
-/// 报出来正是 `No such file or directory`。
-///
-/// 现在这条链路走 `save_image(result.bytes == 0)` 判空壳：装了东西就一字节都不碰。
-async test "the archive is still on disk after it is loaded" {
+/// #133 之后这条路不再攒 tar：层就是下载下来的压缩 blob，所以收尾要删的
+/// 是「目录」，不能删「层」。这里两个方向都钉住：收完目录得没，收完字节得在。
+async test "streamed blobs survive the temp cleanup, and the temp dir does not" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
-  let diff = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  let archive = @docker_cli.build_docker_archive(
-    [("cafe", layer)],
-    config="cafe.json",
-    config_json="{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
-      diff +
-      "\"] } }",
-  )
-  // 与 `save_remote` 的产物同形：我们自己建的临时目录里放一个 image.tar
+  let digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   let directory = @async_fs.tmpdir(prefix="dive-registry-") catch {
     err => fail("cannot create a temp directory: \{err}")
   }
-  let path = "\{directory}/image.tar"
-  @async_fs.write_file(path, archive) catch {
-    err => fail("cannot write the archive: \{err}")
+  let path = "\{directory}/layer-0.blob"
+  @async_fs.write_file(path, layer) catch {
+    err => fail("cannot write the layer: \{err}")
   }
-  let options = parse_options(["demo.tar", "--no-tui"])
-  let registry_options = registry_options(options)
-  // 装载只记偏移：这一步成功不代表字节读得到，正因如此更不能删
-  let source = try @image_ci.ImageSource::load(path) catch {
-    err => fail("the archive must be readable: \{err.to_string()}")
+  let image : @registry_cli.StreamedImage = {
+    reference: "demo:latest",
+    config_json: "{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
+    digest +
+    "\"] } }",
+    layers: [
+      {
+        media_type: "application/vnd.oci.image.layer.v1.tar",
+        digest,
+        path,
+        size: layer.length().to_int64(),
+      },
+    ],
+    staging: directory,
+  }
+  let options = parse_options(["demo:latest", "--no-tui"])
+  // 装载只记偏移：这一步成功不代表字节读得到，正因如此后面才要验一遍
+  let source = try registry_source(options, image) catch {
+    err => fail("the streamed image must be readable: \{Repr(err)}")
   } noraise {
     source => source
   }
   assert_eq(source.layers.length(), 1)
-  assert_true(
-    @fs.path_exists(path),
-    msg="\{path} was deleted after it was loaded",
-  )
-  // 层真的还能读回来（`main` 里就是这一步：逐层 `raw_bytes`）
-  let raw = source.layers[0].raw_bytes() catch {
-    err => fail("the layer must still be readable: \{err.to_string()}")
-  }
-  assert_true(raw.length() > 0)
-  // 空壳才归我们：`cleanup_remote` 的存在意义就是「一字节都没有的目录」
-  cleanup_remote(registry_options, directory)
+  // 读完再收：删的是临时目录，不是紧接着还要用的那份 blob
+  cleanup_streamed(image, directory)
   assert_false(@fs.path_exists(path))
+  // 收完还得能解析：`ImageSource` 手里是字节，不是一条指向临时目录的路径
+  // （issue #138 的现场：到这一步只剩 `No such file or directory`）
+  let plain = try source.layers[0].raw_bytes() catch {
+    err =>
+      fail("the layer must still read back after cleanup: \{err.to_string()}")
+  } noraise {
+    bytes => bytes
+  }
+  assert_eq(plain.length(), layer.length())
 }

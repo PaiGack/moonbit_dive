@@ -10,9 +10,11 @@ pub(all) struct LayerSource {
   size : Int64
   /// 独立文件形式的层（OCI layout 的 blob）；`None` 表示字节在同名 tar 的
   /// `offset` 处（或者就在 `data` 里）
-  source_path : String?
+  /// 可写：`from_oci_files` 把磁盘读到的那份收进 `data` 之后就地清空它
+  mut source_path : String?
   /// 内存里的那份字节；空表示字节在磁盘上，需要时按 `offset` 读
-  data : Bytes
+  /// 可写：同上
+  mut data : Bytes
   diff_id : String
 } derive(Debug)
 
@@ -849,4 +851,112 @@ fn proc_vm_kb(text : String, key : String) -> Int32 {
     }
   }
   0
+}
+
+///|
+/// 一个 OCI layout 里的一层，**直接**来自独立的压缩 blob 文件。
+///
+/// 这条入口是给「字节从来没进过内存」的链路用的（`dive` 直连 registry 时，
+/// 流式落盘的层就长这样）：`image_ci` 于是不必要求先把 blob 拍成一张
+/// docker-archive tar，再按 tar 偏移把它们找回来。
+pub(all) struct BlobLayer {
+  /// 压缩 blob 的 media type（`+gzip` / `+zstd` / 无压缩）
+  media_type : String
+  /// 压缩 blob 自己的 digest，`sha256:<hex>`
+  digest : String
+  /// blob 文件的位置
+  path : String
+  /// 压缩后的大小
+  size : Int64
+  /// config 里 `rootfs.diff_ids` 的同下标项（没有就是空串）
+  diff_id : String
+}
+
+///|
+pub impl @debug.Debug for BlobLayer with fn to_repr(self) {
+  Repr::string(
+    "BlobLayer(\{self.media_type}, \{self.digest}, \{self.path}, \{self.size})",
+  )
+}
+
+///|
+pub extend BlobLayer with @debug.Debug::{to_repr}
+
+///|
+/// 从「config 字节 + 一堆独立的压缩 blob」拼出一个 `ImageSource`。
+///
+/// 与 `from_oci_layout` 的区别只在层的落点：那边层是**内存里的未压缩字节**，
+/// 这边层是**磁盘上的压缩 blob**，解压由 `LayerSource::raw_bytes` 照 media type
+/// 做（与读目录形态的 OCI layout 完全同一条路）。
+///
+/// 不校验 digest：调用方（`registry_cli`）在字节落地时就验过了，
+/// 这里再算一遍只是让 700MB 的层多跑一趟 sha256。
+pub fn ImageSource::from_oci_blobs(
+  name : String,
+  config_json : String,
+  layers : Array[BlobLayer],
+) -> ImageSource raise ImageError {
+  let built = assemble_oci_layers(name, config_json, layers)
+  { name, format: "oci-layout", layers: built, }
+}
+
+///|
+/// 与 `from_oci_blobs` 同义，但层是**现在就读进内存**的磁盘 blob。
+///
+/// 给「临时目录只活到这次调用为止」的场景用：直连 registry 拉下来的层落在
+/// 自己的临时目录里，那个目录在镜像打出来之后马上就要收掉（issue #138）。
+/// 若 `ImageSource` 只带路径，收掉目录就等于把层删了，读的时候只剩
+/// `No such file or directory`——而这个错完全看不出是「谁把目录收了」。
+///
+/// 代价是层在内存里：这条路本来就要把整层解压一遍才建得出目录树，
+/// 解压结果才是峰值，压缩字节只是提前一步到账。
+pub fn ImageSource::from_oci_files(
+  name : String,
+  config_json : String,
+  layers : Array[BlobLayer],
+) -> ImageSource raise ImageError {
+  let built = assemble_oci_layers(name, config_json, layers)
+  for layer in built {
+    let path = match layer.source_path {
+      Some(path) => path
+      None => continue
+    }
+    let bytes = match read_layer_bytes(path, 0L, layer.size) {
+      Ok(bytes) => bytes
+      Err(reason) => raise Io(reason)
+    }
+    layer.data = bytes
+    layer.source_path = None
+  }
+  { name, format: "oci-layout", layers: built, }
+}
+
+///|
+/// 两种 blob 入口共用的那一段：config 定 diff_id，层照 media type 挂着。
+fn assemble_oci_layers(
+  name : String,
+  config_json : String,
+  layers : Array[BlobLayer],
+) -> Array[LayerSource] raise ImageError {
+  let config = @oci_spec.parse_image_config_lenient(config_json) catch {
+    err => raise Malformed("\{name}: config.json: \{err.to_string()}")
+  }
+  let diff_ids = config.rootfs.diff_ids
+  let built : Array[LayerSource] = []
+  for index, layer in layers {
+    let diff_id = if index < diff_ids.length() {
+      diff_ids[index]
+    } else {
+      layer.diff_id
+    }
+    built.push({
+      media_type: layer.media_type,
+      offset: 0L,
+      size: layer.size,
+      source_path: Some(layer.path),
+      data: Bytes::make(0, b'\x00'),
+      diff_id,
+    })
+  }
+  built
 }

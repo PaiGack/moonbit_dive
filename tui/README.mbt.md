@@ -118,7 +118,9 @@ moon run --target native cmd/main -- demo-image.tar -f json -o report.json
 
 - 终端不够格（stdin/stdout 有一个不是 tty，或者 `dive - < img.tar`）→
   在进 alternate screen **之前**落回文本，stderr 点一句 `tui skipped: ...`
-- `--save` 与界面同给 → exit 2 的参数错，不让任何一边悄悄赢
+- `--save` 不走进这条链路：它是「只落盘」的独立出口，拿到归档就退 0，
+  语义上已等同于 `--no-tui`；明写要界面（不加 `--no-tui`）的 `--save`
+  是自相矛盾，exit 2
 - `--rules` 在界面里照样是门禁：退出码仍是 `0/1/2`
 
 只读侧有同一套档位：`--layer N --aggregate` 出聚合 diff，不给 `--aggregate`

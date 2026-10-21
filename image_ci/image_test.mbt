@@ -374,3 +374,88 @@ async test "an input that cannot be read names its path at load time" {
     @fs.IOError(_) => ()
   }
 }
+
+///|
+/// `from_oci_blobs`：层是**磁盘上的压缩 blob**，来源不必是一张 docker-archive。
+///
+/// 这条入口是 issue #133 的落点：直连 registry 时字节本来就只落在文件上，
+/// 没有 tar 可拆，也不需要拆。
+async test "from_oci_blobs reads compressed layer files without a wrapping tar" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let raw = layer
+  let compressed = @layer_tree.gzip_compress(raw)
+  let root = "target/image_ci_blobs_fixture"
+  mkdir_p(root)
+  write_fixture_bytes(root + "/layer-0.blob", compressed)
+  let source = ImageSource::from_oci_blobs(
+    "demo",
+    "{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"sha256:d0\"] } }",
+    [
+      {
+        media_type: @oci_spec.oci_layer_gzip_media_type,
+        digest: "sha256:l0",
+        path: root + "/layer-0.blob",
+        size: compressed.length().to_int64(),
+        diff_id: "",
+      },
+    ],
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(source.format, "oci-layout")
+  assert_eq(source.layers.length(), 1)
+  assert_eq(source.layers[0].diff_id, "sha256:d0")
+  let decompressed = source.layers[0].raw_bytes() catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(decompressed.length(), raw.length())
+}
+
+///|
+/// `from_oci_files`：字节当场读进内存，之后把文件删掉也还能解析。
+///
+/// 这是 issue #138 的现场：直连 registry 拉下来的层躺在自己的临时目录里，
+/// 目录收掉之后 `ImageSource` 还得活着。只带路径的版本到这一步只剩
+/// `No such file or directory`，而这句错完全看不出是谁把目录收了。
+async test "from_oci_files survives the blob files being removed" {
+  let raw = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let compressed = @layer_tree.gzip_compress(raw)
+  let root = "target/image_ci_files_fixture"
+  mkdir_p(root)
+  let path = root + "/layer-0.blob"
+  write_fixture_bytes(path, compressed)
+  let source = ImageSource::from_oci_files(
+    "demo",
+    "{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"sha256:d0\"] } }",
+    [
+      {
+        media_type: @oci_spec.oci_layer_gzip_media_type,
+        digest: "sha256:l0",
+        path,
+        size: compressed.length().to_int64(),
+        diff_id: "",
+      },
+    ],
+  ) catch {
+    err => fail(err.to_string())
+  }
+  // 目录走了，层还得在
+  remove_fixture_file(path)
+  assert_eq(source.layers[0].source_path, None)
+  let decompressed = source.layers[0].raw_bytes() catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(decompressed.length(), raw.length())
+}
+
+///|
+/// 删夹具文件；删不掉（干净 checkout 里没建过）就当它本来就不在。
+fn remove_fixture_file(path : String) -> Unit {
+  @fs.remove_file(path) catch {
+    _ => ()
+  }
+}

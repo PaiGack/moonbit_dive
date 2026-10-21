@@ -7,7 +7,7 @@
 /// `dive img > out.txt` 这种「stdout 是管道、stdin 还是终端」的情况必须
 /// 在切屏之前就退到文本，否则先切屏、再在主屏打一行错误。
 ///
-/// 一条链只做一遍重活：`--save` 互斥先判 → 取归档 → 解压一次 → 选界面 →
+/// 一条链只做一遍重活：`--save` 先出 → 取归档 → 解压一次 → 选界面 →
 /// 退出后统一出产物（`--format` / `-o` / `--rules` 的退出码）。
 ///
 /// 链路是 P1/P2 → P3 → P4 的串接：
@@ -50,22 +50,12 @@ async fn main {
     }
   }
   let options = Options::from_matches(matches)
-  // 参数自相矛盾在**碰数据之前**就要说清楚：「给了 `--save` 还真要开界面」
-  // 既不能靠「保存优先」悄悄吃掉一边，也不能先把镜像拉下来再报错。
+  // 「只取不分析」的出口：落成 tar / OCI layout 就结束，不走进分析链路。
   //
-  // 判的是「这次运行会不会开界面」而不是「有没有给 `--no-tui`」：没给
-  // `--no-tui` 但 stdin / stdout 不是终端（管道、重定向、stdin 是 tar 流）
-  // 时界面本来就开不成，走的是文本出口，`--save` 一点不冲突——当成参数错
-  // 反而把 `dive img --save -o x.tar > log` 这种正经用法挡在门外。
-  if options.save && browser_would_open(options) {
-    eprintln(
-      "invalid options: --save and the layer browser cannot be used together (add --no-tui to save only)",
-    )
-    exit_process(@image_ci.exit_config_error)
-    return
-  }
-  // `--save` 是「只取不分析」：把镜像落成 tar / OCI layout 就结束，不走进分析链路。
-  // 先于 `load_source` 判定，免得为了保存去解一遍镜像
+  // 这条先于 `load_source`，免得为了保存去解一遍镜像；也就先于选界面——
+  // `--save` 自己就带着「不用界面」的意思，`--no-tui` 在它面前是空的：
+  // 顺手写上去（脚本里常这么写）不该退 2，不写也不该被追着要。
+  // 「参数自相矛盾要报错」只出现在**真有两句话**的地方，`--save` 这里没有第二句。
   if options.save {
     save_only(options) catch {
       err => {
@@ -152,15 +142,6 @@ async fn main {
 /// 明说的意图，不拿终端状态去顶；反过来，没给 `--no-tui` 也不等于一定开得成。
 fn Options::interactive(self : Options) -> Bool {
   !self.no_tui
-}
-
-///|
-/// 这次运行**会不会真的**进界面：要它 + 终端够格，两问都得是「是」。
-///
-/// 参数互斥该问这一问，而不是只问 `interactive()`——「要」但终端不给面子时，
-/// 实际跑的是文本出口，冲突根本不存在。
-fn browser_would_open(options : Options) -> Bool {
-  options.interactive() && refusal_of_tui(options) is None
 }
 
 ///|
@@ -481,7 +462,7 @@ fn cli() -> @argparse.Command {
       ),
       @argparse.FlagArg(
         "save",
-        about="only save the image reference to --output, do not analyze it",
+        about="only save the image reference to --output, do not analyze it (implies --no-tui)",
       ),
       @argparse.FlagArg(
         "no-pull",
@@ -727,6 +708,9 @@ fn registry_options(options : Options) -> RegistryOptions {
 ///
 /// `-o` 在 `--save` 下就是落盘位置，不和 `--format html -o report.html` 抢：
 /// 那条 `-o` 只在分析态生效（`--save` 压根不出报告）。
+///
+/// `--no-tui` 在这里是可写的废话：写了不报错，不写也不会因此打不开界面——
+/// 这条路本来就不开界面。参数校验只拦「真有两句话」的组合（issue #128 / #139）。
 async fn save_only(options : Options) -> Unit raise CommandError {
   if options.output is None {
     raise CommandError::Registry(

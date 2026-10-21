@@ -10,11 +10,7 @@ import {
 }
 
 import {
-  "PaiGack/dive/image_analysis",
-  "PaiGack/dive/layer_tree",
-} for "wbtest"
-
-import {
+  "PaiGack/dive/oci_spec",
   "moonbitlang/async",
 } for "test"
 

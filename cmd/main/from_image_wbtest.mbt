@@ -608,57 +608,55 @@ async test "image_of_layers builds a multi-layer source" {
 }
 
 ///|
-/// 整条「镜像引用 → 没有 docker → 直连 registry → 装好 → 逐层读得回来」
+/// 整条「镜像引用 → 没有 docker → 直连 registry → 装好 → 读得回来」
 /// 必须真的走通（issue #133）。
 ///
-/// 现场是这样：`load_from_registry` 把归档落进 `dive-registry-*`，装完之后把
-/// 目录整棵删了，再让 `main` 逐层 `raw_bytes`——那时路径已经没了，报出来就是
-/// `/tmp/dive-registry-xxx/image.tar: No such file or directory`。
-/// 一条只有「本机没有 docker」才会走的路，从前没有任何用例走通过。
+/// 现场是这样：直连 registry 那条路把整份生产物留在 `dive-registry-*` 里，
+/// 装完之后把目录整棵删了，再让 `main` 逐层去读——那时路径已经没了，报出来
+/// 就是 `No such file or directory`。一条只有「本机没有 docker」才会走的路，
+/// 从前没有任何用例走通过。
 ///
-/// `pull_image` 在这里被换成一个「本地假 registry 的替身」：它写出来的归档
-/// 与 `save_image` 同形，**按路径**被后续读取——这正是原现场里丢东西的那个
-/// 契约。中间不许有网络，也不许有 docker，剩下的每一环都是真代码。
+/// #133 之后这条路不再攒 tar：层就是下载下来的压缩 blob，而且读**当场**就读
+/// 进内存（`from_oci_files`）。所以这里钉两件事：收尾删了目录之后，那份产物
+/// 仍然读得回来，且目录确实被收掉了。
 #cfg(not(platform="windows"))
-async test "an archive from the registry survives to the analysis path" {
+async test "a streamed image survives to the analysis path" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
-  let diff = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  let archive = @docker_cli.build_docker_archive(
-    [("cafe", layer)],
-    repoTags=["example:latest"],
-    config="cafe.json",
-    config_json="{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
-      diff +
-      "\"] } }",
-  )
-  // 与 `save_remote` 同形：我们自己建的临时目录 + 一份归档
+  let digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   let directory = @async_fs.tmpdir(prefix="dive-registry-") catch {
     err => fail("tmpdir: \{err}")
   }
-  let path = "\{directory}/image.tar"
-  @async_fs.write_file(path, archive) catch {
-    err => fail("cannot write the archive: \{err}")
+  let path = "\{directory}/layer-0.blob"
+  @async_fs.write_file(path, layer) catch {
+    err => fail("cannot write the layer: \{err}")
   }
-  let result : @registry_cli.SaveResult = {
-    path,
-    format: @registry_cli.DockerArchive,
-    bytes: archive.length(),
-    layers: 1,
-    platform: "linux/amd64",
+  let image : @registry_cli.StreamedImage = {
+    reference: "demo:latest",
+    config_json: "{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
+    digest +
+    "\"] } }",
+    layers: [
+      {
+        media_type: "application/vnd.oci.image.layer.v1.tar",
+        digest,
+        path,
+        size: layer.length().to_int64(),
+      },
+    ],
+    staging: directory,
   }
-  // 装载只记偏移，这一步成功不代表字节读得到——正因如此，收尾更不能删它
-  let source = try @image_ci.ImageSource::load(result.path) catch {
-    err => fail("the archive must be readable: \{err.to_string()}")
-  } noraise {
-    source => source
+  let source = registry_source(
+    parse_options(["demo:latest", "--no-tui"]),
+    image,
+  ) catch {
+    err => fail("the streamed image must be readable: \{Repr(err)}")
   }
   assert_eq(source.layers.length(), 1)
-  // 收尾：`load_from_registry` 现在对「装过东西」的目录一个字节都不碰
-  if result.bytes == 0 {
-    cleanup_remote(registry_options(parse_options(["demo.tar"])), directory)
-  }
+  // 收尾：`cleanup_streamed` 收的是目录，不是那份还要用的 blob
+  cleanup_streamed(image, directory)
+  assert_false(@fs.path_exists(path))
   // `main` 在这里逐层读：字节必须在
   for layer in source.layers {
     let raw = layer.raw_bytes() catch {
