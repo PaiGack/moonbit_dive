@@ -74,7 +74,7 @@ pub impl Show for DockerCliError with fn to_string(self) {
 ///|
 /// 这条错误是不是「这台机器根本没有 docker」——也就是**一条能走到运行期的路都没有**。
 ///
-/// `dive --from-image` 靠它决定要不要回退到直连 registry（issue #109）。
+/// `dive` 的镜像引用档靠它决定要不要回退到直连 registry（issue #109）。
 /// 判据只有一条：探测记录里出现了 `ok` 的候选。
 ///
 /// 为什么不是「错误类型恰好是 `NoBackend`」：`fetch_archive_verbose` 的

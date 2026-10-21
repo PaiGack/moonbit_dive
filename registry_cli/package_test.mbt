@@ -331,7 +331,7 @@ fn zstd_layer_fixture() -> Bytes raise {
 ///|
 /// issue #97 的回归：**打包**这一步不能把整层搬进内存。
 ///
-/// 现场是 `--from-registry ... -o x.tar` 打一个 700MB 的镜像：解压出来的层
+/// 现场是 `dive <ref> --save -o x.tar` 打一个 700MB 的镜像：解压出来的层
 /// 先攒成一块、再整段塞进 `TarWriter` 的 Buffer，最后又拷一遍——
 /// 三份 700MB 顶到 Int32 的缓冲边界，报 `Buffer capacity overflow`。
 ///

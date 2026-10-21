@@ -13,7 +13,7 @@ pub(open) trait ImageSource {
   /// 把镜像拉到本地。本地已有（或拉取过程判定为「已存在」）时是空操作。
   ///
   /// 单独成一个方法而不是折进 `save`：`save` 的契约是「本地必须已有」，
-  /// 拉了才 save 属于调用方（`cmd/main --from-image`）的策略，
+  /// 拉了才 save 属于调用方（`cmd/main` 的镜像引用档）的策略，
   /// 包一层 `pull` 让这个策略显式、可关、可单独测。
   async fn pull(Self, String) -> Unit raise DockerCliError
 }
@@ -23,7 +23,7 @@ pub(open) trait ImageSource {
 ///
 /// 与 `ImageSource::save -> Bytes` 并存，是因为两条路各有各的用处：
 /// 返回 `Bytes` 的形态适合小镜像与测试（一行就能断言），
-/// 而 `--from-image` 面对的是几百 MB 的层——全量驻留内存既浪费也不稳。
+/// 而镜像引用面对的是几百 MB 的层——全量驻留内存既浪费也不稳。
 /// 这里的 `write` 是**一遍过**的流式接口，实现方不许为了先算长度而缓冲。
 pub(open) trait ArchiveSink {
   /// 收下一段归档字节。**必须**是 async：落盘那一路的 `@fs.File::write`

@@ -5,6 +5,7 @@ fn describe_error(error : CommandError) -> String {
     Image(message) => "image: \{message}"
     Analysis(message) => "analysis: \{message}"
     Docker(message) => "docker: \{message}"
+    NoLocalImage(message) => "no-local-image: \{message}"
     Registry(message) => "registry: \{message}"
   }
 }
@@ -20,9 +21,9 @@ fn cli_only() -> Array[@docker_cli.BackendCandidate] {
 }
 
 ///|
-/// 端到端：`--from-image` 用 fake docker 的 `save` 取归档，
+/// 端到端：镜像引用用 fake docker 的 `save` 取归档，
 /// 再走既有 `ImageSource::from_tar_bytes` 出体积报告，不新开链路。
-async test "from-image wires docker_cli output into the analysis path" {
+async test "an image reference wires docker_cli output into the analysis path" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
@@ -35,19 +36,19 @@ async test "from-image wires docker_cli output into the analysis path" {
       #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:cafe"] } }
     ),
   )
-  let archive_path = @docker_cli.write_temp_bytes("from-image.tar", archive)
+  let archive_path = @docker_cli.write_temp_bytes("reference.tar", archive)
   // 探测链路按 PATH 找的是工具名本身（`docker`），所以文件就得叫 docker
   let script = @docker_cli.fake_cat_cli(archive_path)
   let (dir, _program) = @docker_cli.write_fake_cli_named("docker", script)
 
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image"]) catch {
+    cli().parse(argv=["example:latest"]) catch {
       err => fail("should parse: \{err}")
     },
   )
   let env = { "PATH": dir }
   let source = load_source(options, env~, candidates=cli_only()) catch {
-    err => fail("from-image should load: \{describe_error(err)}")
+    err => fail("the reference should load: \{describe_error(err)}")
   }
   assert_eq(source.layers.length(), 1)
   // 名字标出来源，报告 / 注解能看出这不是本地 tar
@@ -73,13 +74,13 @@ async test "from-image wires docker_cli output into the analysis path" {
 /// 人话里带上安装提示，而不是 IO 层面的「读不到文件」，也不会偷偷去连 registry。
 ///
 /// 不给 `--no-pull` 的那一半见下一条用例：那时要回退到 registry（issue #109）。
-async test "from-image without any backend reports a docker error under --no-pull" {
+async test "a reference without any backend reports a docker error under --no-pull" {
   // 给一个空目录当 PATH（里面没有任何 docker / podman / nerdctl）
   let (empty, _probe) = @docker_cli.write_fake_cli_named(
     "not-docker", "#!/bin/sh\n",
   )
   let options = Options::from_matches(
-    cli().parse(argv=["nginx:latest", "--from-image", "--no-pull"]) catch {
+    cli().parse(argv=["nginx:latest", "--no-pull"]) catch {
       err => fail("should parse: \{err}")
     },
   )
@@ -89,6 +90,7 @@ async test "from-image without any backend reports a docker error under --no-pul
     Image("expected an error, got a source")
   } catch {
     Docker(message) => Docker(message)
+    NoLocalImage(message) => NoLocalImage(message)
     Image(message) => Image(message)
     Analysis(message) => Analysis(message)
     Registry(message) => Registry(message)
@@ -109,14 +111,12 @@ async test "from-image without any backend reports a docker error under --no-pul
 /// 这里用一个必然连不上的 registry（`127.0.0.1:1` 上没人监听）来证明
 /// **回退真的发生了**：报出来的错变成 registry 的，不再是 docker 的。
 /// 「回退之后能拉成功」由 `registry_cli` 自己的用例保证，不必在这叠网络。
-async test "from-image falls back to the registry when there is no docker" {
+async test "a reference falls back to the registry when there is no docker" {
   let (empty, _probe) = @docker_cli.write_fake_cli_named(
     "not-docker", "#!/bin/sh\n",
   )
   let options = Options::from_matches(
-    cli().parse(argv=[
-      "127.0.0.1:1/demo:latest", "--from-image", "--timeout", "1",
-    ]) catch {
+    cli().parse(argv=["127.0.0.1:1/demo:latest", "--timeout", "1"]) catch {
       err => fail("should parse: \{err}")
     },
   )
@@ -126,6 +126,7 @@ async test "from-image falls back to the registry when there is no docker" {
     Image("expected an error, got a source")
   } catch {
     Docker(message) => Docker(message)
+    NoLocalImage(message) => NoLocalImage(message)
     Image(message) => Image(message)
     Analysis(message) => Analysis(message)
     Registry(message) => Registry(message)
@@ -139,7 +140,7 @@ async test "from-image falls back to the registry when there is no docker" {
 /// 有 docker 但取不到归档时**不**回退：那是「这条路推不动」，不是「没有 docker」。
 ///
 /// 拿一次注定失败的 registry 拉取盖住真正的错，是这次改动最该防的回归。
-async test "from-image does not fall back when a docker backend was probed" {
+async test "a reference does not fall back when a docker backend was probed" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
@@ -165,7 +166,7 @@ async test "from-image does not fall back when a docker backend was probed" {
   let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
 
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image"]) catch {
+    cli().parse(argv=["example:latest"]) catch {
       err => fail("should parse: \{err}")
     },
   )
@@ -174,6 +175,7 @@ async test "from-image does not fall back when a docker backend was probed" {
     Image("expected an error, got a source")
   } catch {
     Docker(message) => Docker(message)
+    NoLocalImage(message) => NoLocalImage(message)
     Image(message) => Image(message)
     Analysis(message) => Analysis(message)
     Registry(message) => Registry(message)
@@ -186,25 +188,65 @@ async test "from-image does not fall back when a docker backend was probed" {
 }
 
 ///|
-/// 不给 `--from-image` 时走文件路径：给个不存在的位置参数报 Image，不是 Docker。
+/// 不存在的路径 + 长得像镜像名 → 走镜像通路，而不是报「读不到文件」。
 ///
-/// 这条守住「显式开关优先」：默认绝不因为位置参数长得像镜像名就去连 daemon。
-async test "without from-image the input is treated as a file path" {
+/// 这是 issue #124 反转的那条：以前「不给 `--from-image` 就一定当文件」，
+/// 于是 `dive nginx:latest` 报的是 `cannot read nginx:latest: No such file or directory`。
+/// 现在位置参数自己说它是什么，判定在 `ImageSource::load` 之前做完。
+async test "a missing path is treated as an image reference, not a file" {
+  assert_eq(kind_of_input("/definitely/not/here.tar"), Reference)
   let options = Options::from_matches(
-    cli().parse(argv=["/definitely/not/here.tar"]) catch {
+    cli().parse(argv=["/definitely/not/here.tar", "--no-pull"]) catch {
       err => fail("should parse: \{err}")
     },
   )
+  // 给一个空目录当 PATH：探测不到任何后端，`--no-pull` 下不许回退 registry。
+  // 只要报的**不是** `Image("cannot read ...")`，就说明没走文件那条路。
+  let (empty, _probe) = @docker_cli.write_fake_cli_named(
+    "not-docker", "#!/bin/sh\n",
+  )
   let error : CommandError = try {
-    load_source(options) |> ignore
+    load_source(options, env={ "PATH": empty }, candidates=cli_only()) |> ignore
     Image("expected an error, got a source")
   } catch {
     Image(message) => Image(message)
     Docker(message) => Docker(message)
+    NoLocalImage(message) => NoLocalImage(message)
     Analysis(message) => Analysis(message)
     Registry(message) => Registry(message)
   }
+  assert_true(error is Docker(_))
+  assert_true(describe_error(error).contains("no usable docker backend"))
+  @docker_cli.remove_fake_cli_dir(empty)
+}
+
+///|
+/// 存在的路径一步都不碰网络：哪怕 PATH 上一个 docker 都没有。
+///
+/// 这条守住「本地文件优先」：判定只看本地文件系统，不看能不能连 daemon。
+async test "an existing path never touches docker" {
+  // 仓库根上一定有的 `moon.mod`：拿它当一份「本地文件」（内容不合法，但走得够远）
+  let options = Options::from_matches(
+    cli().parse(argv=["moon.mod"]) catch {
+      err => fail("should parse: \{err}")
+    },
+  )
+  let (empty, _probe) = @docker_cli.write_fake_cli_named(
+    "not-docker", "#!/bin/sh\n",
+  )
+  let error : CommandError = try {
+    load_source(options, env={ "PATH": empty }) |> ignore
+    Image("expected an error, got a source")
+  } catch {
+    Image(message) => Image(message)
+    Docker(message) => Docker(message)
+    NoLocalImage(message) => NoLocalImage(message)
+    Analysis(message) => Analysis(message)
+    Registry(message) => Registry(message)
+  }
+  // 报的是「这不是一份能读的镜像归档」，不是 docker 的错
   assert_true(error is Image(_))
+  @docker_cli.remove_fake_cli_dir(empty)
 }
 
 ///|
@@ -229,13 +271,13 @@ async test "verbose does not change the fetched result" {
   let (dir, _program) = @docker_cli.write_fake_cli_named("docker", script)
 
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image", "--verbose"]) catch {
+    cli().parse(argv=["example:latest", "--verbose"]) catch {
       err => fail("should parse: \{err}")
     },
   )
   assert_true(options.verbose)
   let source = load_source(options, env={ "PATH": dir }, candidates=cli_only()) catch {
-    err => fail("from-image should load: \{describe_error(err)}")
+    err => fail("the reference should load: \{describe_error(err)}")
   }
   assert_eq(source.layers.length(), 1)
 
@@ -244,13 +286,13 @@ async test "verbose does not change the fetched result" {
 }
 
 ///|
-/// 端到端：`--from-image`（默认）遇上「本地没有」的镜像时，先 pull 再 save，
+/// 端到端：镜像引用遇上「本地没有」的镜像时，先 pull 再 save，
 /// 拿到的归档照样走既有分析链路。
 ///
 /// 这是 issue #42 的验收动作，也是 issue #44 的对齐结论：
 /// 原版 dive（Go）没有 `--pull` 开关，`ImageInspect` 报 not-found 就直接
 /// `docker pull` 一次；这里同样把「缺了就拉」作为默认行为。
-async test "from-image pulls a missing image by default" {
+async test "a reference pulls a missing image by default" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
@@ -276,13 +318,13 @@ async test "from-image pulls a missing image by default" {
   let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
 
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image"]) catch {
+    cli().parse(argv=["example:latest"]) catch {
       err => fail("should parse: \{err}")
     },
   )
   assert_false(options.no_pull)
   let source = load_source(options, env={ "PATH": bin }, candidates=cli_only()) catch {
-    err => fail("from-image should load: \{describe_error(err)}")
+    err => fail("the reference should load: \{describe_error(err)}")
   }
   assert_eq(source.layers.length(), 1)
 
@@ -299,7 +341,7 @@ async test "from-image pulls a missing image by default" {
 
 ///|
 /// 本地已有镜像时不发起拉取：策略是「缺失才拉」，不是「每次都拉」。
-async test "from-image leaves a local image alone" {
+async test "a reference leaves a local image alone" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
@@ -321,12 +363,12 @@ async test "from-image leaves a local image alone" {
   let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
 
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image"]) catch {
+    cli().parse(argv=["example:latest"]) catch {
       err => fail("should parse: \{err}")
     },
   )
   let source = load_source(options, env={ "PATH": bin }, candidates=cli_only()) catch {
-    err => fail("from-image should load: \{describe_error(err)}")
+    err => fail("the reference should load: \{describe_error(err)}")
   }
   assert_eq(source.layers.length(), 1)
 
@@ -340,52 +382,71 @@ async test "from-image leaves a local image alone" {
 }
 
 ///|
-/// `--no-pull`：本地缺镜像也绝不发起拉取。
+/// `--no-pull` 的新语义：绝不发起网络请求，但纯本地的 `inspect` / `save` 照常。
 ///
-/// 这是「完全离线」的开关：`inspect` 说没有之后直接 `save`，
-/// 日志里只有 `inspect → save`，一次 `pull` 都不该有。
-async test "from-image with --no-pull never fetches" {
-  let layer = @layer_tree.build_tar([
-    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
-  ])
-  let archive = @docker_cli.build_docker_archive(
-    [("cafe", layer)],
-    config="cafe.json",
-    config_json=(
-      #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:cafe"] } }
-    ),
+/// 「本地已有」那一半由 `a reference leaves a local image alone` 守住
+/// （同一批 fake CLI，只是不带开关）。这里守的是开关本身**不改变**
+/// 「缺了就拉」以外的任何决策：`pull_if_missing` 只是被折成 `false`。
+async test "no-pull only folds pull_if_missing" {
+  let with_pull = Options::from_matches(
+    cli().parse(argv=["example:latest"]) catch {
+      err => fail("parse: \{err}")
+    },
   )
-  let archive_path = @docker_cli.write_temp_bytes("no-pull.tar", archive)
-  let dir = @async_fs.tmpdir(prefix="dive-from-image-no-pull-") catch {
-    err => fail("tmpdir: \{err}")
-  }
-  let log = "\{dir}/calls.log"
-  // inspect 失败 = 本地没有；但 `--no-pull` 下不该因此去拉
-  let script = @docker_cli.fake_recording_cli(
-    log,
-    archive_path,
-    "[]",
-    inspect_code=1,
+  let without_pull = Options::from_matches(
+    cli().parse(argv=["example:latest", "--no-pull"]) catch {
+      err => fail("parse: \{err}")
+    },
   )
-  let (bin, _program) = @docker_cli.write_fake_cli_named("docker", script)
+  assert_false(with_pull.no_pull)
+  assert_true(without_pull.no_pull)
+  // 其余选项一模一样：`--no-pull` 不是「只看本地文件」，它只拦出网的那两步
+  assert_eq(without_pull.image, with_pull.image)
+  assert_eq(without_pull.format, with_pull.format)
+  assert_eq(without_pull.output, with_pull.output)
+  assert_eq(without_pull.tui, with_pull.tui)
+  assert_eq(without_pull.docker_timeout_ms, with_pull.docker_timeout_ms)
+}
 
+///|
+/// `--no-pull` 下本地**没有**这个镜像：报 `NoLocalImage`，不是大而化之的 `Docker`。
+///
+/// 「本地没这个镜像」与「这台机器没有 docker」是两件完全不同的事：
+/// 前者用户该 `docker pull`（或者去掉 `--no-pull`），后者用户该装 docker。
+/// 合并成一句 `Docker` 时只能靠文案里有没有 `no usable docker backend` 分辨。
+async test "a reference missing locally under --no-pull reports NoLocalImage" {
   let options = Options::from_matches(
-    cli().parse(argv=["example:latest", "--from-image", "--no-pull"]) catch {
+    cli().parse(argv=["nginx:latest", "--no-pull"]) catch {
       err => fail("should parse: \{err}")
     },
   )
   assert_true(options.no_pull)
-  let source = load_source(options, env={ "PATH": bin }, candidates=cli_only()) catch {
-    err => fail("from-image should load: \{describe_error(err)}")
-  }
-  assert_eq(source.layers.length(), 1)
-
-  let calls = @async_fs.read_file(log).text()
-  assert_true(!calls.contains("pull example:latest"))
-
-  @docker_cli.remove_fake_cli_dir(bin)
-  @docker_cli.remove_temp_bytes(archive_path)
-  @docker_cli.remove_fake_cli_dir(dir)
+  // `inspect` 的答案直接喂给分类函数：一条有 docker、但本地没有这个镜像的结局。
+  // 这一档的两种失败必须分开报——「本地没这个镜像」与「这台机器没有 docker」
+  // 是两件完全不同的事，前者用户该 `docker pull`，后者用户该装 docker。
+  let missing = classify_docker_error(
+    options,
+    @docker_cli.ImageNotFound("nginx:latest"),
+  )
+  assert_true(missing is NoLocalImage(_))
+  assert_true(describe_error(missing).contains("--no-pull forbids pulling"))
+  // 没有 `--no-pull` 时同一条错误保持原样：那是「拉取失败了」，不是「不许拉」
+  let with_pull = Options::from_matches(
+    cli().parse(argv=["nginx:latest"]) catch {
+      err => fail("parse: \{err}")
+    },
+  )
+  let pulled = classify_docker_error(
+    with_pull,
+    @docker_cli.ImageNotFound("nginx:latest"),
+  )
+  assert_true(pulled is Docker(_))
+  // 探不到后端仍然归 `Docker`：`Show` 会带上安装提示
+  let no_backend = classify_docker_error(
+    options,
+    @docker_cli.NoBackend("not found on PATH", ""),
+  )
+  assert_true(no_backend is Docker(_))
 }
 
 ///|

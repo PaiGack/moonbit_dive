@@ -201,7 +201,7 @@ pub(all) struct PullOptions {
 本机 daemon   ──[P5: docker_cli]────┘
 ```
 
-可选：`cmd/main` 复用 P5 的 `--from-image` 风格，加一个 `--from-registry`
+可选：`cmd/main` 把镜像引用接到本包（当时是先加了个 `--from-registry` 开关，后来统一成位置参数判别）
 显式开关（不做魔数嗅探，和 P5 同样的理由）。
 
 ## 5. 验收建议（若立项）

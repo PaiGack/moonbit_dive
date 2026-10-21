@@ -120,7 +120,7 @@ pub async fn resolve_backend(
     err => raise NoBackend("backend probing failed: \{err}", "")
   }
   match probed.candidate {
-    // 探测记录随错误一起带出去：调用方（`dive --from-image`）要就着它
+    // 探测记录随错误一起带出去：调用方（`dive <ref>`）要就着它
     // 判断「这台机器根本没有 docker」还是「socket 在但对端不理」，
     // 前者才该回退到直连 registry（issue #109）
     None =>

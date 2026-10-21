@@ -167,7 +167,7 @@ socket 在、`connect` 也成功，但对端不通——`timeout_ms = 0` 会让�
 | `InvalidReference` | 空镜像名，在进子进程之前就拦下 |
 
 无 daemon 环境（CI 常见）下探测失败只会得到明确的 `NoBackend` 与安装提示，不 panic。
-`dive --from-image` 会就着 `no_backend_at_all` 把「这台机器根本没有 docker」
+`dive` 的镜像引用会就着 `no_backend_at_all` 把「这台机器根本没有 docker」
 改判成「直连 registry 拉一次」（`--no-pull` 关掉这个兜底）。
 
 ## 本地没有就先拉
@@ -191,8 +191,9 @@ daemon 会在流里回 200 之后再吐 `{"errorDetail":{"message":"..."}}`。
 `inspect` 给出别的错（超时、连不上）说明**这条路本身不行**，该做的是换一条，
 不是拉一次。
 
-`cmd/main` 的默认就是「缺了就拉」（对齐原版 dive），`--no-pull` 关掉它，
-`save_maybe_pulling(pull_if_missing=true/false)` 两端各对应一个开关。
+`cmd/main` 的默认就是「缺了就拉」（对齐原版 dive），`--no-pull` 关掉它——
+那个开关的语义是「本次运行绝不出网」，只折掉 `pull_if_missing`，
+`inspect` / `save` 照常。
 
 ```moonbit check
 ///|
@@ -305,10 +306,10 @@ listen / accept 只服务测试，不进成品包的公开 API。
 
 端到端用例见 `pipeline_test.mbt`。
 
-CLI 侧：`cmd/main` 用显式开关 `--from-image` 把位置参数当镜像名接到本包
-（`moon run --target native cmd/main -- nginx:latest --from-image`），
+CLI 侧：`cmd/main` 把「不是本地路径的位置参数」当镜像名接到本包
+（`moon run --target native cmd/main -- nginx:latest`），
 本地缺镜像时默认先拉一次（对齐原版 dive），想纯离线就
-`moon run --target native cmd/main -- nginx:latest --from-image --no-pull`；
+`moon run --target native cmd/main -- nginx:latest --no-pull`；
 取到归档后走既有的 `ImageSource::from_tar_bytes`；`--verbose` **边做边播报**
 （`using <backend>` / `trying ...` / `saving ...`），结束后再补 `describe_backends`
 的探测记录（`[ok]/[no]` 一行一条）与 `fetched N bytes`——全走 stderr。

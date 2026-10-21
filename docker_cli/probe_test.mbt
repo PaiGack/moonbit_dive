@@ -297,7 +297,7 @@ async test "a socket that answers _ping is healthy" {
 /// 默认超时必须是**有限**的。
 ///
 /// 这条是一条「不许再退回无超时」的守门：0 表示永远等下去，
-/// 半死的 daemon 就会让 `dive --from-image` 静默挂住——
+/// 半死的 daemon 就会让 `dive <ref>` 静默挂住——
 /// 与 `--verbose` 都打不出任何东西的表现完全一致。
 async test "the default timeout is finite" {
   assert_true(@docker_cli.default_timeout_ms > 0)
@@ -419,7 +419,7 @@ async test "the no-backend hint is platform aware" {
 ///|
 /// 「一个后端都没有」与「有后端但取不到」要分得开（issue #109）。
 ///
-/// `dive --from-image` 只在前者才回退到直连 registry。判据是探测记录里
+/// `dive <ref>` 只在前者才回退到直连 registry。判据是探测记录里
 /// 有没有 `[ok]`：探测全灭说明这台机器上没有 docker，回退是兜底；
 /// 探活了却取不到说明 docker 在、是这个镜像推不动，回退只会盖住真原因。
 async test "no_backend_at_all separates 'nothing installed' from 'could not fetch'" {
