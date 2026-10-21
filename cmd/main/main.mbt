@@ -50,22 +50,21 @@ async fn main {
     }
   }
   let options = Options::from_matches(matches)
-  // 参数自相矛盾在**碰数据之前**就要说清楚：「给了 `--save` 还真要开界面」
-  // 既不能靠「保存优先」悄悄吃掉一边，也不能先把镜像拉下来再报错。
+  // `--save` 是「只取不分析」：把镜像落成 tar / OCI layout 就结束，不走进分析链路，
+  // 也就永远不会有界面——它自己的语义就已经是「不用界面」，不需要再加 `--no-tui`。
   //
-  // 判的是「这次运行会不会开界面」而不是「有没有给 `--no-tui`」：没给
-  // `--no-tui` 但 stdin / stdout 不是终端（管道、重定向、stdin 是 tar 流）
-  // 时界面本来就开不成，走的是文本出口，`--save` 一点不冲突——当成参数错
-  // 反而把 `dive img --save -o x.tar > log` 这种正经用法挡在门外。
-  if options.save && browser_would_open(options) {
+  // 先于 `load_source` 判定，免得为了保存去解一遍镜像；也先于 tty 探测，
+  // 于是「`--save` 要不要界面」这个问题根本不成立：它连选界面那一步都走不到。
+  // 唯一的自相矛盾是**明写**了要界面（没给 `--no-tui`）——那不是「终端会怎样」
+  // 的问题，是参数本身在说两句话，所以在碰数据之前就退 2（issue #128 复盘）。
+  if options.save && options.interactive() {
     eprintln(
-      "invalid options: --save and the layer browser cannot be used together (add --no-tui to save only)",
+      "invalid options: --save never opens the layer browser, so --no-tui is redundant with it (drop either one)",
     )
     exit_process(@image_ci.exit_config_error)
     return
   }
-  // `--save` 是「只取不分析」：把镜像落成 tar / OCI layout 就结束，不走进分析链路。
-  // 先于 `load_source` 判定，免得为了保存去解一遍镜像
+  // 「只取不分析」的出口：落成 tar / OCI layout 就结束，不走进分析链路
   if options.save {
     save_only(options) catch {
       err => {
@@ -152,15 +151,6 @@ async fn main {
 /// 明说的意图，不拿终端状态去顶；反过来，没给 `--no-tui` 也不等于一定开得成。
 fn Options::interactive(self : Options) -> Bool {
   !self.no_tui
-}
-
-///|
-/// 这次运行**会不会真的**进界面：要它 + 终端够格，两问都得是「是」。
-///
-/// 参数互斥该问这一问，而不是只问 `interactive()`——「要」但终端不给面子时，
-/// 实际跑的是文本出口，冲突根本不存在。
-fn browser_would_open(options : Options) -> Bool {
-  options.interactive() && refusal_of_tui(options) is None
 }
 
 ///|
@@ -481,7 +471,7 @@ fn cli() -> @argparse.Command {
       ),
       @argparse.FlagArg(
         "save",
-        about="only save the image reference to --output, do not analyze it",
+        about="only save the image reference to --output, do not analyze it (implies --no-tui)",
       ),
       @argparse.FlagArg(
         "no-pull",

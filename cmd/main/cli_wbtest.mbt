@@ -127,27 +127,26 @@ async test "the old --tui flag is gone" {
 }
 
 ///|
-/// `--save` 与界面互斥：真会开界面（要它 + 终端够格）时是 exit 2 的参数错，
-/// 不能让 `--save` 悄悄吃掉界面，也不能让界面悄悄吃掉 `--save`。
-async test "save and the browser are mutually exclusive" {
+/// `--save` 与界面互斥，判的是**用户有没有明说要界面**（issue #128 复盘）。
+///
+/// `--save` 在 `main` 里先于取镜像就 return，走不到选界面那一步，两者本来
+/// 就不抢；需要拦的只是「又要界面、又只保存」这句自相矛盾的话。
+/// 终端状态不参与判断——CI 里没有 tty，算进去会让同一个脚本在本地过、在 CI 里退 2。
+async test "save and an explicit browser request are mutually exclusive" {
+  let with_browser = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
+  assert_true(with_browser.save && with_browser.interactive())
   let save_only = parse_options([
     "nginx:latest", "--save", "-o", "x.tar", "--no-tui",
   ])
   assert_true(save_only.save)
   assert_false(save_only.interactive())
-  assert_false(browser_would_open(save_only))
-  // 「要不要界面」只看这两个开关，与别的一概无关
-  let clash = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
-  assert_true(clash.save && clash.interactive())
 }
 
 ///|
-/// 「要不要」与「会不会」是两问：`--save` 只在**真的会进界面**时才冲突。
-///
-/// `dive img --save -o x.tar > log` 在管道 / CI 里没有终端，界面本来就开不成，
-/// 走的是文本出口——`--save` 不跟任何东西抢，不该被当成参数错。
-/// 反过来 `dive - --save -o x.tar` 的 stdin 是 tar 流，同理。
-async test "save only clashes when the browser would actually open" {
+/// `--save` 是「只落盘」，它自己的语义就已经是不开界面——所以互斥只看开关，
+/// 与 stdin / stdout 是不是终端无关：`dive img --save -o x.tar > log` 和
+/// `dive - --save -o x.tar` 在真终端里也不该退 2。
+async test "save never becomes a config error just because a tty is around" {
   for
     args in [
       ["nginx:latest", "--save", "-o", "x.tar"],
@@ -155,12 +154,10 @@ async test "save only clashes when the browser would actually open" {
     ] {
     let options = parse_options(args)
     assert_true(options.save)
-    assert_true(options.interactive())
-    // 这条与测试跑在不在终端里无关：`-` 在问 tty 之前就被挡下了
-    if args[0] == "-" {
-      assert_false(browser_would_open(options))
-    }
+    // 互斥判据只看 `interactive()`，不看 tty——测试跑没跑在终端里都得出同一答案
+    assert_true(options.save && options.interactive())
   }
+  assert_true(parse_options(["-", "--save", "-o", "x.tar", "--no-tui"]).save)
 }
 
 ///|

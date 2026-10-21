@@ -41,9 +41,9 @@ async test "the browser opens the last layer by default and clamps a bad one" {
 ///|
 /// `--save` 与界面互斥（第一条硬原则的反面：不静默让谁赢）。
 ///
-/// 「互斥」判的是**会不会真开界面**：没给 `--no-tui` 也不算冲突，
-/// 除非终端够格。所以这里只断言两问本身，终端那一半交给
-/// `refusal_of_tui`——它才是不依赖环境的那个判据。
+/// 「互斥」判的是**用户有没有明说要界面**，不是「终端够不够格」：`--save`
+/// 先于取镜像就 return，本来就走不到选界面那一步，终端状态掺进来只会让
+/// 同一份脚本在本地和 CI 里得到两种结论（issue #128 复盘）。
 async test "save without --no-tui is a config error, not a silent choice" {
   let save = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
   assert_true(save.save && save.interactive())
@@ -51,7 +51,6 @@ async test "save without --no-tui is a config error, not a silent choice" {
     "nginx:latest", "--save", "-o", "x.tar", "--no-tui",
   ])
   assert_false(save_text.save && save_text.interactive())
-  assert_false(browser_would_open(save_text))
 }
 
 ///|
