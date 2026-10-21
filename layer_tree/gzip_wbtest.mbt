@@ -328,3 +328,226 @@ fn gzip_reference_backref() -> Bytes {
   ]
   Bytes::from_array(bytes)
 }
+
+///|
+/// 缓冲边界的回归（issue #116）：`InflateWindow` 的缓冲是「32KiB 回拷窗 +
+/// 256KiB 一批」，共 294912 字节。旧实现在写满之后**才**查 `full()` 再 `drain`，
+/// 于是「刚好写满」的那一次多写了一个字节，越界 panic——真实镜像层里
+/// 几乎每层都会撞上，表现为 `dive save` 卡在 `packing the archive`。
+///
+/// 这里用 stored 块把输出精确推到边界前一个字节，再补两个字面量：
+/// 第二个正好把缓冲顶满，旧实现随后会越界写第三个。
+async test "inflate does not overrun the window when output lands on the boundary" {
+  let capacity = inflate_window_size + inflate_batch_size
+  let stream = boundary_fixed_huffman_stream(capacity)
+  let raw = inflate(stream) catch {
+    err => fail("boundary stream failed: " + err.to_string())
+  }
+
+  // (capacity - 1) 个填充 + 3 个 'a'：后两个 'a' 就是旧实现越界写的字节
+  assert_eq(raw.length(), capacity + 2)
+  assert_eq(raw[capacity - 2], boundary_fill_byte())
+  assert_eq(raw[capacity - 1], b'a')
+  assert_eq(raw[capacity], b'a')
+  assert_eq(raw[capacity + 1], b'a')
+}
+
+///|
+/// 同一条边界，走回拷：输出贴着缓冲末尾时 `room` 是 0，旧实现会在循环里
+/// 一句也拷不出去地空转（新一轮的 `continue` 之前没重算 `room`）。
+/// 现在要求这段流能解完，而不是挂住或报错。
+async test "inflate refills the window before a back-reference that hits the boundary" {
+  let capacity = inflate_window_size + inflate_batch_size
+  let stream = boundary_backref_stream(capacity)
+  let raw = inflate(stream) catch {
+    err => fail("boundary back-reference failed: " + err.to_string())
+  }
+
+  // (capacity - 1) 个填充 + 1 个 'a' + 258 字节回拷
+  assert_eq(raw.length(), capacity + 258)
+  assert_eq(raw[capacity - 2], boundary_fill_byte())
+  for index = capacity - 1; index < raw.length(); index = index + 1 {
+    if raw[index] != b'a' {
+      fail("byte \{index} should come from the back-reference")
+    }
+  }
+}
+
+///|
+/// stored 块的填充字节：避开 'a'，好让尾部断言不靠猜。
+fn boundary_fill_byte() -> Byte {
+  b'.'
+}
+
+///|
+/// 定长位写入器：只给下面两个手搓的 DEFLATE 流用。
+///
+/// 边界测试要求输出的字节位置精确到个位，用 `BitWriter` 那种「先想清楚每一位」
+/// 的写法最省事：fixed Huffman 的码字是 RFC 1951 规定死的。
+struct BoundaryBits {
+  out : @buffer.Buffer
+  mut acc : Int32
+  mut bits : Int32
+}
+
+///|
+fn BoundaryBits::new() -> BoundaryBits {
+  { out: @buffer.Buffer(), acc: 0, bits: 0, }
+}
+
+///|
+/// 按 LSB-first 写入 `count` 位。
+fn BoundaryBits::write(
+  self : BoundaryBits,
+  value : Int32,
+  count : Int32,
+) -> Unit {
+  for index = 0; index < count; index = index + 1 {
+    if ((value >> index) & 1) == 1 {
+      self.acc = self.acc | (1 << self.bits)
+    }
+    self.bits = self.bits + 1
+    if self.bits == 8 {
+      self.out.write_byte(self.acc.to_byte())
+      self.acc = 0
+      self.bits = 0
+    }
+  }
+}
+
+///|
+/// 按 MSB-first 写一个 `count` 位的码字（Huffman 码字本身是高位在前）。
+///
+/// 位流整体是 LSB-first，但「码字内部」要保持 MSB 在前，所以要把码字反向
+/// 再交给 `write`。漏了这一步，解码出来会是位反转后的符号。
+fn BoundaryBits::write_code(
+  self : BoundaryBits,
+  value : Int32,
+  count : Int32,
+) -> Unit {
+  let mut reversed = 0
+  for index = 0; index < count; index = index + 1 {
+    if ((value >> index) & 1) == 1 {
+      reversed = reversed | (1 << (count - 1 - index))
+    }
+  }
+  self.write(reversed, count)
+}
+
+///|
+/// 写一个 fixed Huffman 的 literal 码字（RFC 1951 3.2.6）。
+fn BoundaryBits::write_literal(self : BoundaryBits, byte : Byte) -> Unit {
+  let symbol = byte.to_int()
+  if symbol <= 143 {
+    // 8 位码：0x30 + symbol
+    self.write_code(0x30 + symbol, 8)
+  } else {
+    // 144..255 落在 9 位区间：0x190 + (symbol - 144)
+    self.write_code(0x190 + (symbol - 144), 9)
+  }
+}
+
+///|
+/// 写「距离 1、长度 258」的回拷：长度符号 285（码字 0xC0FF 取低 8 位 0xFF），
+/// 距离符号 0（5 位码字 0）。
+fn BoundaryBits::write_backref_258(self : BoundaryBits) -> Unit {
+  // 长度 258 = 符号 285（280..287 区间，8 位码 0xC0 + 5），距离 1 = 距离符号 0
+  self.write_code(0xC5, 8)
+  self.write_code(0, 5)
+}
+
+///|
+/// 写块结束符 256（7 位码字 0）。
+fn BoundaryBits::write_end(self : BoundaryBits) -> Unit {
+  self.write_code(0, 7)
+}
+
+///|
+/// 补齐到字节边界，返回 DEFLATE 字节。
+fn BoundaryBits::finish(self : BoundaryBits) -> Bytes {
+  self.flush_acc()
+  self.out.to_bytes()
+}
+
+///|
+/// BFINAL=1、BTYPE=01（fixed Huffman）：先 stored 块垫 `pad` 个字节，
+/// 再写 3 个字面量 'a'，缓冲恰好在这期间写满。
+fn boundary_fixed_huffman_stream(pad : Int32) -> Bytes {
+  let bits = BoundaryBits::new()
+  // 缓冲里最后一个字节一旦写满就得 drain，所以填充量取 `pad - 1`：
+  // 后面 3 个字面量里第一个正好把缓冲顶满（issue #116 的现场）。
+  bits.write_stored(pad - 1, boundary_fill_byte())
+  bits.write(1, 1)
+  bits.write(1, 2)
+  for _ in 0..<3 {
+    bits.write_literal(b'a')
+  }
+  bits.write_end()
+  bits.finish()
+}
+
+///|
+/// stored 块（非 final）：`BFINAL=0`、`BTYPE=00`，然后 LEN/NLEN 与数据。
+///
+/// 块头是 3 位再补齐到字节；LEN/NLEN 是**对齐后**的小端 16 位字段，
+/// 所以 5 个字节的头部正好落在字节边界上，后面的 raw 数据可以整段写。
+fn BoundaryBits::write_stored(
+  self : BoundaryBits,
+  count : Int32,
+  byte : Byte,
+) -> Unit {
+  // 单个 stored 块的上限是 LEN 的 16 位字段：65535
+  let mut left = count
+  while left > 0 {
+    let chunk = if left > 65535 { 65535 } else { left }
+    self.write_stored_block(chunk, byte)
+    left = left - chunk
+  }
+}
+
+///|
+fn BoundaryBits::write_stored_block(
+  self : BoundaryBits,
+  count : Int32,
+  byte : Byte,
+) -> Unit {
+  self.write(0, 1)
+  self.write(0, 2)
+  // 补齐到字节边界：写完 3 位后 bits == 3，补 5 个 0
+  self.write(0, 5)
+  self.flush_acc()
+  self.out.write_byte((count & 0xFF).to_byte())
+  self.out.write_byte(((count >> 8) & 0xFF).to_byte())
+  let complement = count ^ 0xFFFF
+  self.out.write_byte((complement & 0xFF).to_byte())
+  self.out.write_byte(((complement >> 8) & 0xFF).to_byte())
+  for _ in 0..<count {
+    self.out.write_byte(byte)
+  }
+}
+
+///|
+/// 把攒着的不足一字节的位补 0 写出去。
+fn BoundaryBits::flush_acc(self : BoundaryBits) -> Unit {
+  if self.bits > 0 {
+    self.out.write_byte(self.acc.to_byte())
+    self.acc = 0
+    self.bits = 0
+  }
+}
+
+///|
+/// 输出长度 = `pad + 258`，最后一个回拷贴着缓冲末尾收尾：
+/// 旧实现里 `room` 归零后一段也拷不出去。
+fn boundary_backref_stream(pad : Int32) -> Bytes {
+  let bits = BoundaryBits::new()
+  // 同上：字面量 'a' 落在 `pad` 处，紧接着的回拷跨过缓冲边界
+  bits.write_stored(pad - 1, boundary_fill_byte())
+  // fixed Huffman 块：先给一个 'a'，再「距离 1、长度 258」
+  bits.write(1, 1)
+  bits.write(1, 2)
+  bits.write_literal(b'a')
+  bits.write_backref_258()
+  bits.write_end()
+  bits.finish()
+}
