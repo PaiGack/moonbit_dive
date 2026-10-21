@@ -161,16 +161,16 @@ pub async fn pull_image(
     Some(token) => Some(token)
     None => @env.get_env_var("DIVE_REGISTRY_TOKEN")
   }
-  // 取 blob 时一个请求都不发：`connect` 只是把 base / token / 信任根攒起来，
-  // 所以「协议定错了」不会在这里失败，只会在第一次 GET 时失败（见 `get_authorized`）。
+  // `connect` 只在「信任根都攒不起来」时失败，「协议定错了」不会在这里报，
+  // 而是拖到第一次 GET（见 `get_authorized`）。这里把两条信息都往下传：
+  // `origin` 决定客户端自己的协议，也是取 blob / 换票 / 跟重定向时的兜底。
   let origin = transport_origin(reference.api_host(), options.insecure)
   let client = RegistryClient::connect(
     strip_scheme(origin),
     insecure=options.insecure,
     token~,
   ) catch {
-    _ =>
-      raise Network("cannot create an HTTP client for \{reference.api_host()}")
+    err => raise Network("cannot open a connection to \{origin}: \{err}")
   }
   let image = {
     errdefer client.close()
@@ -567,7 +567,7 @@ async fn fetch_all_concurrently(
     // config 不占在途名额：它是几十 KB 的一块，跟第一层挤在一起下最划算
     let config_task = group.spawn(() => {
       let outcome = Some(
-        fetch_on_own_connection(client, reference, fallback~, own => {
+        fetch_on_own_connection(client, reference, own => {
           fetch_blob(
             own,
             reference,
@@ -594,7 +594,7 @@ async fn fetch_all_concurrently(
       tasks.push(
         group.spawn(() => {
           let outcome = Some(
-            fetch_on_own_connection(client, reference, fallback~, own => {
+            fetch_on_own_connection(client, reference, own => {
               let blob = fetch_blob(
                 own,
                 reference,
@@ -683,9 +683,9 @@ async fn fetch_on_own_connection(
     insecure=origin.has_prefix("http://"),
     token=template.token,
   ) catch {
-    _ =>
+    err =>
       raise Network(
-        "cannot open a connection to \{template.base} for \{reference.canonical()}",
+        "cannot open a connection to \{origin} for \{reference.canonical()}: \{err}",
       )
   }
   let blob = {
@@ -1056,9 +1056,8 @@ async fn follow_stream(
     // 这条应答的正文不会再读了：丢掉它，连接才能接着用
     client.skip_body()
     let (origin, target) = resolve_location(client.base, location)
-    let mirror = connect_origin(origin, fallback~) catch {
-      _ => raise Network("cannot create an HTTP client for \{origin}")
-    }
+    // 目标可能是对方嘴里的 https，而真正能走通的是明文：`connect_origin` 负责这一跳
+    let mirror = connect_origin(origin, fallback~)
     // 重定向的目标可能是几百 MB 的层：正文在这条连接上边读边写。
     // CDN 那边还可能再跳一次（S3、CloudFront 都会），所以这里先拿头再判。
     // 中间那条连接**没有**交给 `errdefer`：`mirror.close()` 必须在 return 之前
@@ -1132,9 +1131,7 @@ async fn get_following_redirects(
     )
   }
   let (origin, target) = resolve_location(client.base, message)
-  let mirror = connect_origin(origin, fallback~) catch {
-    _ => raise Network("cannot create an HTTP client for \{origin}")
-  }
+  let mirror = connect_origin(origin, fallback~)
   // 重定向的目标可能是一个几百 MB 的层：进度要在这条连接上边读边报，
   // 所以回调是交给 `mirror.get` 的，而不是回来以后再补
   let followed = {
@@ -1261,9 +1258,8 @@ async fn fetch_token(
     "\{path}?service=\{challenge.service}&scope=\{scope}"
   }
   // origin 现在带协议（重定向需要），`connect` 只吃 host
-  let token_client = connect_for_token(origin, fallback) catch {
-    _ => raise Network("cannot create an HTTP client for the token endpoint")
-  }
+  // 挑战里的 `https://` 只是默认写法：连不上就按已知能走的明文再试一次
+  let token_client = connect_for_token(origin, fallback)
   // 换票失败也要关掉这条连接：它连的是 auth 服务，与 registry 不是同一个对象。
   // `errdefer` 只在抛错时触发，正常路径下面手动 close——两条路都得关。
   let reply = {
@@ -1329,7 +1325,11 @@ fn transport_origin(host : String, insecure : Bool) -> String {
 async fn connect_origin(
   origin : String,
   fallback~ : String = "",
+  label~ : String = "",
 ) -> RegistryClient raise RegistryError {
+  // `label` 只用来把话说清楚：同一个 `Network` 到底是「registry 连不上」
+  // 还是「换票端点连不上」，只有调用方知道
+  let place = if label.is_empty() { "" } else { " for \{label}" }
   RegistryClient::connect(
     strip_scheme(origin),
     insecure=origin.has_prefix("http://") ||
@@ -1340,9 +1340,10 @@ async fn connect_origin(
       // 而真正能走通的是明文。连不上就按已知的协议再试一次——
       // `fallback` 为空时没有依据，原样把错误交出去。
       if origin.needs_plaintext_retry(fallback) {
-        return connect_origin(fallback, fallback~)
+        return connect_origin(fallback, fallback~, label~)
       }
-      raise Network(err.to_string())
+      // `err` 里已经带了「哪台 host、用的是什么信任根」，别再包一层
+      raise Network("\{err}\{place}")
     }
   }
 }
@@ -1368,6 +1369,7 @@ async fn connect_for_token(
     } else {
       fallback
     },
+    label="the token endpoint",
   )
 }
 

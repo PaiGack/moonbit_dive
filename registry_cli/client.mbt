@@ -76,13 +76,22 @@ pub async fn RegistryClient::connect(
   host : String,
   insecure~ : Bool = false,
   token~ : String? = None,
-) -> RegistryClient {
+) -> RegistryClient raise RegistryError {
   let scheme = if insecure { "http" } else { "https" }
   let base = "\{scheme}://\{host}"
-  let client = @http.Client(
-    base,
-    trust=if insecure { @tls.NoVerification } else { @tls.SystemRoot },
-  )
+  // 根证书自己挑：`@tls.SystemRoot` 在没装 CA 包的机器上会让构造函数直接抛，
+  // 报出来的却是「连不上」，把「缺包」说成「网络坏」。见 `tls_roots.mbt`。
+  let source = if insecure { System } else { trust_source() }
+  let trust = match source {
+    Bundle(path) => @tls.CustomPemFile(path)
+    System => if insecure { @tls.NoVerification } else { @tls.SystemRoot }
+  }
+  let client = @http.Client(base, trust~) catch {
+    err =>
+      raise Network(
+        "cannot open a TLS connection to \{host}: \{err}; the CA bundle in use is \{source.describe()}",
+      )
+  }
   { base, token, client, }
 }
 

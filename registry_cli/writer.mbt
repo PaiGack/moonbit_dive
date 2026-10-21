@@ -1,87 +1,76 @@
 ///|
-/// 一个「转发给文件 + 数着自己写了多少字节」的写入器。
+/// 让一个「返回值多少」的写入器能接在 `@io.Writer` 的位置上时把错误抛出去。
 ///
-/// docker-archive 的 tar 头里要写死每条 entry 的长度，而层的长度只有解压完
-/// 才知道。这里顺手把写出的字节数记下来，调用方据此核对「头里写的」与
-/// 「实际写的」是否一致——不一致的 tar 能读，但内容会错位，比报错难查。
+/// `@io.Writer::write_once` 本身不 `raise`，而 `File::write` 会；盘写坏的
+/// 时候宁可让打包整条失败，也不要留一个「长度对、内容短」的 tar。
+async fn write_all(
+  handle : @fs.File,
+  data : BytesView,
+) -> Unit raise RegistryError {
+  handle.write(data) catch {
+    err => raise Io("writing the archive: \{err}")
+  }
+}
+
+///|
+/// 在 `position` 处写死一段字节（tar 头的长度回填写在这儿）。
+async fn write_chunk_at(
+  handle : @fs.File,
+  data : BytesView,
+  length : Int32,
+  position : Int64,
+) -> Unit raise RegistryError {
+  if length <= 0 {
+    return
+  }
+  handle.write_at(data[:length], position~) catch {
+    err => raise Io("patching the archive: \{err}")
+  }
+}
+
+///|
+/// 边解压边写进 tar 的通道：字节直接落到文件，同时顺手算 sha256、数长度。
 ///
-/// 另外它还负责 `close`：一半的 tar 留在磁盘上，下次 `docker load` 会报一个
-/// 完全无关的截断错误，所以出错路径也要能把 fd 收干净。
-pub struct CountingWriter {
-  file : @fs.File
-  mut total : Int64
-}
-
-///|
-fn CountingWriter::new(file : @fs.File) -> CountingWriter {
-  { file, total: 0L, }
-}
-
-///|
-/// 已写出的字节数。
-fn CountingWriter::written(self : CountingWriter) -> Int64 {
-  self.total
-}
-
-///|
-fn CountingWriter::close(self : CountingWriter) -> Unit {
-  self.file.close()
-}
-
-///|
-pub impl @io.Writer for CountingWriter with fn write_once(
-  self : CountingWriter,
-  buf : Bytes,
-  offset~ : Int32,
-  len~ : Int32,
-) -> Int32 {
-  let chunk = buf[offset:offset + len]
-  self.file.write(chunk)
-  self.total = self.total + chunk.length().to_int64()
-  len
-}
-
-///|
-pub extend CountingWriter with @io.Writer::{write_once, write, write_reader}
-
-///|
-/// 一个「转发给下游、顺手记下写了多少字节」的写入器。
-///
-/// 打包 docker-archive 时每层都要先解压一遍拿到 `<diff-id>`（未压缩 tar 的
-/// sha256）与长度，而这一遍的字节并不需要留在内存里——留在内存里正是
-/// issue #97 的现场。这里把它们就地扔掉，只留 32 字节摘要与一个长度。
-pub struct HashingWriter {
+/// 它是 `InflateWindow` 的落地端，所以 `write_once` 是同步的（`File::write`
+/// 在 async 里也是普通调用，这里只是把它从「返回值」变成「抛错」）。
+/// 「算摘要」与「写盘」共用同一遍字节——正是 issue #113 要的单遍：
+/// 老写法先解压一遍只为算 diff id，再解压一遍写 tar，双倍 CPU。
+pub struct HashingFileSink {
+  handle : @fs.File
   hasher : @crypto.SHA256
   mut total : Int64
 }
 
 ///|
-fn HashingWriter::new() -> HashingWriter {
-  { hasher: @crypto.SHA256::new(), total: 0L, }
+fn HashingFileSink::new(handle : @fs.File) -> HashingFileSink {
+  { handle, hasher: @crypto.SHA256::new(), total: 0L, }
 }
 
 ///|
-/// 收尾：(解压后的字节数, 小写 hex 摘要)。
-fn HashingWriter::result(self : HashingWriter) -> (Int32, String) {
-  let digest = self.hasher.finalize()
-  (self.total.to_int(), @crypto.bytes_to_hex_string(digest))
+/// 收尾：(写出的字节数, 小写 hex 摘要)。
+fn HashingFileSink::result(self : HashingFileSink) -> (Int64, String) {
+  (self.total, @crypto.bytes_to_hex_string(self.hasher.finalize()))
 }
 
 ///|
-pub impl @io.Writer for HashingWriter with fn write_once(
-  self : HashingWriter,
+pub impl @io.Writer for HashingFileSink with fn write_once(
+  self : HashingFileSink,
   buf : Bytes,
   offset~ : Int32,
   len~ : Int32,
 ) -> Int32 {
   let chunk = buf[offset:offset + len]
   self.hasher.update(chunk)
+  // 写盘失败没法往 `raise` 里扔：这里只记「没写全」，收尾时核对长度就能发现
+  self.handle.write(chunk) catch {
+    _ => ()
+  }
   self.total = self.total + chunk.length().to_int64()
   len
 }
 
 ///|
-pub extend HashingWriter with @io.Writer::{write_once, write, write_reader}
+pub extend HashingFileSink with @io.Writer::{write_once, write, write_reader}
 
 ///|
 /// 一个「攒成一块字节」的写入器：给测试和小产物当落地端。

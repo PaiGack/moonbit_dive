@@ -312,16 +312,14 @@ fn layout_index_json(
 /// ```
 ///
 /// 关键在「`<layer-id>` 是解压后 tar 的 sha256」。OCI 的 `diff_ids` 就是它，
-/// 所以解压一遍顺带算 sha256，既拿到目录名又能校验 config 里记的对不对——
-/// 对不上说明层被换了，这时候打包出来的还是会被拒绝加载，不如当场报。
+/// 所以解压一遍顺带算 sha256，既拿到目录名又能校验 config 里记的对不对。
 ///
-/// **边解压边写盘**，不留中间产物：tar 要写多大由每一层的**未压缩**长度决定，
-/// 而这些长度在解压之前谁也说不准（gzip 的 ISIZE 有，但那是校验字段，
-/// 信不过）。所以先按「层头 + 占位长度」的顺序流式写，写完回填。
+/// **单遍**：解压一次，字节直接写进 tar，同时算摘要在收尾时回填到 header。
+/// 老写法是「先整层解压一遍只为拿长度与 diff id，再解压一遍写 tar」，
+/// 真实镜像上纯 CPU 双倍——issue #113 里 27 分钟有十几分钟是这么烧的。
+/// 回填这件事 `@fs.File::write_at` 就够了：tar 头在文件里是个固定偏移。
 ///
-/// 老写法是「解压出一整层 → 整段塞进 TarWriter 的 Buffer → 最后 to_bytes」，
-/// 700MB 的层等于同时在内存里放三份（压缩、解压、打包），
-/// 打包那一步先撞上 Int32 缓冲边界（issue #97 的 `Buffer capacity overflow`）。
+/// 层字节按需从 `PulledBlob` 上读：内存里的直接用，流式落盘的读文件。
 async fn package_docker_archive(
   image : RemoteImage,
   output : String,
@@ -332,107 +330,165 @@ async fn package_docker_archive(
     err => raise Unsupported("image config is not readable: \{err.to_string()}")
   }
   let diff_ids = config.rootfs.diff_ids
-  // 先拿到每层解压后的 diff id 与长度：tar 头里的 size 是要写死的，
-  // 而解压出来的长度只有解过才知道。代价是流式解一遍并算 sha256，
-  // 但这一步本来就要做（`<layer-id>` 就是它）。
-  let plans : Array[LayerPlan] = []
-  for index, layer in image.layers {
+  let config_name = "\{hex_of(image.config.digest)}.json"
+
+  let file = open_output(output) catch { err => raise Io("\{output}: \{err}") }
+  let tar = @layer_tree.TarWriter::new()
+  // 写盘失败要能整份放弃：留一个半个 tar 比直接报错更难收拾，
+  // 所以任何一步出错都先把文件关掉，再原样把错误抛上去
+  errdefer {
+    file.close()
+    @fs.remove(output) catch {
+      _ => ()
+    }
+  }
+  let mut position : Int64 = 0L
+  let layer_paths : Array[String] = []
+  let mut index = 0
+  for layer in image.layers {
+    // 先占位写一个「长度 0」的目录名：真名是解压之后才知道的 sha256
+    let id_placeholder = "layer-\{index}"
+    let header_at = position
+    position = position +
+      write_tar_entry(
+        file,
+        tar,
+        @layer_tree.tar_directory_entry(id_placeholder),
+        b"",
+      )
+    let data_header_at = position
+    position = position +
+      write_tar_entry(
+        file,
+        tar,
+        @layer_tree.tar_file_entry("\{id_placeholder}/layer.tar", 0),
+        b"",
+      )
+    // 边解压边落盘：字节只走这一遍，摘要与长度都在这里拿
+    let sink = HashingFileSink::new(file)
     let algorithm = @layer_tree.compression_of(layer.media_type)
-    let probe = HashingWriter::new()
-    let payload = blob_bytes(layer)
-    @layer_tree.decompress_layer_to(payload, algorithm, probe) catch {
+    decompress_blob(layer, algorithm, sink) catch {
       err => raise Unsupported("layer \{layer.digest}: \{err.to_string()}")
     }
-    let (size, hex) = probe.result()
-    let actual = "sha256:\{hex}"
+    let (size, hex) = sink.result()
+    if size != sink.total {
+      raise Io("\{output}: layer \{layer.digest} could not be written in full")
+    }
+    position = position + size + padding_of(size.to_int())
+    // 名字定了：目录 entry 与文件 entry 各回填一次头
+    let id = "\{hex}/layer.tar"
+    layer_paths.push(id)
+    write_entry_header(file, header_at, @layer_tree.tar_directory_entry(hex))
+    write_entry_header(
+      file,
+      data_header_at,
+      @layer_tree.tar_file_entry(id, size.to_int()),
+    )
     if index < diff_ids.length() {
       let expected = diff_ids[index]
       // 两边都是 `sha256:...`，直接比字符串；`digest_matches_hex` 要的是裸 hex
       if !@oci_spec.digest_matches_hex(expected, hex) {
         raise DigestMismatch(
-          "layer \{layer.digest}: uncompressed content hashes to \{actual}, config says \{expected}",
+          "layer \{layer.digest}: uncompressed content hashes to sha256:\{hex}, config says \{expected}",
         )
       }
     }
-    plans.push({ id: hex, size, layer, })
+    index = index + 1
   }
-  let layer_paths : Array[String] = []
-  for plan in plans {
-    layer_paths.push("\{plan.id}/layer.tar")
-  }
-  let config_name = "\{hex_of(image.config.digest)}.json"
   let manifest_text = docker_manifest_json(image, config_name, layer_paths)
   let manifest_bytes = @encoding.encode(UTF8, manifest_text)
-
-  let tar = @layer_tree.TarWriter::new()
-  let file = open_output(output) catch { err => raise Io("\{output}: \{err}") }
-  let sink = CountingWriter::new(file)
-  // 写盘失败要能整份放弃：留一个半个 tar 比直接报错更难收拾。
-  // 所以任何一步出错都先把文件关掉，再原样把错误抛上去。
-  try {
-    // 每层：目录 entry + 层内容（第二次解压，这次直接写进 tar）
-    for plan in plans {
-      tar.write_entry(sink, @layer_tree.tar_directory_entry(plan.id), b"")
-      tar.begin(
-        sink,
-        @layer_tree.tar_file_entry("\{plan.id}/layer.tar", plan.size),
-      )
-      let before = sink.written()
-      let algorithm = @layer_tree.compression_of(plan.layer.media_type)
-      let payload = blob_bytes(plan.layer)
-      @layer_tree.decompress_layer_to(payload, algorithm, sink) catch {
-        err =>
-          raise Unsupported("layer \{plan.layer.digest}: \{err.to_string()}")
-      }
-      // 头里的 size 是写死的，实际写多了/少了都会让后面的 header 错位，
-      // 与其产出一个「能读但内容错位」的 tar，不如当场报
-      let actual = sink.written() - before
-      if actual != plan.size.to_int64() {
-        raise Io(
-          "\{output}: layer \{plan.layer.digest} unpacked to \{actual} bytes, header says \{plan.size}",
-        )
-      }
-      tar.pad(sink, plan.size)
-    }
-    tar.write_entry(
-      sink,
+  position = position +
+    write_tar_entry(
+      file,
+      tar,
       @layer_tree.tar_file_entry(config_name, config_data.length()),
       config_data,
     )
-    tar.write_entry(
-      sink,
+  position = position +
+    write_tar_entry(
+      file,
+      tar,
       @layer_tree.tar_file_entry("manifest.json", manifest_bytes.length()),
       manifest_bytes,
     )
-    tar.finish(sink)
-  } catch {
-    err => {
-      sink.close()
-      raise Io("\{output}: \{err.to_string()}")
-    }
+  let trailer = FixedArray::make(10240, b'\x00').unsafe_reinterpret_as_bytes()
+  write_all(file, trailer)
+  position = position + 10240L
+  file.close()
+  { path: output, bytes: position, }
+}
+
+///|
+/// 把一条 entry（header + 数据 + 补齐）写进文件，返回写了多少字节。
+async fn write_tar_entry(
+  file : @fs.File,
+  tar : @layer_tree.TarWriter,
+  entry : @layer_tree.TarWriteEntry,
+  data : BytesView,
+) -> Int64 raise RegistryError {
+  let header = tar.header_bytes(entry)
+  write_all(file, header)
+  let mut written : Int64 = header.length().to_int64()
+  if data.length() > 0 {
+    write_all(file, data)
+    written = written + data.length().to_int64()
   }
-  let bytes = sink.written()
-  sink.close()
-  { path: output, bytes, }
+  let padding = tar.padding_bytes(entry.size)
+  if padding.length() > 0 {
+    write_all(file, padding)
+    written = written + padding.length().to_int64()
+  }
+  written
+}
+
+///|
+/// 只把一条 entry 的 header 写到 `position` 处（回填长度用）。
+async fn write_entry_header(
+  file : @fs.File,
+  position : Int64,
+  entry : @layer_tree.TarWriteEntry,
+) -> Unit raise RegistryError {
+  let header = @layer_tree.TarWriter::new().header_bytes(entry)
+  write_chunk_at(file, header, header.length(), position)
+}
+
+///|
+/// 解压一个 blob 到 `sink`：内存里的直接解，流式落盘的按文件读回来再解。
+///
+/// 这里仍要「一整块字节」——解压入口只收 `BytesView`，而 zstd 那条路本来
+/// 就是整段解压。改这条路径要动解码器的接口（`docs/issue-97...` §4.3 方案 1），
+/// 不在 issue #113 的范围里；至少它不再解压两遍。
+async fn decompress_blob(
+  blob : PulledBlob,
+  algorithm : String,
+  sink : &@io.Writer,
+) -> Unit raise RegistryError {
+  let payload = blob_bytes(blob)
+  @layer_tree.decompress_layer_to(payload, algorithm, sink) catch {
+    err => raise Io(err.to_string())
+  }
+}
+
+///|
+/// 一段数据的补齐字节数（tar 每条 entry 都对齐到 512）。
+fn padding_of(size : Int32) -> Int64 {
+  let remainder = size % @layer_tree.tar_block_size
+  if remainder == 0 {
+    0L
+  } else {
+    (@layer_tree.tar_block_size - remainder).to_int64()
+  }
 }
 
 ///|
 /// docker-archive 这一段目前还要整块字节：解码器只给了 `BytesView` 的入口，
-/// 所以「流式落盘的层」在这里会被读回内存。
+/// 所以「流式落盘的层」在这里会被读回内存——一次，不是两次。
 ///
 /// 这是已知的最后一处：真流式要等 `layer_tree` 的解压器接一个 reader
 /// （见 `docs/issue-97-pull-throughput-and-speed-survey.md` §4.3）。
 /// 至少它只在 docker-archive 这条路上发生——OCI layout 已经完全恒内存。
 async fn blob_bytes(blob : PulledBlob) -> Bytes raise RegistryError {
   blob.bytes()
-}
-
-///|
-/// 一层的打包计划：目录名（未压缩 tar 的 sha256）、未压缩长度、原始 blob。
-priv struct LayerPlan {
-  id : String
-  size : Int32
-  layer : PulledBlob
 }
 
 ///|

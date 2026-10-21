@@ -28,6 +28,8 @@ pub async fn fat_fixture() -> (@image_analysis.Report, @layer_tree.FileTree)
 
 pub fn percent1(Double) -> String
 
+pub fn resident_kb() -> Int32
+
 pub fn rule_type_name(RuleKind) -> String
 
 pub fn sample_docker_archive() -> Bytes
@@ -85,6 +87,12 @@ pub fn CheckResult::to_string(Self) -> String
 pub fn CheckResult::to_text(Self) -> String
 pub impl Show for CheckResult
 
+pub struct ImageFile {
+  path : String
+  size : Int64
+  bytes : Bytes?
+}
+
 pub(all) struct ImageSource {
   name : String
   format : String
@@ -100,9 +108,13 @@ pub impl Show for ImageSource
 
 pub(all) struct LayerSource {
   media_type : String
+  offset : Int64
+  size : Int64
+  source_path : String?
   data : Bytes
   diff_id : String
 } derive(@debug.Debug)
+pub fn LayerSource::encoded_bytes(Self) -> Bytes raise ImageError
 pub fn LayerSource::output(Self, &Logger) -> Unit
 pub async fn LayerSource::raw_bytes(Self) -> Bytes raise ImageError
 pub fn LayerSource::to_repr(Self) -> @debug.Repr

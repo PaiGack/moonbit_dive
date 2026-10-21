@@ -28,7 +28,19 @@ dive --save --from-registry --insecure-registry -o x.tar localhost:5000/team/app
 
 # 私有仓库：token 走环境变量，别写在命令行里（会进 shell history）
 DIVE_REGISTRY_TOKEN=... dive --save --from-registry -o x.tar registry.example.com/team/app:1.0
+
+# 根证书不在系统默认位置时（容器镜像里很常见），指定一份 PEM
+DIVE_CA_BUNDLE=/path/to/ca-bundle.crt dive --save --from-registry -o x.tar registry.example.com/team/app:1.0
 ```
+
+**TLS 根证书**：`https://` registry 要校验对端证书，机器上得有 CA 包
+（Debian 系 `apt install ca-certificates`）。缺了它握手一定失败，
+所以客户端会自己从常见位置挑一份 bundle
+（`/etc/ssl/certs/ca-certificates.crt`、`/etc/pki/tls/certs/ca-bundle.crt` 等，
+见 `registry_cli/tls_roots.mbt`），挑不到才退回 OpenSSL 的系统默认。
+`DIVE_CA_BUNDLE` 优先且**只认它**——指错了直接报错，不悄悄换一份。
+报错里会写明用的是哪份 bundle，别让「缺 CA 包」看起来像「网络坏了」。
+`--insecure-registry` 走 `http://` 且不校验证书，这条路上不读任何 bundle。
 
 `--from-registry` 与 `--from-image` 是两个不同的数据源，别混：
 
