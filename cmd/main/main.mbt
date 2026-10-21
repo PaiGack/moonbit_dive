@@ -661,6 +661,19 @@ fn describe_stage(options : Options, stage : @docker_cli.FetchStage) -> Unit {
 }
 
 ///|
+/// 分析阶段的进度钩子（`--verbose` 才开）。
+///
+/// 下载完到出报告之间原本一句输出都没有，用户看到的就是「进度条停在 100%」
+/// （issue #122）。这里只做「打一行到 stderr」：报告还可能被 `-o` / 管道消费，
+/// 进度绝不能混进 stdout。
+fn analysis_progress(options : Options) -> ((Int32, Int32) -> Unit)? {
+  if !options.verbose {
+    return None
+  }
+  Some(fn(index, total) { eprintln("[analysis] layer \{index + 1}/\{total}") })
+}
+
+///|
 /// 跑一遍完整链路，返回退出码。
 async fn run(
   options : Options,
@@ -683,8 +696,12 @@ async fn run(
   if options.layer is Some(_) || options.path is Some(_) || options.aggregate {
     return run_layer_view(options, layers)
   }
-  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
+  let on_layer = analysis_progress(options)
+  let analysis = @image_analysis.analyze_layers(tree, layers, on_layer~) catch {
     err => raise CommandError::Analysis(err.to_string())
+  }
+  if options.verbose {
+    eprintln("[analysis] building the report (\{tree.size()} paths)")
   }
   let report = @image_analysis.build_report(analysis, tree)
   let ruleset = load_rules(options)
@@ -859,8 +876,12 @@ async fn run_efficiency_view(
   layers : Array[BytesView],
 ) -> Int32 raise CommandError {
   let tree = @layer_tree.FileTree::new()
-  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
+  let on_layer = analysis_progress(options)
+  let analysis = @image_analysis.analyze_layers(tree, layers, on_layer~) catch {
     err => raise CommandError::Analysis(err.to_string())
+  }
+  if options.verbose {
+    eprintln("[analysis] building the report (\{tree.size()} paths)")
   }
   let report = analysis.efficiency()
   let view = @image_analysis.EfficiencyViewOptions::new(

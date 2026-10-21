@@ -192,3 +192,98 @@ async test "largest directories rank by subtree size" {
   assert_eq(spots[1].path, "/small")
   assert_eq(spots[1].cumulative_bytes, 1)
 }
+
+///|
+/// 热点走父链上卷（issue #122）：每一级祖先都要把它下面所有文件的字节累加进来，
+/// `depth` 之外的目录既不出现也不参与统计。
+async test "hotspots roll up through the whole ancestor chain" {
+  let (tree, _) = analyze_fixture([
+    layer_fixture([
+      @layer_tree.TarEntrySpec::Dir("a"),
+      @layer_tree.TarEntrySpec::Dir("a/b"),
+      @layer_tree.TarEntrySpec::Dir("a/b/c"),
+      @layer_tree.TarEntrySpec::File("a/b/c/deep.bin", "0123456789"),
+      @layer_tree.TarEntrySpec::File("a/b/mid.bin", "01234"),
+      @layer_tree.TarEntrySpec::File("a/top.bin", "012"),
+    ]),
+  ])
+  // 全额：`/a` 是 10+5+3，`/a/b` 是 10+5，`/a/b/c` 只有 10
+  let all : Array[Hotspot] = hotspots(tree, depth=-1, limit=3)
+  assert_eq(
+    all.map(fn(spot) { (spot.path, spot.cumulative_bytes, spot.files) }),
+    [("/a", 18, 3), ("/a/b", 15, 2), ("/a/b/c", 10, 1)],
+  )
+  // 只留深度 1：`/a` 仍然算全量子树，更深的目录既不出现也不该被算进来
+  let shallow : Array[Hotspot] = hotspots(tree, depth=1, limit=-1)
+  assert_eq(shallow.length(), 1)
+  let only = Hotspot::{
+    path: "/a",
+    cumulative_bytes: 18,
+    files: 3,
+    wasted_bytes: 0,
+  }
+  assert_eq(shallow[0], only)
+}
+
+///|
+/// 父链上卷的口径等价于「每个目录扫一遍全表」——只是快得多。
+///
+/// 这里把老写法（`path_is_under` 全表扫）原样留作对照，用一份几百个目录 /
+/// 几千个文件的树对拍。功能上钉住「口径没变」，跑起来顺便证明新写法不用
+/// `目录数 × 文件数` 次比较（issue #122）。
+async test "hotspot rollup agrees with the old full scan" {
+  let entries : Array[@layer_tree.TarEntrySpec] = []
+  for d in 0..<20 {
+    entries.push(@layer_tree.TarEntrySpec::Dir("d\{d}"))
+    for f in 0..<10 {
+      entries.push(
+        @layer_tree.TarEntrySpec::File(
+          "d\{d}/f\{f}.bin",
+          repeat_of("x", d + f + 1),
+        ),
+      )
+    }
+  }
+  let (tree, _) = analyze_fixture([layer_fixture(entries)])
+  let files = file_sizes(tree)
+  let expected = []
+  for path in tree.paths() {
+    let is_dir = match tree.get(path) {
+      Some(node) => node.is_dir()
+      None => false
+    }
+    if !is_dir {
+      continue
+    }
+    let mut total = 0
+    let mut count = 0
+    for file_path, size in files {
+      if @layer_tree.path_is_under(file_path, path) {
+        total = total + size
+        count = count + 1
+      }
+    }
+    expected.push((path, total, count))
+  }
+  let actual = hotspots(tree, depth=-1, limit=-1).map(fn(spot) {
+    (spot.path, spot.cumulative_bytes, spot.files)
+  })
+  assert_eq(actual.length(), expected.length())
+  let by_path : Map[String, (Int32, Int32)] = Map([])
+  for item in actual {
+    by_path.set(item.0, (item.1, item.2))
+  }
+  for pair in expected {
+    assert_eq(by_path.get(pair.0), Some((pair.1, pair.2)))
+  }
+}
+
+///|
+/// 同一段字符重复 `times` 遍。
+fn repeat_of(text : String, times : Int32) -> String {
+  let builder = StringBuilder()
+  for _ in 0..<times {
+    builder.write_string(text)
+  }
+  builder.to_string()
+}

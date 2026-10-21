@@ -104,29 +104,58 @@ pub extend EfficiencyReport with Show::{to_string, output}
 pub fn efficiency_of_versions(
   versions : Map[String, Array[Int32]],
 ) -> EfficiencyReport {
+  efficiency_of_layer_versions(sparse_versions(versions))
+}
+
+///|
+/// 把「每条路径一个按层序排好的数组」转成稀疏的「层下标 -> 字节数」。
+///
+/// 老形态是 `efficiency_of_versions` 的输入约定，这里只做一次转换，
+/// 聚合逻辑与生产链路共用同一份（避免两条口径慢慢漂移）。
+fn sparse_versions(
+  versions : Map[String, Array[Int32]],
+) -> Map[String, Map[Int32, Int32]] {
+  let result : Map[String, Map[Int32, Int32]] = Map([])
+  for path, sizes in versions {
+    let bucket : Map[Int32, Int32] = Map([])
+    for index, size in sizes {
+      bucket.set(index, size)
+    }
+    result.set(path, bucket)
+  }
+  result
+}
+
+///|
+/// 从稀疏版本表算 efficiency：`min` 与 `cumulative` 都只过一遍每个路径写过的层。
+pub fn efficiency_of_layer_versions(
+  versions : Map[String, Map[Int32, Int32]],
+) -> EfficiencyReport {
   let paths = []
   let mut min_total = 0
   let mut cumulative_total = 0
-  for path, sizes in versions {
-    if sizes.is_empty() {
+  for path, bucket in versions {
+    if bucket.is_empty() {
       continue
     }
     let mut cumulative = 0
-    let mut smallest = sizes[0]
-    for index, size in sizes {
+    let mut smallest = 0
+    let mut seen = 0
+    for _, size in bucket {
       cumulative = cumulative + size
-      if index == 0 || size < smallest {
+      if seen == 0 || size < smallest {
         smallest = size
       }
+      seen = seen + 1
     }
     min_total = min_total + smallest
     cumulative_total = cumulative_total + cumulative
-    if sizes.length() >= 2 {
+    if seen >= 2 {
       paths.push({
         path,
         cumulative_bytes: cumulative,
         min_bytes: smallest,
-        versions: sizes.length(),
+        versions: seen,
       })
     }
   }
@@ -153,7 +182,7 @@ pub fn efficiency_of_versions(
 /// 若没带版本表，按空镜像处理，返回满分。
 pub fn Analysis::efficiency(self : Analysis) -> EfficiencyReport {
   match self.versions {
-    Some(table) => efficiency_of_versions(table.versions)
-    None => efficiency_of_versions(Map([]))
+    Some(table) => efficiency_of_layer_versions(table.versions)
+    None => efficiency_of_layer_versions(Map([]))
   }
 }

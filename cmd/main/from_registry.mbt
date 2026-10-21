@@ -27,15 +27,18 @@ async fn load_from_registry(
   options : Options,
 ) -> @image_ci.ImageSource raise CommandError {
   let registry_options = registry_options(options)
-  let (result, _) = save_remote(registry_options)
+  let (result, directory) = save_remote(registry_options)
+  // 临时目录要整份收掉。只删 `result.path` 会漏掉流式落盘的 `dive-blobs-*`
+  // 之类同伴目录；而如果删的是 `result.path` 之外的目录，用户看到的就是
+  // 「writing .../image.tar」之后再来一句「No such file or directory」（issue #122）
+  errdefer cleanup_remote(registry_options, directory)
   if options.verbose {
     eprintln("[registry] parsing \{result.path}...")
   }
-  errdefer cleanup_remote(registry_options, result)
   let source = @image_ci.ImageSource::load(result.path) catch {
     err => raise CommandError::Image(err.to_string())
   }
-  cleanup_remote(registry_options, result)
+  cleanup_remote(registry_options, directory)
   source
 }
 
@@ -89,27 +92,29 @@ async fn save_remote(
 }
 
 ///|
-/// 分析完把临时产物删掉；用户显式给了 `--output` 就别删（那是他要的东西）。
+/// 分析完把临时目录删掉；用户显式给了 `--output` 就只删临时目录，
+/// 落盘产物留给他（那正是他要的东西）。
 async fn cleanup_remote(
   options : RegistryOptions,
-  result : @registry_cli.SaveResult,
+  directory : String,
 ) -> Unit noraise {
   if !options.output.is_empty() {
+    // 用户自己指了位置，落盘产物归他；临时目录仍然是我们的，照样收掉
+    rmdir_quietly(directory)
     return
   }
-  match result.format {
-    @registry_cli.DockerArchive =>
-      try @async_fs.remove(result.path) catch {
-        _ => ()
-      } noraise {
-        _ => ()
-      }
-    @registry_cli.OciLayout =>
-      try @async_fs.rmdir(result.path, recursive=true) catch {
-        _ => ()
-      } noraise {
-        _ => ()
-      }
+  // `dive-registry-*` 是这次拉取的落脚点，里面的东西全是我们造的：
+  // 整棵删掉比「按 format 猜那个 `result.path` 是文件还是目录」更不容易漏
+  rmdir_quietly(directory)
+}
+
+///|
+/// 递归删目录，删不掉就算了：这里多半已经在报错的路上。
+async fn rmdir_quietly(directory : String) -> Unit noraise {
+  try @async_fs.rmdir(directory, recursive=true) catch {
+    _ => ()
+  } noraise {
+    _ => ()
   }
 }
 

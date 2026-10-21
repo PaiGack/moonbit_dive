@@ -256,3 +256,73 @@ async test "analyze fails loudly on a broken tar" {
   }
   assert_true(result is Some(_))
 }
+
+///|
+/// 进度回调按层触发，从 0 开始、到 `total - 1` 结束（issue #122）。
+///
+/// 主链路靠它把「下载完之后到底在干什么」打到 stderr；回调本身不参与记账，
+/// 所以顺带钉住「加了回调结果不变」。
+async test "layer progress callback fires for every layer in order" {
+  let tree = @layer_tree.FileTree::new()
+  let layers : Array[BytesView] = [
+    layer_fixture([@layer_tree.TarEntrySpec::File("a", "1")]),
+    layer_fixture([@layer_tree.TarEntrySpec::File("b", "22")]),
+    layer_fixture([@layer_tree.TarEntrySpec::File("c", "333")]),
+  ]
+  let seen = []
+  let record : (Int32, Int32) -> Unit = fn(index, total) {
+    seen.push((index, total))
+  }
+  let analysis = analyze_layers(tree, layers, on_layer=Some(record)) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(seen, [(0, 3), (1, 3), (2, 3)])
+  assert_eq(analysis.final_file_bytes, 6)
+}
+
+///|
+/// 只抹掉、没覆盖任何东西的一层：用户账扣的是抹掉的那些字节（issue #122）。
+async test "opaque erase is charged to the user exactly once" {
+  let (_, analysis) = analyze_fixture([
+    layer_fixture([
+      @layer_tree.TarEntrySpec::Dir("app"),
+      @layer_tree.TarEntrySpec::File("app/old.bin", "0123456789"),
+    ]),
+    layer_fixture([
+      @layer_tree.TarEntrySpec::File("app/.wh..wh..opq", ""),
+      @layer_tree.TarEntrySpec::File("app/new.bin", "01234"),
+    ]),
+  ])
+  // 第 1 层写了 5 字节，抹掉 old.bin 的 10：净写入是 -5（夹到 0）
+  assert_eq(analysis.usages[1].written_bytes, 5)
+  assert_eq(analysis.usages[1].erased_bytes, 10)
+  assert_eq(analysis.deleted_wasted, 10)
+}
+
+///|
+/// 覆盖与 opaque 抹掉同时出现时，两栏互不重叠地各扣一次（issue #122）。
+///
+/// 报告里的 `user written` 是「净写入」：每层 `written - wasted - erased`。
+/// 漏掉 `erased`，被整目录抹掉的内容就会被错算成用户写进去的字节。
+async test "overwrite plus opaque does not double charge the user" {
+  let (_, analysis) = analyze_fixture([
+    layer_fixture([
+      @layer_tree.TarEntrySpec::Dir("app"),
+      @layer_tree.TarEntrySpec::File("app/keep.bin", "0123456789"),
+      @layer_tree.TarEntrySpec::File("app/gone.bin", "0123456789"),
+    ]),
+    layer_fixture([
+      @layer_tree.TarEntrySpec::File("app/keep.bin", "01234"),
+      @layer_tree.TarEntrySpec::File("app/.wh..wh..opq", ""),
+      @layer_tree.TarEntrySpec::File("app/fresh.bin", "01"),
+    ]),
+  ])
+  let usage = analysis.usages[1]
+  // 第 1 层写了 7 字节：覆盖 keep.bin 的 10 进 `wasted`，抹掉 gone.bin 的 20
+  // 进 `erased`；净写入 7 - 10 - 20 是负数，夹到 0
+  assert_eq(usage.written_bytes, 7)
+  assert_eq(usage.erased_bytes, 20)
+  assert_eq(usage.wasted_bytes, 10)
+  assert_eq(analysis.user_bytes(), 0)
+  assert_eq(analysis.overwritten_wasted, 10)
+}
