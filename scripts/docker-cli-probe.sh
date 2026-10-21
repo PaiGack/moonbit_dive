@@ -429,6 +429,8 @@ fi
 # 就是靠它。`--save` 只对镜像引用生效，正好是这里的用法。
 say ''
 say "${BOLD}== dive <ref> --save（不碰本地 daemon）==${RESET}"
+# `--save` 就是「只落盘」，命令行里不该再写 `--no-tui`：它在这里是句废话——
+# 而把 `--save` 当成「必须补一句 --no-tui」的那条校验，正是上一次红的原因（issue #139）
 if [ -z "$ca_bundle" ]; then
   say "${YELLOW}skip${RESET} 没有 CA 包，连不了 https registry"
 elif "$DIVE" "$REMOTE_REF" --save --output "$work/registry.tar" \
