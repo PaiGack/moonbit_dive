@@ -209,3 +209,149 @@ async fn open_output(path : String) -> @fs.File raise RegistryError {
     err => raise Io("\{path}: \{err}")
   }
 }
+
+///|
+/// 一次「只拉不打包」的请求（`dive <ref>` 在主链路里用）。
+///
+/// 与 `SaveRequest` 的区别只有一项：**没有 `output`**。拉下来的字节留在
+/// `@fs.tmpdir` 下的临时目录里，由调用方读完再 `discard_streamed`。
+/// 层是压缩 blob 原样落地，不解压、不重新套 tar——`docker-archive` 那一步
+/// 在「我要分析它」这件事上纯属多余（见 `docs/registry-to-tar-survey.md`：
+/// 那层壳是给 `docker load` 用的，分析链路从来不需要 `layer.tar` 这个名字）。
+pub(all) struct StreamRequest {
+  reference : String
+  platform : String?
+  insecure : Bool
+  token : String?
+  on_progress : ((PullEvent) -> Unit)?
+  on_tick : (() -> Unit noraise)?
+  jobs : Int32
+}
+
+///|
+pub fn StreamRequest::new(
+  reference~ : String,
+  platform~ : String? = None,
+  insecure~ : Bool = false,
+  token~ : String? = None,
+  on_progress~ : ((PullEvent) -> Unit)? = None,
+  on_tick~ : (() -> Unit noraise)? = None,
+  jobs~ : Int32 = 4,
+) -> StreamRequest {
+  { reference, platform, insecure, token, on_progress, on_tick, jobs, }
+}
+
+///|
+/// 拉下来的一个 blob 落在磁盘上的样子。
+pub(all) struct StreamedBlob {
+  media_type : String
+  digest : String
+  /// 压缩 blob 的临时文件
+  path : String
+  /// 压缩后的大小
+  size : Int64
+} derive(Eq, Debug)
+
+///|
+pub extend StreamedBlob with Eq::{equal, not_equal}
+
+///|
+pub extend StreamedBlob with @debug.Debug::{to_repr}
+
+///|
+/// 一次「只拉不打包」的产物：config 的字节已经读好，层还躺在临时目录里。
+///
+/// config 只有几十 KB，直接带着走；层一律按路径给——把 700MB 读成 `Bytes`
+/// 就是为了省掉一次 `fopen`，账不划算。
+pub(all) struct StreamedImage {
+  reference : String
+  config_json : String
+  layers : Array[StreamedBlob]
+  /// 临时目录；`discard_streamed` 收它
+  staging : String
+} derive(Eq, Debug)
+
+///|
+pub extend StreamedImage with Eq::{equal, not_equal}
+
+///|
+pub extend StreamedImage with @debug.Debug::{to_repr}
+
+///|
+/// 从 registry 拉一个镜像，**不做任何打包**：blob 原样落在临时目录里。
+///
+/// 这是不 save 时的正规路径。以前分析一个 registry 里的镜像要先压一张
+/// docker-archive：每层解压一遍再套进 tar（2 GiB 的归档、几十秒到十几分钟），
+/// 然后分析链路又把 tar 拆开、把层**再解压**一遍。那些解压出来的字节
+/// 分析要用、tar 只是路过。
+pub async fn stream_image(
+  request : StreamRequest,
+) -> StreamedImage raise RegistryError {
+  let reference = parse_reference(request.reference)
+  let platform = match request.platform {
+    Some(text) => parse_platform(text)
+    None => host_platform()
+  }
+  let options = PullOptions::new(
+    platform=Some(platform),
+    insecure=request.insecure,
+    token=request.token,
+    on_progress=request.on_progress,
+    on_tick=request.on_tick,
+    concurrency=request.jobs,
+    stream_to_disk=true,
+  )
+  let image = pull_image(reference, options~)
+  // 这之后无论成败，临时目录都不归 `RemoteImage` 管了：成功时归调用方
+  // （`discard_streamed`），失败时在这里收掉——留着只会攒垃圾
+  let mut handed_off = false
+  errdefer (if !handed_off { discard_image(image) })
+  // 走到这儿层可能还在内存里（`stream_to_disk` 保证不是，但保险起见统一落到
+  // 磁盘：这条路径的契约就是「层只有路径」）
+  spill_layers_to_disk(image) catch {
+    err => raise Io("spilling layers to disk: \{err}")
+  }
+  let staging = match image.staging {
+    Some(directory) => directory
+    // `spill_layers_to_disk` 之后一定有目录：没有就是这个契约被破坏
+    None => raise Io("pulled image has no staging directory after spilling")
+  }
+  let config_json = @encoding.decoder(UTF8).decode_lossy(
+    blob_bytes(image.config),
+  )
+  let layers : Array[StreamedBlob] = []
+  for index, layer in image.layers {
+    let path = match layer.path {
+      Some(path) => path
+      None => {
+        // 层没落在文件上：把字节写出去，之后统一按路径处理
+        let target = "\{staging}/layer-\{index}.blob"
+        @fs.write_file(target, layer.bytes()) catch {
+          err => raise Io("\{target}: \{err}")
+        }
+        target
+      }
+    }
+    layers.push({
+      media_type: layer.media_type,
+      digest: layer.digest,
+      path,
+      size: layer.compressed_size(),
+    })
+  }
+  handed_off = true
+  {
+    reference: reference.original,
+    config_json,
+    layers,
+    // 临时目录的归属交给调用方：`discard_streamed` 收它。
+    // 这里不再调 `discard_image`——那会把刚拿到的 blob 一起删掉
+    staging,
+  }
+}
+
+///|
+/// 收掉一次流式拉取的临时目录。调用方必须在**读完之后**调。
+pub async fn discard_streamed(image : StreamedImage) -> Unit noraise {
+  discard_directory(image.staging)
+}

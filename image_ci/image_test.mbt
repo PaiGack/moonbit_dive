@@ -343,3 +343,41 @@ async test "repeated oci layout loads do not corrupt the heap" {
     ignore(round)
   }
 }
+
+///|
+/// `from_oci_blobs`：层是**磁盘上的压缩 blob**，来源不必是一张 docker-archive。
+///
+/// 这条入口是 issue #133 的落点：直连 registry 时字节本来就只落在文件上，
+/// 没有 tar 可拆，也不需要拆。
+async test "from_oci_blobs reads compressed layer files without a wrapping tar" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let raw = layer
+  let compressed = @layer_tree.gzip_compress(raw)
+  let root = "target/image_ci_blobs_fixture"
+  mkdir_p(root)
+  write_fixture_bytes(root + "/layer-0.blob", compressed)
+  let source = ImageSource::from_oci_blobs(
+    "demo",
+    "{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"sha256:d0\"] } }",
+    [
+      {
+        media_type: @oci_spec.oci_layer_gzip_media_type,
+        digest: "sha256:l0",
+        path: root + "/layer-0.blob",
+        size: compressed.length().to_int64(),
+        diff_id: "",
+      },
+    ],
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(source.format, "oci-layout")
+  assert_eq(source.layers.length(), 1)
+  assert_eq(source.layers[0].diff_id, "sha256:d0")
+  let decompressed = source.layers[0].raw_bytes() catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(decompressed.length(), raw.length())
+}

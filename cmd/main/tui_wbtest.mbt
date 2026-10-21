@@ -69,67 +69,49 @@ async test "an image from stdin never opens the browser" {
 }
 
 ///|
-/// 归档读进内存**之后**才删临时目录（issue #122 的另一半，也是 #128 的现场）。
+/// 流式拉下来的 blob 活着读到 `ImageSource` 里，临时目录随后才被收掉
+/// （issue #122 的另一半，也是 #128 的现场；#133 之后这条路不再攒 tar）。
 ///
 /// 现场长这样：`[registry] parsing .../image.tar...` 下一行
 /// `image error: cannot read image: .../image.tar: No such file or directory`。
-/// 旧的 `load_from_registry` 先 `cleanup_remote` 再 `ImageSource::load`，
+/// 旧的 `load_from_registry` 先删临时目录再 `ImageSource::load`，
 /// 删掉的正是接下来要 `fopen` 的那份文件；镜像一条都没读到，
 /// 链路在「选界面」之前就 exit 2 了——于是看起来像「说好的界面没打开」。
-///
-/// 这里钉的是那条不变式：`cleanup_remote` 只能删掉「已经没人要的那份」。
-async test "the image survives the temp cleanup, and the temp dir does not" {
+async test "streamed blobs survive the temp cleanup, and the temp dir does not" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
-  let diff = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  let archive = @docker_cli.build_docker_archive(
-    [("cafe", layer)],
-    config="cafe.json",
-    config_json="{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
-      diff +
-      "\"] } }",
-  )
-  // 落盘进我们自己建的临时目录，与 `save_remote` 的产物同形
+  let digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   let directory = @async_fs.tmpdir(prefix="dive-registry-") catch {
     err => fail("cannot create a temp directory: \{err}")
   }
-  let path = "\{directory}/image.tar"
-  @async_fs.write_file(path, archive) catch {
-    err => fail("cannot write the archive: \{err}")
+  let path = "\{directory}/layer-0.blob"
+  @async_fs.write_file(path, layer) catch {
+    err => fail("cannot write the layer: \{err}")
   }
-  let options = parse_options(["demo.tar", "--no-tui"])
-  let registry_options = registry_options(options)
-  // 先收一次：没给 `--output` 时 `dive-registry-*` 整个归我们，必须删得掉
-  // （`load_from_registry` 就是踩在这上面——它把这句放在了读文件之前）
-  cleanup_remote(registry_options, directory)
-  assert_false(@fs.path_exists(path))
-  // 反过来：给了 `--output` 时产物不归我们，一个字节都不许碰
-  let kept = @async_fs.tmpdir(prefix="dive-registry-") catch {
-    err => fail("cannot create a temp directory: \{err}")
+  let image : @registry_cli.StreamedImage = {
+    reference: "demo:latest",
+    config_json: "{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
+    digest +
+    "\"] } }",
+    layers: [
+      {
+        media_type: "application/vnd.oci.image.layer.v1.tar",
+        digest,
+        path,
+        size: layer.length().to_int64(),
+      },
+    ],
+    staging: directory,
   }
-  let kept_path = "\{kept}/image.tar"
-  @async_fs.write_file(kept_path, archive) catch {
-    err => fail("cannot write the archive: \{err}")
-  }
-  cleanup_remote({ ..registry_options, output: "user-specified.tar", }, kept)
-  assert_true(@fs.path_exists(kept_path))
-  try @async_fs.rmdir(kept, recursive=true) catch {
-    _ => ()
-  } noraise {
-    _ => ()
-  }
-  // 上一步把目录整个删了：重新落一份，验「读完再收」这一半
-  @async_fs.mkdir(directory, recursive=true) catch {
-    err => fail("cannot recreate the temp directory: \{err}")
-  }
-  @async_fs.write_file(path, archive) catch {
-    err => fail("cannot write the archive: \{err}")
-  }
-  let source = try @image_ci.ImageSource::load(path) catch {
-    err => fail("the archive must be readable: \{err.to_string()}")
+  let options = parse_options(["demo:latest", "--no-tui"])
+  let source = try registry_source(options, image) catch {
+    err => fail("the streamed image must be readable: \{Repr(err)}")
   } noraise {
     source => source
   }
   assert_eq(source.layers.length(), 1)
+  // 读完再收：删的是临时目录，不是紧接着还要用的那份 blob
+  cleanup_streamed(image, directory)
+  assert_false(@fs.path_exists(path))
 }
