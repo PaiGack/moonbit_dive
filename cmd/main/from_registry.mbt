@@ -38,16 +38,23 @@ async fn load_from_registry(
   if options.verbose {
     eprintln("[registry] parsing \{result.path}...")
   }
+  // 先把归档读进内存，**之后**才轮到删临时目录。顺序反过来的话，删掉的正是
+  // 紧接着要 `fopen` 的那份文件——现场就是「parsing .../image.tar」下一行
+  // 「No such file or directory」（issue #122，也是 #128 里「界面没打开」的那条：
+  // 镜像根本没读到，链路在选界面之前就退出了）
+  //
   // 装载失败要把「哪份产物读不出来」带上：`ImageSource::load` 的错只提路径，
   // 而这条路径是临时目录里的，用户根本没机会去看它（issue #122）
-  let source = @image_ci.ImageSource::load(result.path) catch {
+  let loaded = try @image_ci.ImageSource::load(result.path) catch {
     err =>
       raise CommandError::Image(
         "\{result.path} was written (\{result.bytes} bytes, \{result.format}) but cannot be read back: \{err.to_string()}; this looks like a bug in dive save",
       )
+  } noraise {
+    loaded => loaded
   }
   cleanup_remote(registry_options, directory)
-  source
+  loaded
 }
 
 ///|
@@ -100,19 +107,25 @@ async fn save_remote(
 }
 
 ///|
-/// 分析完把临时目录删掉；用户显式给了 `--output` 就只删临时目录，
-/// 落盘产物留给他（那正是他要的东西）。
+/// 收掉这次拉取建的临时目录。
+///
+/// 两种落点，两种收法：
+///
+/// - **没给 `--output`**：`dive-registry-*` 是我们自己建的，里面的东西全是我们造的，
+///   整棵删掉比「按 format 猜那个 `result.path` 是文件还是目录」更不容易漏
+/// - **给了 `--output`**：落盘产物归用户，**一个字节都不碰**。以前这里无条件删
+///   `directory`——而 `save_remote` 在给了 `--output` 时压根没往里写东西，那次删除
+///   唯一的效果就是让「产物在 `directory` 里」这个假设永远不成立（issue #122 的另一半）
+///
+/// 调用时机同样重要：`load_from_registry` 必须先把归档**读进内存**再调它，
+/// 否则删掉的正是接下来要 `fopen` 的那份文件。
 async fn cleanup_remote(
   options : RegistryOptions,
   directory : String,
 ) -> Unit noraise {
   if !options.output.is_empty() {
-    // 用户自己指了位置，落盘产物归他；临时目录仍然是我们的，照样收掉
-    rmdir_quietly(directory)
     return
   }
-  // `dive-registry-*` 是这次拉取的落脚点，里面的东西全是我们造的：
-  // 整棵删掉比「按 format 猜那个 `result.path` 是文件还是目录」更不容易漏
   rmdir_quietly(directory)
 }
 
