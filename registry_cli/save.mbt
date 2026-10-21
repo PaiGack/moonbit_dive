@@ -117,6 +117,13 @@ pub async fn save_image(
   )
   // 打包失败也要收掉流式落盘的临时目录：它跟这次 save 一起生、一起死
   errdefer discard_image(image)
+  // docker-archive 要的是**未压缩**字节，而「读进内存」那条拉取路径会把压缩后的
+  // 层整份留在内存里。打包前先把它们落到磁盘：否则一个 700MB 的镜像要同时占
+  // 「全部压缩层 + 全部解压层」，小内存机器上直接被 OOM 杀掉（issue #122）
+  if request.format is DockerArchive {
+    // `spill_layers_to_disk` 的错本来就带着路径，原样往上抛即可
+    spill_layers_to_disk(image)
+  }
   let written = write_image(image, request.output, format=request.format)
   discard_image(image)
   notify_option(
