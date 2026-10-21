@@ -279,3 +279,67 @@ fn load_outcome(path : String) -> Result[ImageSource, String] {
   }
   Ok(source)
 }
+
+///|
+/// 回归（issue #120）：一行 `FILE*` 被当成 MoonBit 堆对象回收，堆在退出阶段崩。
+///
+/// `FileHandle` 漏了 `#external` 时，句柄每次回收都会去 `free` 一块
+/// 它并不拥有的内存：读几次文件、或者多装载几轮，glibc 就报
+/// `double free or corruption (!prev)`。这条用例把「反复装载、反复读」
+/// 走足 20 轮——修复前第 5 轮左右必崩。
+async test "repeated file loads do not corrupt the heap" {
+  let path = "target/repeat-load-image.tar"
+  @fs.write_bytes_to_file(path, @image_ci.sample_docker_archive()) catch {
+    @fs.IOError(message) => fail(message)
+  }
+  for round in 0..<20 {
+    let source = ImageSource::load(path) catch { err => fail(err.to_string()) }
+    assert_eq(source.layers.length(), 2)
+    // 每轮都把层读一遍：按需读这条链上每个 `fopen` 都要配对关掉
+    let raw = source.layers[0].raw_bytes() catch {
+      err => fail(err.to_string())
+    }
+    assert_true(raw.length() > 512)
+    ignore(round)
+  }
+}
+
+///|
+/// 同一份输入反复装载（OCI layout 路径）：`blobs/` 里每个层都是一次
+/// `fopen`，句柄的释放同样要干净。
+async test "repeated oci layout loads do not corrupt the heap" {
+  let root = "target/repeat-oci"
+  mkdir_p(root + "/blobs/sha256")
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),
+  ])
+  write_fixture(
+    root + "/index.json",
+    (
+      #|{ "schemaVersion": 2, "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:man", "size": 10 } ] }
+    ),
+  )
+  write_fixture(root + "/oci-layout", "{\"imageLayoutVersion\":\"1.0.0\"}")
+  write_fixture(
+    root + "/blobs/sha256/man",
+    (
+      #|{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": { "mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:cfg", "size": 10 }, "layers": [ { "mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": "sha256:l0", "size": 10 } ] }
+    ),
+  )
+  write_fixture(
+    root + "/blobs/sha256/cfg",
+    (
+      #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:d0"] } }
+    ),
+  )
+  write_fixture_bytes(root + "/blobs/sha256/l0", layer)
+  for round in 0..<20 {
+    let source = ImageSource::load(root) catch { err => fail(err.to_string()) }
+    assert_eq(source.layers.length(), 1)
+    let raw = source.layers[0].raw_bytes() catch {
+      err => fail(err.to_string())
+    }
+    assert_eq(raw.length(), layer.length())
+    ignore(round)
+  }
+}

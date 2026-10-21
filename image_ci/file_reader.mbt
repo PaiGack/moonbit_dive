@@ -1,6 +1,12 @@
 ///|
 /// 一个 `FILE*`。`x/fs` 里同名的类型是私有的，这里自己开一个口子——
 /// 下面的 `fopen` / `fseek` / `fread` / `ftell` / `fclose` 就是 C 的对应物。
+///
+/// `#external` 不能省：不加它，编译器把这个类型当成自己的堆对象，
+/// 会在句柄被回收时按 MoonBit 的对象头去 `free` 一块 `FILE*` ——
+/// glibc 那边同一块 `FILE` 内部缓冲会被放两次，于是报
+/// `double free or corruption`（issue #120）。加了才是「不透明的外来指针」。
+#external
 priv type FileHandle
 
 ///|
@@ -89,13 +95,12 @@ fn read_at_handle(
   if seeked != 0 {
     return Err("cannot seek to \{position}: \{last_error()}")
   }
-  let buffer = FixedArray::make(length, b'\x00')
-  let read = fread_ffi(handle, buffer.unsafe_reinterpret_as_bytes(), length)
-  let bytes = buffer.unsafe_reinterpret_as_bytes()
+  let buffer = Bytes::make(length, b'\x00')
+  let read = fread_ffi(handle, buffer, length)
   if read < 0 {
     return Err("cannot read \{length} bytes at \{position}: \{last_error()}")
   }
-  Ok(bytes[:read].to_owned())
+  Ok(buffer[:read].to_owned())
 }
 
 ///|
