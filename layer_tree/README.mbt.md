@@ -167,7 +167,7 @@ async test "README layer browse" {
     err => fail(err.to_string())
   }
   // 第 0 层的树只有旧内容
-  assert_eq(views[0].tree.require("/app/main.js").size, 2)
+  assert_eq(views[0].tree.require("/app/main.js").info.size, 2)
   // 第 1 层是覆盖，diff 里表现为 modified
   assert_eq(views[1].diff.modified, ["/app/main.js"])
   assert_eq(views[1].changed_paths(), ["/app/main.js"])
@@ -271,8 +271,13 @@ async test "README aggregate compare" {
 
 - **流式处理**：`TarReader` 逐条读 entry，不把整层解成对象；数据只在需要时按偏移取。
   `tar_block_size` 是唯一的对齐常量。
-- **路径即真相**：树节点比的是 `parent` + `insert_child`，不按 tar 里的顺序堆叠；
-  重写同一路径就地更新，不复制节点。
+- **路径即真相**：树节点比的是 `parent` + `insert_child`，不按 tar 里的顺序堆叠，
+  tar 里谁先谁后不影响结果。
+- **节点不可变**：`Node` 没有 `mut` 字段，元数据收在 `NodeInfo` 里。
+  覆写一条路径 = 换一个新 `Node` 顶掉 `nodes` 里的那一项，`children` 逐层换成新数组
+  （`FileTree::relink_parent` 一路换到根）。代价是每次写入会重建父链上的数组，
+  换来的是 `snapshot` 可以**按路径共享**：没动过的节点不复制，
+  「先快照、再叠层」也不会把旧快照改到脚底下（issue #122 第 5 项）。
 - **自实现 gzip**：MoonBit 生态暂无 DEFLATE，包里补了一个（crc32 + Huffman + stored block）。
   支持 fixed/dynamic Huffman 与 stored 三种块类型。
 - **zstd 用 `gaato/zstd`**：纯 MoonBit、流式、只做解码，`decompress` 直接吃 `BytesView`，

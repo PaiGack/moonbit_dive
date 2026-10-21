@@ -37,13 +37,20 @@ test "node show strings mention the interesting part" {
 ///|
 test "children can be found and removed by path" {
   let parent = Node::new("/d", NodeKind::Directory)
-  parent.insert_child(Node::new("/d/a", NodeKind::File))
-  parent.insert_child(Node::new("/d/b", NodeKind::File))
+  // 节点不可变：`insert_child` / `without_child` 都返回新节点
+  let parent = parent.insert_child(Node::new("/d/b", NodeKind::File))
+  let parent = parent.insert_child(Node::new("/d/a", NodeKind::File))
+  assert_eq(parent.children.map(fn(child) { child.path }), ["/d/a", "/d/b"])
   assert_true(parent.find_child("/d/a") is Some(_))
   assert_true(parent.find_child("/d/zz") is None)
-  assert_true(parent.remove_child("/d/a"))
-  assert_true(parent.find_child("/d/a") is None)
-  assert_false(parent.remove_child("/d/a"))
+  let (next, removed) = parent.without_child("/d/a")
+  assert_true(removed)
+  assert_true(next.find_child("/d/a") is None)
+  assert_eq(next.children.map(fn(child) { child.path }), ["/d/b"])
+  // 原节点没被改到
+  assert_true(parent.find_child("/d/a") is Some(_))
+  let (_, removed_again) = next.without_child("/d/a")
+  assert_false(removed_again)
 }
 
 ///|

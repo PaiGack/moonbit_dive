@@ -138,13 +138,18 @@ fn apply_entry(
   tree.ensure_parents(path, layer)
   match tree.nodes.get(path) {
     Some(node) => {
-      node.kind = kind
-      node.size = size
-      node.mode = mode
-      node.uid = entry.uid
-      node.gid = entry.gid
-      node.layer = layer
-      node.mtime = entry.mtime
+      // 覆写 = 换一份 info 再换掉 `nodes` 里那一份；旧节点原样留给快照
+      let next = node.overwrite(
+        kind,
+        size~,
+        mode~,
+        uid=entry.uid,
+        gid=entry.gid,
+        layer~,
+        mtime=entry.mtime,
+      )
+      tree.set(next)
+      tree.relink_parent(path)
     }
     None => {
       let node = Node::new(
@@ -215,26 +220,34 @@ fn FileTree::bump_stat(
 }
 
 ///|
-/// 把节点挂到父目录下；父目录还不在树上时先寄存到 `orphans`。
+/// 把一个还没有父目录挂在树里的节点挂上去；父目录也不在树上时先寄存到 `orphans`。
+///
+/// 挂上去会换掉父目录那一份节点（`children` 是新的），所以父目录的父目录
+/// 也得跟着换——一路换到根。这是「节点不可变」在挂载上的全部代价。
 fn FileTree::attach(self : FileTree, node : Node) -> Unit {
   if node.path == "/" {
     return
   }
   let parent_path_value = parent_path(node.path)
-  match self.nodes.get(parent_path_value) {
-    Some(parent) => parent.insert_child(node)
+  if self.nodes.contains(parent_path_value) {
+    self.relink_parent(node.path)
+  } else {
+    self.park(node, parent_path_value)
+  }
+}
+
+///|
+/// 把节点寄存在 `orphans` 里等父目录出现。
+fn FileTree::park(self : FileTree, node : Node, parent : String) -> Unit {
+  let bucket = match self.orphans.get(parent) {
+    Some(bucket) => bucket
     None => {
-      let bucket = match self.orphans.get(parent_path_value) {
-        Some(bucket) => bucket
-        None => {
-          let bucket = []
-          self.orphans.set(parent_path_value, bucket)
-          bucket
-        }
-      }
-      bucket.push(node)
+      let bucket = []
+      self.orphans.set(parent, bucket)
+      bucket
     }
   }
+  bucket.push(node)
 }
 
 ///|
@@ -248,8 +261,15 @@ fn FileTree::ensure_parents(
   while current != "/" && !self.nodes.contains(current) {
     let node = Node::new(current, Directory, mode=0o755, layer~)
     self.nodes.set(current, node)
-    self.attach(node)
-    current = parent_path(current)
+    // 自深向浅补：每一层补完就挂进已经存在的父目录；父目录也缺就先寄存，
+    // 下一轮补出它来再挂回去（`promote_orphans` 只看「父目录在不在树上」）
+    let parent = parent_path(current)
+    if self.nodes.contains(parent) {
+      self.relink_parent(current)
+    } else {
+      self.park(node, parent)
+    }
+    current = parent
   }
 }
 
@@ -264,12 +284,14 @@ fn FileTree::promote_orphans(self : FileTree) -> Unit {
   while pending.length() > 0 {
     let next : Map[String, Array[Node]] = Map([])
     for parent, children in pending {
-      match self.nodes.get(parent) {
-        Some(parent_node) =>
-          for child in children {
-            parent_node.insert_child(child)
-          }
-        None => next.set(parent, children)
+      if !self.nodes.contains(parent) {
+        next.set(parent, children)
+        continue
+      }
+      // 存活的父目录里挨个重挂：`relink_parent` 自己会摘旧插新，
+      // 重复的孤儿（同一路径出现两次）不会变成两个子节点
+      for child in children {
+        self.relink_parent(child.path)
       }
     }
     // 一轮下来没有任何进展就跳出，避免无谓的循环
@@ -298,10 +320,7 @@ pub fn remove_subtree(tree : FileTree, path : String, layer : Int32) -> Int32 {
     tree.orphans.remove(node_path) |> ignore
   }
   // 从父目录里摘掉被删的根节点
-  match tree.nodes.get(parent_path(path)) {
-    Some(parent) => parent.remove_child(path) |> ignore
-    None => ()
-  }
+  tree.detach_parent(path)
   tree.clear_layers_from(path, layer)
   tree.bump_stat(layer, 0, doomed.length())
   tree.record(path, { layer, kind: File, size: 0, })
@@ -334,8 +353,8 @@ fn FileTree::clear_layers_from(
   layer : Int32,
 ) -> Unit {
   for node_path, node in self.nodes {
-    if path_is_under(node_path, path) && node.layer >= layer {
-      node.layer = layer
+    if path_is_under(node_path, path) && node.info.layer >= layer {
+      self.set(node.with_info({ ..node.info, layer, }))
     }
   }
 }
@@ -364,7 +383,7 @@ pub fn make_opaque(tree : FileTree, directory : String, layer : Int32) -> Unit {
     if parent != directory {
       continue
     }
-    if node.layer < layer {
+    if node.info.layer < layer {
       doomed.push(node_path)
     }
   }

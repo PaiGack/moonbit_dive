@@ -44,7 +44,7 @@ pub fn render_tree(tree : FileTree, options? : RenderOptions) -> String {
   let builder = StringBuilder()
   builder.write_string("/\n")
   // 根节点在第 0 层，它的直接子节点缩进一级
-  render_children(builder, tree.root, 1, options)
+  render_children(builder, tree.root(), 1, options)
   builder.to_string()
 }
 
@@ -66,7 +66,7 @@ pub fn render_tree_between(
   let builder = StringBuilder()
   builder.write_string("L\{base} -> L\{layer}\n")
   // 根的子节点缩进一级，与 render_tree 保持一致
-  render_between(builder, tree.root, 1, base, layer, options)
+  render_between(builder, tree.root(), 1, base, layer, options)
   builder.to_string()
 }
 
@@ -81,7 +81,7 @@ fn render_children(
     write_indent(builder, depth)
     builder.write_string(item_text(child, options))
     builder.write_string("\n")
-    if child.kind is NodeKind::Directory {
+    if child.info.kind is NodeKind::Directory {
       render_children(builder, child, depth + 1, options)
     }
   }
@@ -98,8 +98,8 @@ fn render_between(
   options : RenderOptions,
 ) -> Unit {
   for child in node.children {
-    let changed = child.layer > base && child.layer <= layer
-    if child.kind is NodeKind::Directory {
+    let changed = child.info.layer > base && child.info.layer <= layer
+    if child.info.kind is NodeKind::Directory {
       // 目录本身可能没变，但子树里有变化：把它当作上下文渲染出来，
       // 否则子节点的缩进会失去参照
       let subtree_changed = has_change_below(child, base, layer)
@@ -121,7 +121,7 @@ fn render_between(
 /// 子树里是否还有「归属层落在 (base, layer]」的节点。
 fn has_change_below(node : Node, base : Int32, layer : Int32) -> Bool {
   for child in node.children {
-    if child.layer > base && child.layer <= layer {
+    if child.info.layer > base && child.info.layer <= layer {
       return true
     }
     if has_change_below(child, base, layer) {
@@ -143,7 +143,7 @@ fn write_indent(builder : StringBuilder, depth : Int32) -> Unit {
 /// 单个节点的显示文本。目录带 `/`，链接带目标，可选大小与层号标注。
 fn item_text(node : Node, options : RenderOptions) -> String {
   let base = base_name(node.path)
-  let suffix = match node.kind {
+  let suffix = match node.info.kind {
     NodeKind::Directory => "/"
     NodeKind::Symlink(target) =>
       if options.show_links {
@@ -160,11 +160,11 @@ fn item_text(node : Node, options : RenderOptions) -> String {
     NodeKind::File => ""
   }
   let mut text = base + suffix
-  if options.show_size && node.kind is NodeKind::File && node.size > 0 {
-    text = text + " (\{node.size} bytes)"
+  if options.show_size && node.info.kind is NodeKind::File && node.info.size > 0 {
+    text = text + " (\{node.info.size} bytes)"
   }
   if options.show_layer {
-    text = text + " [L\{node.layer}]"
+    text = text + " [L\{node.info.layer}]"
   }
   text
 }

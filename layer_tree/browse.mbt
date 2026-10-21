@@ -168,12 +168,13 @@ fn stamp_digests(tree : FileTree, scan : ContentScan, layer : Int32) -> Unit {
   for path, hash in scan.hashes {
     match tree.nodes.get(path) {
       Some(node) =>
-        if node.layer == layer {
+        if node.info.layer == layer {
           let changes = match node.digest {
             Some(previous) => previous.changes + 1
             None => 1
           }
-          node.digest = Some({ changes, hash, })
+          // 新建一个节点而不是改它：这份快照可能与更早的视图共用一个节点
+          tree.set({ ..node, digest: Some({ changes, hash, }), })
         }
       None => ()
     }
@@ -186,7 +187,7 @@ fn total_file_bytes(tree : FileTree) -> Int32 {
   let mut total = 0
   for path, node in tree.nodes {
     if path != "/" && node.is_file() {
-      total = total + node.size
+      total = total + node.info.size
     }
   }
   total
@@ -269,22 +270,12 @@ pub fn LayerView::subtree(self : LayerView, prefix : String) -> FileTree {
       path_is_under(path, normalized) || path_is_under(normalized, path)
     })
   for path in wanted {
+    // 节点不可变，子视图直接指着同一份节点：`LayerView` 本身不再演进，
+    // 没有谁会把它改到脚底下
     match self.tree.get(path) {
       Some(node) => {
-        let cloned = Node::new(
-          node.path,
-          node.kind,
-          size=node.size,
-          mode=node.mode,
-          uid=node.uid,
-          gid=node.gid,
-          layer=node.layer,
-          mtime=node.mtime,
-        )
-        cloned.digest = node.digest
-        cloned.files = node.files.copy()
-        result.nodes.set(path, cloned)
-        result.attach(cloned)
+        result.nodes.set(path, node)
+        result.attach(node)
       }
       None => ()
     }

@@ -16,7 +16,7 @@ fn apply_all(layers : Array[Bytes]) -> FileTree raise {
 /// 某路径当前的大小。
 fn size_at(tree : FileTree, path : String) -> Int32 {
   match tree.get(path) {
-    Some(node) => node.size
+    Some(node) => node.info.size
     None => -1
   }
 }

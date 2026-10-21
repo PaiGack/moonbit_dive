@@ -106,6 +106,83 @@ pub fn FileTree::get(self : FileTree, path : String) -> Node? {
 }
 
 ///|
+/// 把 `node` 换成新的版本。
+///
+/// 节点不可变（见 `Node` 的注释），所以「改一个节点」只有这一个写法：
+/// 换掉 `nodes` 里的那一份。已经发出去的旧 `Node`（快照、视图）不受影响。
+pub fn FileTree::set(self : FileTree, node : Node) -> Unit {
+  self.nodes.set(node.path, node)
+}
+
+///|
+/// 取某个路径的父目录节点；根、未挂上的路径返回 `None`。
+pub fn FileTree::parent_of(self : FileTree, path : String) -> Node? {
+  if path == "/" {
+    return None
+  }
+  self.nodes.get(parent_path(path))
+}
+
+///|
+/// 把 `path` 的父目录换成新版本，并把这次改动一路换到根。
+///
+/// 父目录的 `children` 变了就得换掉父目录那一份：`nodes` 里的节点是
+/// 视图与快照共用的引用，原地改它等于把历史一起改了。
+/// 换完之后，父目录在祖父目录的 `children` 里也是旧的一份了，
+/// 所以要顺着父链换上去——一路到根。
+///
+/// `update` 拿到上一层的目录、返回「换过 `children` 的目录」；某一层
+/// 已经不在 `nodes` 里（子树删除）时直接停，再往上没有可换的东西。
+fn FileTree::refresh_parent(
+  self : FileTree,
+  path : String,
+  update : (Node) -> Node,
+) -> Unit {
+  if path == "/" {
+    return
+  }
+  let parent_path_value = parent_path(path)
+  let parent = match self.nodes.get(parent_path_value) {
+    Some(parent) => update(parent)
+    None => return
+  }
+  self.set(parent)
+  // 祖父目录里那一份还是「换之前的父目录」，得跟着换：
+  // 先摘掉旧的那条再插入，否则原位追加会留下两个同名子节点
+  self.refresh_parent(parent_path_value, fn(grand) {
+    grand.without_child(parent_path_value).0.insert_child(parent)
+  })
+}
+
+///|
+/// `path` 重新挂进它父目录（`path` 必须已经在 `nodes` 里）。
+///
+/// 同一个路径可能被挂两次（`ensure_parents` 补建、`promote_orphans` 挂孤儿、
+/// 覆写后重挂），所以是「先摘掉旧的、再按序插入」，不是直接追加：
+/// 父目录里留着同名旧条目的话，同一层会被渲染两遍。
+fn FileTree::relink_parent(self : FileTree, path : String) -> Unit {
+  let node = self.require_node(path)
+  self.refresh_parent(path, fn(parent) {
+    parent.without_child(path).0.insert_child(node)
+  })
+}
+
+///|
+/// 从父目录里摘掉 `path`（`path` 自己已经从 `nodes` 里删掉）。
+fn FileTree::detach_parent(self : FileTree, path : String) -> Unit {
+  self.refresh_parent(path, fn(parent) { parent.without_child(path).0 })
+}
+
+///|
+/// 取节点，缺失时就地炸：调用点都是「刚刚确认过存在」的内部路径。
+fn FileTree::require_node(self : FileTree, path : String) -> Node {
+  match self.nodes.get(path) {
+    Some(node) => node
+    None => abort("node missing from tree: \{path}")
+  }
+}
+
+///|
 /// 取路径对应的节点，缺失时报错。
 pub fn FileTree::require(self : FileTree, path : String) -> Node raise {
   match self.nodes.get(path) {
@@ -122,8 +199,14 @@ pub fn FileTree::size(self : FileTree) -> Int32 {
 
 ///|
 /// 根节点。
+///
+/// 节点不可变，根被换掉时 `nodes["/"]` 指向新的那一份，字段 `root` 跟不上，
+/// 所以这里统一从 `nodes` 取：`root().children` 必须是「这一刻的树」。
 pub fn FileTree::root(self : FileTree) -> Node {
-  self.root
+  match self.nodes.get("/") {
+    Some(root) => root
+    None => self.root
+  }
 }
 
 ///|

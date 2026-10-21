@@ -46,11 +46,11 @@ async test "same size and same mtime but different bytes is modified" {
   // 元数据与 size 全都一样：光比元数据会说「没动过」
   let old_node = before.require("/app/build.bin")
   let new_node = after.require("/app/build.bin")
-  assert_eq(old_node.size, new_node.size)
-  assert_eq(old_node.mode, new_node.mode)
-  assert_eq(old_node.uid, new_node.uid)
-  assert_eq(old_node.gid, new_node.gid)
-  assert_eq(old_node.mtime, new_node.mtime)
+  assert_eq(old_node.info.size, new_node.info.size)
+  assert_eq(old_node.info.mode, new_node.info.mode)
+  assert_eq(old_node.info.uid, new_node.info.uid)
+  assert_eq(old_node.info.gid, new_node.info.gid)
+  assert_eq(old_node.info.mtime, new_node.info.mtime)
 
   // 补上内容摘要后，diff 认得出这条改写
   before.scan_content([layer0])

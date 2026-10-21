@@ -38,7 +38,7 @@ async test "README layer browse" {
   let views = browse_layers([layer0, layer1]) catch {
     err => fail(err.to_string())
   }
-  assert_eq(views[0].tree.require("/app/main.js").size, 2)
+  assert_eq(views[0].tree.require("/app/main.js").info.size, 2)
   assert_eq(views[1].diff.modified, ["/app/main.js"])
   assert_eq(views[1].changed_paths(), ["/app/main.js"])
   let app = views[1].subtree("/app")

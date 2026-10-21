@@ -244,10 +244,12 @@ pub fn FileTree::history_of(Self, String) -> String
 pub fn FileTree::layer_stats(Self) -> Array[LayerStat]
 pub fn FileTree::new() -> Self
 pub fn FileTree::output(Self, &Logger) -> Unit
+pub fn FileTree::parent_of(Self, String) -> Node?
 pub fn FileTree::paths(Self) -> Array[String]
 pub fn FileTree::require(Self, String) -> Node raise
 pub fn FileTree::root(Self) -> Node
 pub fn FileTree::scan_content(Self, Array[Bytes]) -> Unit
+pub fn FileTree::set(Self, Node) -> Unit
 pub fn FileTree::size(Self) -> Int32
 pub fn FileTree::snapshot(Self) -> Self
 pub fn FileTree::stat(Self, Int32) -> LayerStat?
@@ -336,28 +338,25 @@ pub fn MappedTarReader::next(Self) -> TarEntry raise TarError
 
 pub(all) struct Node {
   path : String
-  mut kind : NodeKind
-  mut size : Int32
-  mut mode : Int32
-  mut uid : Int32
-  mut gid : Int32
-  mut layer : Int32
-  mut mtime : Int32
-  mut digest : Digest?
-  mut files : Array[NodeFile]
-  mut children : Array[Node]
+  info : NodeInfo
+  digest : Digest?
+  files : Array[NodeFile]
+  children : Array[Node]
 } derive(@debug.Debug)
 pub fn Node::find_child(Self, String) -> Self?
-pub fn Node::insert_child(Self, Self) -> Unit
+pub fn Node::insert_child(Self, Self) -> Self
 pub fn Node::is_dir(Self) -> Bool
 pub fn Node::is_file(Self) -> Bool
 pub fn Node::is_link(Self) -> Bool
 pub fn Node::link_target(Self) -> String?
 pub fn Node::new(String, NodeKind, size? : Int32, mode? : Int32, uid? : Int32, gid? : Int32, layer? : Int32, mtime? : Int32) -> Self
 pub fn Node::output(Self, &Logger) -> Unit
-pub fn Node::remove_child(Self, String) -> Bool
+pub fn Node::overwrite(Self, NodeKind, size? : Int32, mode? : Int32, uid? : Int32, gid? : Int32, layer? : Int32, mtime? : Int32) -> Self
 pub fn Node::to_repr(Self) -> @debug.Repr
 pub fn Node::to_string(Self) -> String
+pub fn Node::with_children(Self, Array[Self]) -> Self
+pub fn Node::with_info(Self, NodeInfo) -> Self
+pub fn Node::without_child(Self, String) -> (Self, Bool)
 pub impl Show for Node
 
 pub(all) struct NodeFile {
@@ -371,6 +370,19 @@ pub fn NodeFile::output(Self, &Logger) -> Unit
 pub fn NodeFile::to_repr(Self) -> @debug.Repr
 pub fn NodeFile::to_string(Self) -> String
 pub impl Show for NodeFile
+
+pub(all) struct NodeInfo {
+  kind : NodeKind
+  size : Int32
+  mode : Int32
+  uid : Int32
+  gid : Int32
+  layer : Int32
+  mtime : Int32
+} derive(Eq, @debug.Debug)
+pub fn NodeInfo::equal(Self, Self) -> Bool
+pub fn NodeInfo::not_equal(Self, Self) -> Bool
+pub fn NodeInfo::to_repr(Self) -> @debug.Repr
 
 pub(all) enum NodeKind {
   File
