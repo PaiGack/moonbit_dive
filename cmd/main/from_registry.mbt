@@ -190,18 +190,24 @@ async fn cleanup_streamed(
 ///|
 /// 拉一次远端镜像并落盘，返回落盘结果。
 ///
-/// 没给 `-o` 时落盘位置在**临时目录**里（`<parent>/dive-*/image.tar`）：
+/// 落盘位置在**临时目录**里（`<parent>/dive-*/image.tar`）：
 /// 分析链路只认「路径」这个入口（`ImageSource::load`），直接塞字节会绕过
 /// 既有的格式识别（docker-archive / OCI layout / 单层 tar 三种），
 /// 那正是我们最不该分叉的一段逻辑。
 ///
-/// 给了 `-o` 就写到那儿，而 blob 落在它旁边的 `.mdive/dive-*` 里——
-/// 一次拉取的东西都在同一层，而不是「归档在你这儿、中间产物在 /tmp 某个随机目录」。
+/// 中间产物**不在这里收**：装完之后 `ImageSource` 只记偏移，层要等到 `main`
+/// 里逐层 `raw_bytes` 才真去读。在这里删，删的就是那份还没人读过的归档
+/// （issue #133）。落回 `/tmp` 的那些交给 `/tmp` 收尾；落在 `.mdive/` 里的
+/// 由 `load_from_registry` 读完再收（见 `cleanup_streamed`）。
 async fn save_remote(
   options : RegistryOptions,
 ) -> (@registry_cli.SaveResult, String, String?) raise CommandError {
+  // 中间产物落在 `-o` 旁边：`--save` 的产物只该有一个归属，
+  // 用户去那个目录里就该看得全（`blob 在这儿、归档在 /tmp` 是 #133 的现场）。
+  // `staging_area_of("")` 返回 `None`，那就是回系统临时目录
+  let staging_parent = staging_area_of(options.output)
   let directory = @registry_cli.make_staging_dir(
-    parent=options.staging_parent,
+    parent=staging_parent,
     prefix="dive-registry-",
   ) catch {
     err =>
@@ -231,7 +237,7 @@ async fn save_remote(
     on_progress=Some(reporter.handle()),
     on_tick=Some(tick),
     jobs=options.jobs,
-    staging_parent=options.staging_parent,
+    staging_parent~,
   )
   let result = @registry_cli.save_image(request) catch {
     err => {
@@ -241,7 +247,7 @@ async fn save_remote(
     }
   }
   reporter.finish(failed=false)
-  (result, directory, options.staging_parent)
+  (result, directory, staging_parent)
 }
 
 ///|

@@ -387,22 +387,5 @@ pub async fn stream_image(
 /// 外层（`{parent}/dive-*`）也顺手收掉：里面这时已经空了，删得掉。
 /// 不删就会在用户指定的目录里留下一个空壳，正是 issue #133 看到的那一幕。
 pub async fn discard_streamed(image : StreamedImage) -> Unit noraise {
-  discard_directory(image.staging)
-  match image.staging_parent {
-    Some(parent) => discard_if_empty(parent)
-    None => ()
-  }
-}
-
-///|
-/// 删一个空目录；里面还有东西就不动它。
-///
-/// `--save` 的归档可能就在这层里，那时删不掉——这正是我们要的：
-/// 只收「这次拉取自己建的壳」，不替用户决定他的产物该不该留。
-async fn discard_if_empty(directory : String) -> Unit noraise {
-  try @fs.rmdir(directory) catch {
-    _ => ()
-  } noraise {
-    _ => ()
-  }
+  discard_staging(image.staging, image.staging_parent)
 }

@@ -90,13 +90,15 @@ async test "an image from stdin never opens the browser" {
 
 ///|
 /// 流式拉下来的 blob 活着读到 `ImageSource` 里，临时目录随后才被收掉
-/// （issue #122 的另一半，也是 #128 的现场；#133 之后这条路不再攒 tar）。
+/// （issue #122 的另一半，也是 #128 的现场）。
 ///
-/// 现场长这样：`[registry] parsing .../image.tar...` 下一行
+/// 现场的上一版长这样：`[registry] parsing .../image.tar...` 下一行
 /// `image error: cannot read image: .../image.tar: No such file or directory`。
-/// 旧的 `load_from_registry` 先删临时目录再 `ImageSource::load`，
-/// 删掉的正是接下来要 `fopen` 的那份文件；镜像一条都没读到，
-/// 链路在「选界面」之前就 exit 2 了——于是看起来像「说好的界面没打开」。
+/// 那条路先删临时目录再 `ImageSource::load`，删掉的正是接下来要 `fopen`
+/// 的那份文件；镜像一条都没读到，链路在「选界面」之前就 exit 2 了。
+///
+/// #133 之后这条路不再攒 tar：层就是下载下来的压缩 blob，所以收尾要删的
+/// 是「目录」，不能删「层」。这里两个方向都钉住：收完目录得没，收完字节得在。
 async test "streamed blobs survive the temp cleanup, and the temp dir does not" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
@@ -126,6 +128,7 @@ async test "streamed blobs survive the temp cleanup, and the temp dir does not" 
     staging_parent: None,
   }
   let options = parse_options(["demo:latest", "--no-tui"])
+  // 装载只记偏移：这一步成功不代表字节读得到，正因如此后面才要验一遍
   let source = try registry_source(options, image) catch {
     err => fail("the streamed image must be readable: \{Repr(err)}")
   } noraise {

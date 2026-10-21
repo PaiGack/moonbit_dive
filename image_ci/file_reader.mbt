@@ -71,7 +71,18 @@ fn read_file_chunk(
   }
   let outcome = read_at_handle(handle, position, length)
   fclose(handle)
-  outcome
+  match outcome {
+    Ok(data) if data.length() == 0 =>
+      // 一个字节也没拿到：`fopen` / `fseek` 都过了，`fread` 却什么都没读到。
+      // 这不是「文件到这儿结束了」——调用方要的是一段在这里**必须存在**的字节
+      // （tar 头、blob 的开头），空着回去会被上层解释成「格式不对」，
+      // 真正的原因（这个路径读不动）就永远说不出来了（issue #133）
+      Err(
+        "\{path}: cannot read at \{position}: the file yields no bytes (it may have been removed or replaced after it was opened)",
+      )
+    Ok(data) => Ok(data)
+    Err(reason) => Err(reason)
+  }
 }
 
 ///|

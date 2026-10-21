@@ -606,3 +606,85 @@ async test "image_of_layers builds a multi-layer source" {
   // 层字节原样带出来，没有压缩信息时按未压缩处理
   assert_true(source.layers[0].data.length() > 0)
 }
+
+///|
+/// 整条「镜像引用 → 没有 docker → 直连 registry → 装好 → 读得回来」
+/// 必须真的走通（issue #133）。
+///
+/// 现场是这样：直连 registry 那条路把整份生产物留在 `dive-registry-*` 里，
+/// 装完之后把目录整棵删了，再让 `main` 逐层去读——那时路径已经没了，报出来
+/// 就是 `No such file or directory`。一条只有「本机没有 docker」才会走的路，
+/// 从前没有任何用例走通过。
+///
+/// #133 之后这条路不再攒 tar：层就是下载下来的压缩 blob，而且读**当场**就读
+/// 进内存（`from_oci_files`）。所以这里钉两件事：收尾删了目录之后，那份产物
+/// 仍然读得回来，且目录确实被收掉了。
+#cfg(not(platform="windows"))
+async test "a streamed image survives to the analysis path" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  let directory = @async_fs.tmpdir(prefix="dive-registry-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let path = "\{directory}/layer-0.blob"
+  @async_fs.write_file(path, layer) catch {
+    err => fail("cannot write the layer: \{err}")
+  }
+  let image : @registry_cli.StreamedImage = {
+    reference: "demo:latest",
+    config_json: "{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
+    digest +
+    "\"] } }",
+    layers: [
+      {
+        media_type: "application/vnd.oci.image.layer.v1.tar",
+        digest,
+        path,
+        size: layer.length().to_int64(),
+      },
+    ],
+    staging: directory,
+    staging_parent: None,
+  }
+  let source = registry_source(
+    parse_options(["demo:latest", "--no-tui"]),
+    image,
+  ) catch {
+    err => fail("the streamed image must be readable: \{Repr(err)}")
+  }
+  assert_eq(source.layers.length(), 1)
+  // 收尾：`cleanup_streamed` 收的是目录，不是那份还要用的 blob
+  cleanup_streamed(image, directory)
+  assert_false(@fs.path_exists(path))
+  // `main` 在这里逐层读：字节必须在
+  for layer in source.layers {
+    let raw = layer.raw_bytes() catch {
+      err => fail("a layer must be readable: \{err.to_string()}")
+    }
+    assert_true(raw.length() > 0)
+  }
+  @async_fs.rmdir(directory, recursive=true) catch {
+    _ => ()
+  }
+}
+
+///|
+/// `--output` 是给报告的，不该顺手变成 registry 的落盘位置（issue #133）。
+///
+/// 现场是这样：`dive <ref> --verbose` 只想要一份报告，可 `registry_options`
+/// 把 `-o` 一起塞给了 `save_remote`，于是拉下来的归档落在用户指的位置。
+/// 本机 docker 直接 `save` 时 `-o` 只影响报告；没有 docker 走 registry 时
+/// 它突然改写了「镜像落在哪」——同一条链路的两个分支不该改同一个开关的意思。
+async test "an -o report path is not a registry output path" {
+  let options = parse_options([
+    "nginx:latest", "--verbose", "--no-tui", "-o", "report.json",
+  ])
+  let registry = registry_options(options)
+  // 报告的位置照旧是 `report.json`（`save_remote` 不读它）
+  assert_eq(options.output, Some("report.json"))
+  // registry 那一路不认它：临时目录里的产物由 `save_remote` 自己定
+  assert_true(registry.output.is_empty())
+  assert_eq(options.image, registry.reference)
+}

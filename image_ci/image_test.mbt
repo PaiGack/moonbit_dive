@@ -345,6 +345,37 @@ async test "repeated oci layout loads do not corrupt the heap" {
 }
 
 ///|
+/// 路径在、大小也报得出来，但**按这个名字一个字节都读不到**：装载就得先说清楚。
+///
+/// issue #133 的现场：`ImageSource::load` 一次 `fopen` 都没成功过，错误却一直
+/// 拖到第一次读 512 字节 tar 头才冒出来，报成「镜像格式不对」，把真正的原因
+/// （这个路径读不动）盖得严严实实。
+///
+/// 造这个现场最省事的办法是悬空软链：`stat` 跟到底会说没有，但 `fopen` 也一样，
+/// 所以它验的只是「`file_size` 失败时要带路径」这一半。另一半（`stat` 说在、
+/// `open` 说没有）需要 NFS 那种影子，单测里造不出来——那半条由
+/// `file_reader.mbt` 里「一个字节都没读到就报错」兜着。
+#cfg(not(platform="windows"))
+async test "an input that cannot be read names its path at load time" {
+  let directory = "target/unreadable-input"
+  @fs.remove_dir(directory) catch {
+    @fs.IOError(_) => ()
+  }
+  @fs.create_dir(directory) catch {
+    @fs.IOError(message) => fail(message)
+  }
+  let path = "\{directory}/image.tar"
+  let message = match load_outcome(path) {
+    Ok(_) => "<loaded>"
+    Err(reason) => reason
+  }
+  assert_true(message.contains(path))
+  @fs.remove_dir(directory) catch {
+    @fs.IOError(_) => ()
+  }
+}
+
+///|
 /// `from_oci_blobs`：层是**磁盘上的压缩 blob**，来源不必是一张 docker-archive。
 ///
 /// 这条入口是 issue #133 的落点：直连 registry 时字节本来就只落在文件上，

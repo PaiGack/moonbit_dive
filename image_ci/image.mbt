@@ -455,7 +455,7 @@ fn read_oci_layout(
   let layers = []
   for index, descriptor in manifest.layers {
     let path = blob_path(directory, descriptor.digest)
-    let size = match file_size(path) {
+    let size = match blob_size_readable(path) {
       Ok(size) => size
       Err(reason) => raise Io(reason)
     }
@@ -493,13 +493,43 @@ pub struct ImageFile {
 }
 
 ///|
-/// 打开一份文件输入。
-fn open_image_file(path : String) -> ImageFile raise ImageError {
+/// 文件有多少字节，并且**当场证明它还读得动**。
+///
+/// `file_size` 只是 `fstat`：它答的是「这个路径此刻还在不在」，不等于
+/// 「接下来按路径 `fopen` 拿得到字节」。两种情况大小都会对上、内容却读不出来：
+/// 路径被换成了软链（目标没了），或者文件被删掉时还有进程开着它
+/// （NFS 的 silly rename 会在原地留一个同样大小的影子）。
+///
+/// 它们都只在「真要读这一块」的那一刻才炸，而那一刻离「装载」已经很远了：
+/// issue #133 里错误就是这么被报成「镜像读不出来」的。多探一次的成本
+/// 是一次 `fopen` + 一次单字节 `fread`。
+fn blob_size_readable(path : String) -> Result[Int64, String] noraise {
   let size = match file_size(path) {
-    // 报错要自带路径：`strerror` 只说「No such file or directory」，
-    // 一句没有路径的错误在批量分析里等于没报
     Ok(size) => size
-    Err(reason) => raise Io("\{path}: \{reason}")
+    Err(reason) => return Err(reason)
+  }
+  match read_file_chunk(path, 0L, 1) {
+    Ok(_) => Ok(size)
+    Err(reason) =>
+      Err(
+        "\{path}: \{size} bytes are there but cannot be opened for reading (\{reason})",
+      )
+  }
+}
+
+///|
+/// 打开一份文件输入。
+///
+/// 大小与「读得动」一次问清（见 `blob_size_readable`）：装载只问路径，
+/// 真正的字节要等到第一次 `read_at` 才读——那时候再发现读不了，
+/// 报出来的是「镜像格式不对」，而真正的原因早就过去了。
+///
+/// 报错要自带路径：`strerror` 只说「No such file or directory」，
+/// 一句没有路径的错误在批量分析里等于没报。
+fn open_image_file(path : String) -> ImageFile raise ImageError {
+  let size = match blob_size_readable(path) {
+    Ok(size) => size
+    Err(reason) => raise Io(reason)
   }
   { path, size, bytes: None, }
 }
