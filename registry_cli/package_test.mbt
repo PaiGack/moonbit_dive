@@ -38,6 +38,7 @@ async fn sample_image(gzip~ : Bool = true) -> RemoteImage {
     layers,
     platform: None,
     staging: None,
+    staging_used: false,
   }
 }
 
@@ -219,6 +220,7 @@ async test "docker-archive unpacks zstd layers like gzip ones" {
     ],
     platform: None,
     staging: None,
+    staging_used: false,
   }
   let tar = pack_docker_archive(image)
   // 目录名必须是**解压后** tar 的 sha256，而不是压缩 blob 的 digest
@@ -368,6 +370,7 @@ async fn big_layer_image(size : Int32) -> RemoteImage {
     ],
     platform: None,
     staging: None,
+    staging_used: false,
   }
 }
 
@@ -528,6 +531,7 @@ async test "a failed pack leaves no truncated archive behind" {
     ],
     platform: None,
     staging: None,
+    staging_used: false,
   }
   let path = temp_path("failed")
   // 失败必须停在「解压这一层」，不能安静地打出一个内容不对的归档

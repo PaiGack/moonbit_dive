@@ -142,6 +142,14 @@ pub(all) struct RemoteImage {
   /// 流式落盘时层所在的临时目录；`None` 表示字节都在内存里，无需清理。
   /// 可写：`spill_layers_to_disk` 可能在打包前才把目录建出来
   mut staging : String?
+  /// `staging` 这个目录这次真的被用过吗。
+  ///
+  /// 「建了目录」与「往里写过字节」是两件事：目录在 `pull_with_client` 里
+  /// 一开始就建好了，一层都没落地时它是个空壳。空壳归我们，随便删；
+  /// 一旦有字节落进去，那些字节就是**别人手上正在用的东西**——层是按路径
+  /// 相认的（`PulledBlob::path`），删掉目录就等于把 manifest 里还登记着的层
+  /// 从脚下抽走（issue #133）。
+  mut staging_used : Bool
 } derive(Eq, Debug)
 
 ///|
@@ -238,9 +246,13 @@ pub async fn pull_with_client(
   } else {
     None
   }
-  // 拉一半失败：临时目录里的半截 blob 不能留着
+  // 这次有没有字节真落进 `staging`。`false` 时那是个空壳，收掉它不伤任何人；
+  // `true` 时它装着别人手上的层
+  let used : Ref[Bool] = { val: false, }
+  // 拉一半失败：临时目录里的半截 blob 不能留着。**写过东西才删**——一个还能
+  // 用的目录不该因为一次半途而废的拉取被清空（issue #133）
   errdefer (match staging {
-    Some(directory) => discard_directory(directory)
+    Some(directory) => if used.val { discard_directory(directory) }
     None => ()
   })
   let (config, layers) = fetch_all(
@@ -251,6 +263,7 @@ pub async fn pull_with_client(
     plan_bytes~,
     fallback~,
     staging~,
+    used~,
   )
   {
     reference,
@@ -262,6 +275,7 @@ pub async fn pull_with_client(
     // 服务端没说是哪个平台，硬记成请求参数只会让报告说谎（见 `choose_manifest`）
     platform: picked_platform,
     staging,
+    staging_used: used.val,
   }
 }
 
@@ -312,8 +326,18 @@ pub async fn spill_layers_to_disk(
 }
 
 ///|
-/// 把流式落盘的临时目录删掉；删不掉就算了，它本来就在 `/tmp` 下。
+/// 收掉这次拉取留下的临时目录；删不掉就算了，它本来就在 `/tmp` 下。
+///
+/// **只收空壳**（见 `RemoteImage::staging_used`）。一个装着层的目录删掉，
+/// 就等于把还没人读完、却已经按路径登记好的层从脚下抽走——issue #133 的现场：
+/// `save_image` 按路径把层搬进 tar，中途一次收尾把目录清空，错误一路拖到
+/// `[registry] parsing .../image.tar` 之后，以 `No such file or directory` 收场。
+///
+/// 进程退出时 `/tmp` 自己会收。留一点垃圾，好过删掉一份还要用的数据。
 pub async fn discard_image(image : RemoteImage) -> Unit noraise {
+  if image.staging_used {
+    return
+  }
   match image.staging {
     Some(directory) => discard_directory(directory)
     None => ()
@@ -519,6 +543,8 @@ async fn fetch_all(
   plan_bytes~ : Int64,
   fallback~ : String = "",
   staging~ : String? = None,
+  /// 有字节落进 `staging` 就立起来（见 `RemoteImage::staging_used`）
+  used~ : Ref[Bool] = { val: false, },
 ) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
   let in_flight = if options.concurrency < 1 { 1 } else { options.concurrency }
   if in_flight <= 1 {
@@ -530,6 +556,7 @@ async fn fetch_all(
       plan_bytes~,
       fallback~,
       staging~,
+      used~,
     )
   }
   return fetch_all_concurrently(
@@ -541,6 +568,7 @@ async fn fetch_all(
     in_flight~,
     fallback~,
     staging~,
+    used~,
   )
 }
 
@@ -554,6 +582,7 @@ async fn fetch_all_serially(
   plan_bytes~ : Int64,
   fallback~ : String = "",
   staging~ : String? = None,
+  used~ : Ref[Bool],
 ) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
   // config 不是层：它不占层号，只报整体字节
   let config = fetch_blob(
@@ -566,6 +595,7 @@ async fn fetch_all_serially(
     staging~,
     plan_total_bytes=plan_bytes,
     fallback~,
+    landed=used,
   )
   let layers : Array[PulledBlob] = []
   let mut done_bytes : Int64 = 0L
@@ -581,6 +611,7 @@ async fn fetch_all_serially(
       plan_done_bytes=done_bytes,
       plan_total_bytes=plan_bytes,
       fallback~,
+      landed=used,
     )
     done_bytes = done_bytes + blob.compressed_size()
     layers.push(blob)
@@ -606,6 +637,7 @@ async fn fetch_all_concurrently(
   in_flight~ : Int32,
   fallback~ : String = "",
   staging~ : String? = None,
+  used~ : Ref[Bool],
 ) -> (PulledBlob, Array[PulledBlob]) raise RegistryError {
   let gate = @semaphore.Semaphore(in_flight)
   let failures : Array[RegistryError] = []
@@ -626,6 +658,7 @@ async fn fetch_all_concurrently(
             staging~,
             plan_total_bytes=plan_bytes,
             fallback~,
+            landed=used,
           )
         }),
       ) catch {
@@ -654,6 +687,7 @@ async fn fetch_all_concurrently(
                 plan_done_bytes=finished_bytes.val,
                 plan_total_bytes=plan_bytes,
                 fallback~,
+                landed=used,
               )
               finished_bytes.val = finished_bytes.val + blob.compressed_size()
               // 层与层之间有空窗：报一次整体进度，进度行就不会定住
@@ -775,6 +809,9 @@ async fn fetch_blob(
   plan_total_bytes~ : Int64 = 0L,
   /// 连接到 registry 时「已确认可用」的那个 origin（见 `pull_with_client`）
   fallback~ : String = "",
+  /// 这一层的字节真落了盘就立起来（见 `RemoteImage::staging_used`）。
+  /// 只有**写完并 rename 过**才立：只剩一个 `.partial` 的目录仍是空壳
+  landed~ : Ref[Bool] = { val: false, },
 ) -> PulledBlob raise RegistryError {
   let digest = descriptor.digest
   let path = "/v2/\{reference.repository}/blobs/\{digest}"
@@ -808,7 +845,7 @@ async fn fetch_blob(
       })
     None => None
   }
-  let landed = match staging {
+  let written = match staging {
     Some(directory) =>
       download_to_file(
         client,
@@ -833,26 +870,30 @@ async fn fetch_blob(
       )
   }
   // 字节数先对一遍：对不上就是截断，没必要再算 sha256（流式那边已经对过了）
-  if descriptor.size > 0 && landed.size != descriptor.size.to_int64() {
+  if descriptor.size > 0 && written.size != descriptor.size.to_int64() {
     raise DigestMismatch(
-      "blob \{digest}: descriptor says \{descriptor.size} bytes, got \{landed.size}",
+      "blob \{digest}: descriptor says \{descriptor.size} bytes, got \{written.size}",
     )
   }
-  if landed.digest != digest {
+  if written.digest != digest {
     raise DigestMismatch(
-      "blob \{digest}: content hash \{landed.digest} does not match",
+      "blob \{digest}: content hash \{written.digest} does not match",
     )
+  }
+  // 字节真进了 `staging`：这个目录不再是空壳，收尾时不能整棵删
+  if written.path is Some(_) {
+    landed.val = true
   }
   match kind {
     ConfigBlob => ()
-    LayerBlob => notify(options, LayerDone(index~, bytes=landed.size))
+    LayerBlob => notify(options, LayerDone(index~, bytes=written.size))
   }
   {
     media_type: descriptor.media_type,
     digest,
-    data: landed.data,
-    size: landed.size,
-    path: landed.path,
+    data: written.data,
+    size: written.size,
+    path: written.path,
   }
 }
 

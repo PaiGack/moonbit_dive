@@ -703,7 +703,13 @@ fn archive_format_of(
 fn registry_options(options : Options) -> RegistryOptions {
   {
     reference: options.image,
-    output: options.output.unwrap_or(""),
+    // `-o` 是**报告**的位置，不是镜像的落点（issue #133）。
+    //
+    // 从前这里原样抄了 `options.output`：本机有 docker 时 `-o` 只影响报告，
+    // 一旦回退到 registry，同一个开关就变成了「归档写哪儿」。同一个名字在两条
+    // 分支上指两样东西，是最难查的一类不一致——想落盘就走 `--save -o`
+    // （`save_only` 会把 `options.output` 带进来）。
+    output: "",
     format: options.archive_format,
     platform: options.platform,
     insecure: options.registry_insecure,
@@ -732,7 +738,12 @@ async fn save_only(options : Options) -> Unit raise CommandError {
       "input is already a local archive, --save has nothing to do: drop --save to analyze \{options.image}, or give an image reference to save",
     )
   }
-  let result = save_remote(registry_options(options))
+  // `--save` 是唯一一处 `-o` 真的指「镜像写到哪儿」的地方
+  let request = {
+    ..registry_options(options),
+    output: options.output.unwrap_or(""),
+  }
+  let result = save_remote(request)
   report_saved(result.0)
 }
 

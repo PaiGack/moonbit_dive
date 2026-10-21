@@ -53,7 +53,17 @@ async fn load_from_registry(
   } noraise {
     loaded => loaded
   }
-  cleanup_remote(registry_options, directory)
+  // **不再删**：这个目录里只有那三样东西——我们自己的归档（`result.path`）、
+  // `save_remote` 流式落盘用的 `dive-blobs-*`（`save_image` 收尾时已经删过）、
+  // 以及这次拉取建的空壳。进程退出，`/tmp` 自己会收；而在这里删，删的是一个
+  // 「装载只是记了路径、字节还没读」的名字——`ImageSource` 只记 `offset`，
+  // 解压要等到 `main` 里逐层 `raw_bytes`，那时路径已经没了（issue #133 现场：
+  // 错误拖到下一次运行才以 `No such file or directory` 的形状冒出来）。
+  //
+  // 收垃圾对**空壳**照做：一字节都没落地时目录是我们纯粹造的，删掉不欠任何人。
+  if result.bytes == 0 {
+    cleanup_remote(registry_options, directory)
+  }
   loaded
 }
 
@@ -62,7 +72,11 @@ async fn load_from_registry(
 ///
 /// 落盘位置在**临时目录**里：分析链路只认「路径」这个入口（`ImageSource::load`），
 /// 直接塞字节会绕过既有的格式识别（docker-archive / OCI layout / 单层 tar 三种），
-/// 那正是我们最不该分叉的一段逻辑。分析完立刻删掉，不污染用户目录。
+/// 那正是我们最不该分叉的一段逻辑。
+///
+/// 临时产物**不在这里收**：装完之后 `ImageSource` 只记偏移，层要等到 `main`
+/// 里逐层 `raw_bytes` 才真去读。在这里删，删的就是那份还没人读过的归档
+/// （issue #133）。`/tmp` 会替我们收尾。
 async fn save_remote(
   options : RegistryOptions,
 ) -> (@registry_cli.SaveResult, String) raise CommandError {
@@ -107,18 +121,20 @@ async fn save_remote(
 }
 
 ///|
-/// 收掉这次拉取建的临时目录。
+/// 收掉这次拉取建的临时目录——**只收空壳**。
 ///
 /// 两种落点，两种收法：
 ///
-/// - **没给 `--output`**：`dive-registry-*` 是我们自己建的，里面的东西全是我们造的，
-///   整棵删掉比「按 format 猜那个 `result.path` 是文件还是目录」更不容易漏
+/// - **没给 `--output`**：产物就在 `dive-registry-*` 里。装完之后 `caller` 手上
+///   只有一条路径（`ImageSource` 只记 `offset`，字节按需读），所以这里删掉的
+///   正是后面要用的那份文件——`load_from_registry` 因此不再无条件调它，
+///   只在「一字节都没落地」时收
 /// - **给了 `--output`**：落盘产物归用户，**一个字节都不碰**。以前这里无条件删
 ///   `directory`——而 `save_remote` 在给了 `--output` 时压根没往里写东西，那次删除
 ///   唯一的效果就是让「产物在 `directory` 里」这个假设永远不成立（issue #122 的另一半）
 ///
-/// 调用时机同样重要：`load_from_registry` 必须先把归档**读进内存**再调它，
-/// 否则删掉的正是接下来要 `fopen` 的那份文件。
+/// 它剩下的用处是 `errdefer`：拉取中途失败时，那个目录里只有半截东西，
+/// 收掉不欠任何人。
 async fn cleanup_remote(
   options : RegistryOptions,
   directory : String,

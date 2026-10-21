@@ -69,16 +69,24 @@ async test "an image from stdin never opens the browser" {
 }
 
 ///|
-/// 归档读进内存**之后**才删临时目录（issue #122 的另一半，也是 #128 的现场）。
+/// 归档装好之后**不许**再删它所在的那个目录（issue #133）。
 ///
-/// 现场长这样：`[registry] parsing .../image.tar...` 下一行
-/// `image error: cannot read image: .../image.tar: No such file or directory`。
-/// 旧的 `load_from_registry` 先 `cleanup_remote` 再 `ImageSource::load`，
-/// 删掉的正是接下来要 `fopen` 的那份文件；镜像一条都没读到，
-/// 链路在「选界面」之前就 exit 2 了——于是看起来像「说好的界面没打开」。
+/// 现场长这样：
 ///
-/// 这里钉的是那条不变式：`cleanup_remote` 只能删掉「已经没人要的那份」。
-async test "the image survives the temp cleanup, and the temp dir does not" {
+/// ```text
+/// [registry] parsing /tmp/dive-registry-xxx/image.tar...
+/// image error: cannot read image: /tmp/dive-registry-xxx/image.tar: No such file or directory
+/// ```
+///
+/// 上一版（#132）把顺序改成了「先 load 再收」，可 `ImageSource::load` 只记
+/// 每层的 `offset`，字节要等到 `main` 里逐层 `raw_bytes` 才真去读。
+/// 于是在这里删目录，删的仍是那份**还没人读过**的归档：
+/// 对本地 tar 是「立刻炸」，对 NFS 上的 `/tmp` 是「永远炸」——删掉一个
+/// 仍被本地进程开着/缓存着的文件时，服务端只会留一个按路径打不开的影子，
+/// 报出来正是 `No such file or directory`。
+///
+/// 现在这条链路走 `save_image(result.bytes == 0)` 判空壳：装了东西就一字节都不碰。
+async test "the archive is still on disk after it is loaded" {
   let layer = @layer_tree.build_tar([
     @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
   ])
@@ -90,7 +98,7 @@ async test "the image survives the temp cleanup, and the temp dir does not" {
       diff +
       "\"] } }",
   )
-  // 落盘进我们自己建的临时目录，与 `save_remote` 的产物同形
+  // 与 `save_remote` 的产物同形：我们自己建的临时目录里放一个 image.tar
   let directory = @async_fs.tmpdir(prefix="dive-registry-") catch {
     err => fail("cannot create a temp directory: \{err}")
   }
@@ -100,36 +108,23 @@ async test "the image survives the temp cleanup, and the temp dir does not" {
   }
   let options = parse_options(["demo.tar", "--no-tui"])
   let registry_options = registry_options(options)
-  // 先收一次：没给 `--output` 时 `dive-registry-*` 整个归我们，必须删得掉
-  // （`load_from_registry` 就是踩在这上面——它把这句放在了读文件之前）
-  cleanup_remote(registry_options, directory)
-  assert_false(@fs.path_exists(path))
-  // 反过来：给了 `--output` 时产物不归我们，一个字节都不许碰
-  let kept = @async_fs.tmpdir(prefix="dive-registry-") catch {
-    err => fail("cannot create a temp directory: \{err}")
-  }
-  let kept_path = "\{kept}/image.tar"
-  @async_fs.write_file(kept_path, archive) catch {
-    err => fail("cannot write the archive: \{err}")
-  }
-  cleanup_remote({ ..registry_options, output: "user-specified.tar", }, kept)
-  assert_true(@fs.path_exists(kept_path))
-  try @async_fs.rmdir(kept, recursive=true) catch {
-    _ => ()
-  } noraise {
-    _ => ()
-  }
-  // 上一步把目录整个删了：重新落一份，验「读完再收」这一半
-  @async_fs.mkdir(directory, recursive=true) catch {
-    err => fail("cannot recreate the temp directory: \{err}")
-  }
-  @async_fs.write_file(path, archive) catch {
-    err => fail("cannot write the archive: \{err}")
-  }
+  // 装载只记偏移：这一步成功不代表字节读得到，正因如此更不能删
   let source = try @image_ci.ImageSource::load(path) catch {
     err => fail("the archive must be readable: \{err.to_string()}")
   } noraise {
     source => source
   }
   assert_eq(source.layers.length(), 1)
+  assert_true(
+    @fs.path_exists(path),
+    msg="\{path} was deleted after it was loaded",
+  )
+  // 层真的还能读回来（`main` 里就是这一步：逐层 `raw_bytes`）
+  let raw = source.layers[0].raw_bytes() catch {
+    err => fail("the layer must still be readable: \{err.to_string()}")
+  }
+  assert_true(raw.length() > 0)
+  // 空壳才归我们：`cleanup_remote` 的存在意义就是「一字节都没有的目录」
+  cleanup_remote(registry_options, directory)
+  assert_false(@fs.path_exists(path))
 }

@@ -270,6 +270,7 @@ pub(all) struct RemoteImage {
   layers : Array[PulledBlob]
   platform : @oci_spec.Platform?
   staging : String?
+  staging_used : Bool
 } derive(Eq, @debug.Debug)
 pub fn RemoteImage::equal(Self, Self) -> Bool
 pub fn RemoteImage::not_equal(Self, Self) -> Bool

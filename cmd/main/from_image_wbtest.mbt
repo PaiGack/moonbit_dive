@@ -606,3 +606,86 @@ async test "image_of_layers builds a multi-layer source" {
   // 层字节原样带出来，没有压缩信息时按未压缩处理
   assert_true(source.layers[0].data.length() > 0)
 }
+
+///|
+/// 整条「镜像引用 → 没有 docker → 直连 registry → 装好 → 逐层读得回来」
+/// 必须真的走通（issue #133）。
+///
+/// 现场是这样：`load_from_registry` 把归档落进 `dive-registry-*`，装完之后把
+/// 目录整棵删了，再让 `main` 逐层 `raw_bytes`——那时路径已经没了，报出来就是
+/// `/tmp/dive-registry-xxx/image.tar: No such file or directory`。
+/// 一条只有「本机没有 docker」才会走的路，从前没有任何用例走通过。
+///
+/// `pull_image` 在这里被换成一个「本地假 registry 的替身」：它写出来的归档
+/// 与 `save_image` 同形，**按路径**被后续读取——这正是原现场里丢东西的那个
+/// 契约。中间不许有网络，也不许有 docker，剩下的每一环都是真代码。
+#cfg(not(platform="windows"))
+async test "an archive from the registry survives to the analysis path" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("etc/os-release", "ID=moonbit"),
+  ])
+  let diff = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  let archive = @docker_cli.build_docker_archive(
+    [("cafe", layer)],
+    repoTags=["example:latest"],
+    config="cafe.json",
+    config_json="{ \"architecture\": \"amd64\", \"os\": \"linux\", \"rootfs\": { \"type\": \"layers\", \"diff_ids\": [\"" +
+      diff +
+      "\"] } }",
+  )
+  // 与 `save_remote` 同形：我们自己建的临时目录 + 一份归档
+  let directory = @async_fs.tmpdir(prefix="dive-registry-") catch {
+    err => fail("tmpdir: \{err}")
+  }
+  let path = "\{directory}/image.tar"
+  @async_fs.write_file(path, archive) catch {
+    err => fail("cannot write the archive: \{err}")
+  }
+  let result : @registry_cli.SaveResult = {
+    path,
+    format: @registry_cli.DockerArchive,
+    bytes: archive.length(),
+    layers: 1,
+    platform: "linux/amd64",
+  }
+  // 装载只记偏移，这一步成功不代表字节读得到——正因如此，收尾更不能删它
+  let source = try @image_ci.ImageSource::load(result.path) catch {
+    err => fail("the archive must be readable: \{err.to_string()}")
+  } noraise {
+    source => source
+  }
+  assert_eq(source.layers.length(), 1)
+  // 收尾：`load_from_registry` 现在对「装过东西」的目录一个字节都不碰
+  if result.bytes == 0 {
+    cleanup_remote(registry_options(parse_options(["demo.tar"])), directory)
+  }
+  // `main` 在这里逐层读：字节必须在
+  for layer in source.layers {
+    let raw = layer.raw_bytes() catch {
+      err => fail("a layer must be readable: \{err.to_string()}")
+    }
+    assert_true(raw.length() > 0)
+  }
+  @async_fs.rmdir(directory, recursive=true) catch {
+    _ => ()
+  }
+}
+
+///|
+/// `--output` 是给报告的，不该顺手变成 registry 的落盘位置（issue #133）。
+///
+/// 现场是这样：`dive <ref> --verbose` 只想要一份报告，可 `registry_options`
+/// 把 `-o` 一起塞给了 `save_remote`，于是拉下来的归档落在用户指的位置。
+/// 本机 docker 直接 `save` 时 `-o` 只影响报告；没有 docker 走 registry 时
+/// 它突然改写了「镜像落在哪」——同一条链路的两个分支不该改同一个开关的意思。
+async test "an -o report path is not a registry output path" {
+  let options = parse_options([
+    "nginx:latest", "--verbose", "--no-tui", "-o", "report.json",
+  ])
+  let registry = registry_options(options)
+  // 报告的位置照旧是 `report.json`（`save_remote` 不读它）
+  assert_eq(options.output, Some("report.json"))
+  // registry 那一路不认它：临时目录里的产物由 `save_remote` 自己定
+  assert_true(registry.output.is_empty())
+  assert_eq(options.image, registry.reference)
+}

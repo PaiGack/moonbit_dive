@@ -598,3 +598,78 @@ async test "a token realm that claims https falls back to the known origin" {
     server.close()
   })
 }
+
+///|
+/// 拉完之后 `discard_image` **不能**把还登记在 `path` 上的层删掉。
+///
+/// issue #133 的现场：`save_image` 全程按路径相认（`PulledBlob::path`），
+/// 打包中途一次失败收尾（或者上一次 `--save` 留下的目录被下一次复用）把
+/// `dive-blobs-*` 整棵清了，于是「层还在 manifest 里」与「文件已经没了」
+/// 同时成立——错误一路拖到 `[registry] parsing .../image.tar` 之后，
+/// 以 `No such file or directory` 的形状冒出来。
+///
+/// 空壳与有货的目录必须分得清：前者归我们，随便删；后者是别人手上的东西。
+#cfg(not(platform="windows"))
+async test "a discarded image never deletes a layer that is still on disk" {
+  let payload = Bytes::makei(4096, index => (index % 251).to_byte())
+  let tar = big_payload_tar(payload)
+  let blob = @layer_tree.gzip_compress(tar)
+  let image : FakeImage = {
+    config: fake_config([@oci_spec.Digest::from_sha256(tar).to_string()]),
+    layers: [blob],
+    layer_media_type: @oci_spec.oci_layer_gzip_media_type,
+    as_index: false,
+    platform_os: "linux",
+    platform_arch: "amd64",
+  }
+  with_fake_registry(image, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let pulled = pull_with_client(
+      RegistryClient::connect(host, insecure=true) catch {
+        _ => fail("client")
+      },
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    // 这一次拉取确实落了盘：字节不在内存里，目录不是空壳
+    assert_true(pulled.staging_used)
+    let directory = pulled.staging.unwrap_or("<none>")
+    assert_true(@xfs.path_exists(directory))
+    // 收尾：一个**有货**的目录不能整棵删掉。
+    //
+    // 层是按路径相认的（`PulledBlob::path`），`save_image` 打包时靠这个路径
+    // 一层一层读；目录一旦被清空，那些还登记在 manifest 里的层就全成了
+    // `No such file or directory`——正是 issue #133 报的那句。
+    @registry_cli.discard_image(pulled)
+    assert_true(
+      @xfs.path_exists(directory),
+      msg="\{directory} was deleted while it still held layers",
+    )
+    // 反过来：空壳归我们，删掉它不欠任何人
+    let shell = @fs.tmpdir(prefix="dive-discard-shell-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let empty : RemoteImage = {
+      reference: pulled.reference,
+      media_type: pulled.media_type,
+      manifest_digest: pulled.manifest_digest,
+      config: pulled.config,
+      layers: pulled.layers,
+      platform: pulled.platform,
+      staging: Some(shell),
+      staging_used: false,
+    }
+    @registry_cli.discard_image(empty)
+    assert_false(@xfs.path_exists(shell))
+    ignore(blob)
+    // 自己收摊：这条用例自己造的目录自己删
+    @fs.rmdir(directory, recursive=true) catch {
+      _ => ()
+    }
+  })
+}
