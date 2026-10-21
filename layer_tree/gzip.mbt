@@ -336,7 +336,7 @@ fn InflateWindow::put_byte(self : InflateWindow, byte : Byte) -> Unit {
 ///|
 /// 缓冲是不是已经写满（`put_byte` 之后要查一次）。
 fn InflateWindow::full(self : InflateWindow) -> Bool {
-  self.length == self.buffer.length()
+  self.length >= self.buffer.length()
 }
 
 ///|
@@ -386,11 +386,14 @@ async fn InflateWindow::copy_from(
   let bytes = self.buffer.unsafe_reinterpret_as_bytes()
   let mut remaining = length
   while remaining > 0 {
-    if self.length == self.buffer.length() {
+    // 满着一律先腾地方，而且要在算 `room` **之前**：`put_byte` 与本段共用
+    // 一块缓冲，一块里最后一次回拷往往刚好贴着缓冲末尾（`remaining` 只剩
+    // 几字节），那时 `room` 是 0，一段也拷不出去——循环空转，或者更糟，
+    // 字节写到缓冲外面去（issue #116）。
+    if self.length >= self.buffer.length() {
       self.drain() catch {
         err => raise Gzip(err.to_string())
       }
-      continue
     }
     let source = self.length - back
     if source < 0 {
@@ -412,6 +415,9 @@ async fn InflateWindow::copy_from(
       } else {
         room
       }
+    }
+    if run <= 0 {
+      raise Gzip("deflate back-reference cannot make progress")
     }
     self.buffer.blit_from_bytesview(self.length, bytes[source:source + run])
     self.length = self.length + run
@@ -516,12 +522,15 @@ async fn inflate_block(
   while true {
     let symbol = reader.read_symbol(literal)
     if symbol < 256 {
-      window.put_byte(symbol.to_byte())
+      // 先看还有没有地方再写：`put_byte` 是同步的，它无从挂起去 `drain`，
+      // 写满之后再写就是越界（issue #116）。判定条件用 `>=`，因为这一批
+      // 长度不必整除缓冲长度，`length` 理论上可以正好落在边界上。
       if window.full() {
         window.drain() catch {
           err => raise Gzip(err.to_string())
         }
       }
+      window.put_byte(symbol.to_byte())
       continue
     }
     if symbol == 256 {
