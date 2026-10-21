@@ -144,3 +144,37 @@ async test "non-interactive reporter emits one line per update" {
   )
   assert_true(reporter.pending() is None)
 }
+
+///|
+/// issue #141 的现场：`2262243328` 字节（2.1 GiB）曾经被 `to_int()` 截成
+/// `-2032723968`，用户看到的是一份「文件在、体积是假的」的摘要。
+async test "SaveResult keeps byte counts past 2 GiB" {
+  let result = @registry_cli.SaveResult::{
+    path: "/tmp/img.tar",
+    format: @registry_cli.DockerArchive,
+    bytes: 2262243328L,
+    layers: 13,
+    platform: "linux/amd64",
+  }
+  // 2262243328 比 Int32.max 多出 4.7%：截断后正好翻负，
+  // 字段本身不许再被压回 32 位
+  assert_eq(result.bytes, 2262243328L)
+  // 摘要里给人看的是体积，不是裸字节数
+  assert_eq(
+    result.to_string(),
+    "docker-archive -> /tmp/img.tar (2.1 GiB, 13 layers, linux/amd64)",
+  )
+  // 再往上也一样：4 TiB 还在 Int64 里
+  let huge = @registry_cli.SaveResult::{
+    path: result.path,
+    format: result.format,
+    bytes: 4L * 1024L * 1024L * 1024L * 1024L,
+    layers: result.layers,
+    platform: result.platform,
+  }
+  assert_eq(huge.bytes, 4398046511104L)
+  assert_eq(
+    huge.to_string(),
+    "docker-archive -> /tmp/img.tar (4.0 TiB, 13 layers, linux/amd64)",
+  )
+}

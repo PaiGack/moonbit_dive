@@ -252,9 +252,12 @@ async fn save_remote(
 
 ///|
 /// 打印一行结果摘要（`--save` 的主输出）。
+///
+/// 体积走 `human_bytes`：2 GiB 的归档写成 `2262243328 bytes` 没人读得进去，
+/// 而裸字节数也正是当年有人图省事用 `Int32` 存、翻成负数的由来（issue #141）。
 fn report_saved(result : @registry_cli.SaveResult) -> Unit {
   println(
-    "saved \{result.path} (\{result.format}, \{result.bytes} bytes, \{result.layers} layers, \{result.platform})",
+    "saved \{result.path} (\{result.format}, \{@registry_cli.human_bytes(result.bytes)}, \{result.layers} layers, \{result.platform})",
   )
 }
 

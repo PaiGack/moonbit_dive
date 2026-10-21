@@ -296,7 +296,7 @@ pub impl Show for SaveRequest
 pub(all) struct SaveResult {
   path : String
   format : ArchiveFormat
-  bytes : Int32
+  bytes : Int64
   layers : Int32
   platform : String
 } derive(Eq, @debug.Debug)
