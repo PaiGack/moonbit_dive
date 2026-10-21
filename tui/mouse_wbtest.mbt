@@ -14,7 +14,12 @@ async fn mouse_views() -> Array[@layer_tree.LayerView] {
 ///|
 /// 造一个已经画过一帧的状态：`last_layout` 有值，鼠标坐标才有落点。
 async fn mouse_state() -> AppState {
-  let state = AppState::new(mouse_views(), None, "demo")
+  let state = AppState::new(
+    mouse_views(),
+    None,
+    "demo",
+    start=StartConfig::new(),
+  )
   let layout = Layout::compute(80, 24)
   state.view.page_height = max(layout.body_height() - 1, 1)
   state.last_layout = Some(layout)
@@ -247,7 +252,12 @@ async test "drag and move never change the state" {
 ///|
 /// 还没画过帧时（`last_layout` 为空）鼠标事件被安静丢掉，不崩。
 async test "mouse events before the first frame are ignored" {
-  let state = AppState::new(mouse_views(), None, "demo")
+  let state = AppState::new(
+    mouse_views(),
+    None,
+    "demo",
+    start=StartConfig::new(),
+  )
   assert_eq(state.last_layout, None)
   let quit = handle_mouse(
     mouse_at(@input.MouseEventKind::Press(@input.MouseButton::Left), 3, 3),

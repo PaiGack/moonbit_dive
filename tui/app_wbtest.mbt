@@ -19,9 +19,14 @@ async fn two_layer_views() -> Array[@layer_tree.LayerView] {
 /// （「默认看最后一层」是 CLI 的取舍，由 `run_tui` 显式传进来）。
 async test "app state starts on the requested layer" {
   let views = two_layer_views()
-  let state = AppState::new(views, None, "demo")
+  let state = AppState::new(views, None, "demo", start=StartConfig::new())
   assert_eq(state.view.layer, 0)
-  let state_last = AppState::new(views, None, "demo", initial_layer=1)
+  let state_last = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=1),
+  )
   assert_eq(state_last.view.layer, 1)
 }
 
@@ -29,9 +34,19 @@ async test "app state starts on the requested layer" {
 /// 初始层号越界要夹住，不能把空数组喂给视图。
 async test "app state clamps the initial layer" {
   let views = two_layer_views()
-  let state = AppState::new(views, None, "demo", initial_layer=99)
+  let state = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=99),
+  )
   assert_eq(state.view.layer, 1)
-  let state_neg = AppState::new(views, None, "demo", initial_layer=-5)
+  let state_neg = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=-5),
+  )
   assert_eq(state_neg.view.layer, 0)
 }
 
@@ -39,7 +54,12 @@ async test "app state clamps the initial layer" {
 /// 换层保留光标路径：同一文件在另一层也可见时，光标停在它上面。
 async test "app state keeps the cursor path across layers" {
   let views = two_layer_views()
-  let state = AppState::new(views, None, "demo", initial_layer=1)
+  let state = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=1),
+  )
   state.view.move_to(state.view.index_of_path("/etc").unwrap())
   state.switch_layer(0)
   assert_eq(state.view.layer, 0)
@@ -51,7 +71,12 @@ async test "app state keeps the cursor path across layers" {
 /// 换到目标层后，原路径不存在时游标落到合法位置，不越界。
 async test "app state repositions the cursor when the path disappears" {
   let views = two_layer_views()
-  let state = AppState::new(views, None, "demo", initial_layer=1)
+  let state = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=1),
+  )
   // `/etc/hosts` 在 L1 没了
   state.view.move_to(state.view.index_of_path("/etc/hosts").unwrap())
   state.switch_layer(1)
@@ -63,7 +88,12 @@ async test "app state repositions the cursor when the path disappears" {
 /// 越界换层不动。
 async test "app state ignores out-of-range layer switches" {
   let views = two_layer_views()
-  let state = AppState::new(views, None, "demo", initial_layer=1)
+  let state = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=1),
+  )
   state.switch_layer(5)
   assert_eq(state.view.layer, 1)
   state.switch_layer(-1)
@@ -120,4 +150,75 @@ async test "app enables and disables mouse tracking around the alt screen" {
   let mouse_off = written.find("\u{1b}[?1006l").unwrap()
   let leave_alt = written.find("\u{1b}[?1049l").unwrap()
   assert_true(mouse_off < leave_alt)
+}
+
+///|
+/// 起始档位（`--aggregate`）真的换了「拿哪段 diff 上色」：
+/// 第 1 层的树上，`/etc/hosts` 在聚合档下应当仍算「第 0 层写过」。
+async test "start config picks the compare mode" {
+  let views = two_layer_views()
+  let single = AppState::new(
+    views,
+    None,
+    "demo",
+    start=StartConfig::new(initial_layer=1),
+  )
+  assert_eq(single.view.compare_mode, CompareMode::Single)
+  let aggregate = AppState::new(views, None, "demo", start={
+    ..StartConfig::new(initial_layer=1),
+    compare_mode: CompareMode::Aggregate,
+  })
+  assert_eq(aggregate.view.compare_mode, CompareMode::Aggregate)
+  // 档位换的是上色的 diff，不是树本身
+  assert_eq(aggregate.view.all_rows.length(), single.view.all_rows.length())
+}
+
+///|
+/// 光标落点（`--path`）：命中就直接停在那条路径上。
+async test "start config drops the cursor on the requested path" {
+  let views = two_layer_views()
+  let state = AppState::new(views, None, "demo", start={
+    ..StartConfig::new(initial_layer=0),
+    path: Some("/app/main"),
+  })
+  assert_eq(state.view.cursor_path_from_visible(), Some("/app/main"))
+  assert_eq(state.focus, Focus::Tree)
+}
+
+///|
+/// 落点不存在时退到最近的、能看见的祖先，而不是把界面拦在门外。
+async test "a missing start path falls back to the nearest visible ancestor" {
+  let views = two_layer_views()
+  let state = AppState::new(views, None, "demo", start={
+    ..StartConfig::new(initial_layer=0),
+    path: Some("/app/nope/deep"),
+  })
+  assert_eq(state.view.cursor_path_from_visible(), Some("/app"))
+  // 全都不认识就老实待在首行
+  let stranger = AppState::new(views, None, "demo", start={
+    ..StartConfig::new(initial_layer=0),
+    path: Some("/zzz"),
+  })
+  assert_eq(stranger.view.cursor_path_from_visible(), Some("/app"))
+}
+
+///|
+/// 起始焦点（`--efficiency` 给详情面板）与启动提示。
+async test "start config picks the focus and keeps notices" {
+  let views = two_layer_views()
+  let state = AppState::new(
+    views,
+    None,
+    "demo",
+    start={
+      ..StartConfig::new(initial_layer=0),
+      focus: Focus::Detail,
+      path: Some("/app/main"),
+    },
+    notices=["tui skipped: not a tty"],
+  )
+  assert_eq(state.focus, Focus::Detail)
+  assert_eq(state.notices(), ["tui skipped: not a tty"])
+  state.notify("")
+  assert_eq(state.notices().length(), 1)
 }

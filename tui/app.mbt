@@ -41,40 +41,128 @@ pub(all) struct AppState {
   /// 拿不到 async 的 `window_size`。画帧时顺手记一份，坐标口径天然一致
   /// （哪怕 resize 之后还没重画，用的也是画面上那一版真实布局）。
   mut last_layout : Layout?
+  /// 启动提示（命令行把「这次为什么进了文本」写在这里，退出后统一吐到 stderr）。
+  /// 空串表示没有要说的。
+  notices : Array[String]
 } derive(Debug)
 
 ///|
-/// 从逐层视图与分析结果建状态。光标从第 0 行开始。
+/// 进界面时的那几件事：起始层、起始档位、光标落点、谁先拿焦点。
+///
+/// 与 `AppState::new` 分开，是因为它还能被单测原样构造——命令行那边只是把
+/// `--layer` / `--aggregate` / `--path` / `--efficiency` 翻译成这几个字段。
+pub(all) struct StartConfig {
+  /// 起始层（0 起）；越界会被夹进 `0..layers-1`
+  layer : Int32
+  /// 起始比较档位：`--aggregate` 那档
+  compare_mode : CompareMode
+  /// 树的光标落点（`--path`）：路径不存在就留在第 0 行
+  path : String?
+  /// 起始焦点：`--efficiency` 给详情面板
+  focus : Focus
+} derive(Eq, Debug)
+
+///|
+/// 缺省初始态：给定层、单层档、光标在首行、焦点在树。
+///
+/// 层号缺省 0（`AppState::new` 会再夹一次范围）；「最后一层」是调用方的事，
+/// 这里不猜——`tui` 包拿不到「用户没给 `--layer`」这条信息。
+pub fn StartConfig::new(initial_layer~ : Int32 = 0) -> StartConfig {
+  {
+    layer: initial_layer,
+    compare_mode: CompareMode::Single,
+    path: None,
+    focus: Focus::Tree,
+  }
+}
+
+///|
+/// 把光标落到 `path`：路径存在就挪过去，不存在原样不动（不报错——CLI 上
+/// 打错一个路径不该把界面拦在门外）。
+///
+/// 逐级检查祖先：`/usr/bin/sh` 不可见时，退到 `/usr/bin`、`/usr`。
+/// 树默认全展开，所以这条大多数时候一次就命中；留着是为了 `--path` 指到
+/// 一个已经被折叠起来的目录里时还能落得住（`TreeView` 的折叠状态只由
+/// 按键改，这里不主动改它）。
+pub fn AppState::focus_path(self : AppState, path : String) -> Unit {
+  let mut candidate = path
+  while candidate != "" && candidate != "/" {
+    match self.view.index_of_path(candidate) {
+      Some(index) => {
+        self.view.move_to(index)
+        self.focus = Focus::Tree
+        return
+      }
+      None => ()
+    }
+    let parent = @layer_tree.parent_path(candidate)
+    if parent == "" || parent == candidate {
+      return
+    }
+    candidate = parent
+  }
+}
+
+///|
+/// 从逐层视图与分析结果建状态。
+///
+/// `start` 是进界面时的初始态：起始层、起始档位（聚合 / 单层）、光标落点、
+/// 起始焦点。不给就是「最后一层、单层档、首行、树」——与从前一致。
 pub fn AppState::new(
   views : Array[@layer_tree.LayerView],
   details : DetailSource?,
   image : String,
-  initial_layer~ : Int32 = 0,
+  start~ : StartConfig,
+  notices~ : Array[String] = [],
 ) -> AppState {
-  let layer = clamp(initial_layer, 0, max(views.length() - 1, 0))
+  let layer = clamp(start.layer, 0, max(views.length() - 1, 0))
   // 没有层（空镜像）时给一棵空树：视图逻辑本身不需要「至少有一层」这个前提
   let view = if views.length() > 0 {
     TreeView::from_tree_with_diff(
       views[layer].tree,
-      Some(views[layer].diff),
+      Some(diff_for(views[layer], start.compare_mode)),
       layer,
       views.length(),
       false,
+      compare_mode=start.compare_mode,
     )
   } else {
     TreeView::from_tree(@layer_tree.FileTree::new(), layer, 0)
   }
-  {
+  let state = {
     views,
     details,
     image,
     view,
-    focus: Focus::Tree,
+    focus: start.focus,
     detail_scroll: Viewport::new(0, 1),
     help_visible: false,
     removed_visible: false,
     removed_scroll: Viewport::new(0, 1),
     last_layout: None,
+    notices,
+  }
+  // 落点会顺手把焦点挪回树上（否则「`--path` 给了却什么都没选中」更怪），
+  // 所以先落点、后认 `--efficiency` 的焦点请求
+  match start.path {
+    Some(path) => state.focus_path(path)
+    None => ()
+  }
+  state.focus = start.focus
+  state
+}
+
+///|
+/// 启动时的提示行：给调用方（`cmd/main`）在退出后统一打到 stderr。
+pub fn AppState::notices(self : AppState) -> Array[String] {
+  self.notices.copy()
+}
+
+///|
+/// 补一条提示。空串不算——调用方常见「没有话说」的情况，不必每处都判。
+pub fn AppState::notify(self : AppState, message : String) -> Unit {
+  if !message.is_empty() {
+    self.notices.push(message)
   }
 }
 
@@ -452,6 +540,12 @@ pub(all) struct WindowSize {
   cols : Int32
   rows : Int32
 } derive(Eq, Debug)
+
+///|
+pub extend StartConfig with Eq::{equal, not_equal}
+
+///|
+pub extend StartConfig with @debug.Debug::{to_repr}
 
 ///|
 pub extend AppState with @debug.Debug::{to_repr}

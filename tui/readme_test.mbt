@@ -14,7 +14,12 @@ async test "README example" {
   }
 
   // 建视图状态：默认看第 0 层
-  let state = @tui.AppState::new(views, None, "demo:latest")
+  let state = @tui.AppState::new(
+    views,
+    None,
+    "demo:latest",
+    start=@tui.StartConfig::new(),
+  )
   assert_eq(state.view.layer, 0)
   assert_eq(state.view.visible.length(), 2)
 

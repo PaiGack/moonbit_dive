@@ -95,16 +95,49 @@ async test "the positional is classified into stdin, local path or reference" {
 }
 
 ///|
-/// `--tui` 默认关；打开后不影响其它开关的语义。
-async test "tui flag defaults to off and is independent" {
+/// `--no-tui` 默认关——也就是**默认开界面**（issue #128 的方案 B）。
+///
+/// 这个默认只影响 native 那条出口：能不能真开得起来另由 `refusal_of_tui`
+/// 现场判（tty / stdin 是 tar 流）。`--no-tui` 是「我就是要文本」，
+/// 给了它就不必再问终端。
+async test "the browser defaults to on and --no-tui turns it off" {
   let options = parse_options(["demo.tar"])
-  assert_false(options.tui)
-  let with_tui = parse_options(["demo.tar", "--tui"])
-  assert_true(with_tui.tui)
-  // 顺手开 `--tui` 不该改掉门禁/视图的开关
-  assert_false(with_tui.efficiency)
-  assert_eq(with_tui.layer, None)
-  assert_eq(with_tui.format, "text")
+  assert_false(options.no_tui)
+  assert_true(options.interactive())
+  let text_only = parse_options(["demo.tar", "--no-tui"])
+  assert_true(text_only.no_tui)
+  assert_false(text_only.interactive())
+  // 顺手加 `--no-tui` 不该改掉门禁/视图的开关
+  assert_false(text_only.efficiency)
+  assert_eq(text_only.layer, None)
+  assert_eq(text_only.format, "text")
+}
+
+///|
+/// 老的 `--tui` 没了：默认就是界面，再多一个「打开」的开关只会让
+/// `--tui --no-tui` 这种自相矛盾有地方藏。argparse 该直接报错。
+async test "the old --tui flag is gone" {
+  let rejected : Bool = try {
+    cli().parse(argv=["demo.tar", "--tui"]) |> ignore
+    false
+  } catch {
+    _ => true
+  }
+  assert_true(rejected)
+}
+
+///|
+/// `--save` 与界面互斥：不给 `--no-tui` 就是 exit 2 的参数错，
+/// 不能让 `--save` 悄悄吃掉界面，也不能让界面悄悄吃掉 `--save`。
+async test "save and the browser are mutually exclusive" {
+  let save_only = parse_options([
+    "nginx:latest", "--save", "-o", "x.tar", "--no-tui",
+  ])
+  assert_true(save_only.save)
+  assert_false(save_only.interactive())
+  // 冲突的判定只看这两个开关，与别的一概无关
+  let clash = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
+  assert_true(clash.save && clash.interactive())
 }
 
 ///|
@@ -117,7 +150,7 @@ async test "aggregate flag defaults to off and is independent" {
   assert_eq(with_aggregate.layer, Some(2))
   // 顺手开 `--aggregate` 不该改掉门禁/视图的开关
   assert_false(with_aggregate.efficiency)
-  assert_false(with_aggregate.tui)
+  assert_false(with_aggregate.no_tui)
   assert_eq(with_aggregate.format, "text")
 }
 

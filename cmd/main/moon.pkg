@@ -22,3 +22,9 @@ pkgtype(kind: "executable")
 // 与 docker_cli 的约定一致，这里显式声明，避免默认 wasm 构建去解析这个依赖。
 
 supported_targets = "-all+native"
+
+// 「能不能开界面」要问 `isatty(stdin/stdout)`，而 core 里没有这层探测。
+
+options(
+  "native-stub": [ "tty_stub.c" ],
+)
