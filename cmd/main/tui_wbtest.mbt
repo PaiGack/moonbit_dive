@@ -54,6 +54,24 @@ async test "save without --no-tui is a config error, not a silent choice" {
 }
 
 ///|
+/// 对拍脚本里那条「不碰 daemon 直拉 registry」的形态（`--save --no-tui -o x`）。
+///
+/// 钉住两件事：`--no-tui` 与 `--save` 一起给不该被当成参数错（互斥只看
+/// 「明说要界面」），以及 `--format json` 之类别的开关掺进来也不改这个结论。
+/// 少了 `--no-tui` 的那一版是故意的参数错——脚本必须写全，CI 才不会红在
+/// 一句「你已经 `--no-tui` 了」上。
+async test "the probe's save invocation passes the config check" {
+  let probe = parse_options([
+    "ghcr.io/owner/repo:tag", "--save", "--no-tui", "--output", "registry.tar", "--format",
+    "json",
+  ])
+  assert_true(probe.save)
+  assert_false(probe.save && probe.interactive())
+  assert_eq(probe.format, "json")
+  assert_eq(probe.output, Some("registry.tar"))
+}
+
+///|
 /// 能不能开界面：`-`（stdin 是 tar）一票否决——界面会把 tar 流吃掉。
 ///
 /// 这一档在问 tty 之前就返回，所以断言与环境无关：哪怕测试跑在真终端里也一样。

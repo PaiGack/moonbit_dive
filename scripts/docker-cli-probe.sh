@@ -427,11 +427,14 @@ fi
 # 这条不该依赖本地 docker：`registry_cli` 自己走 HTTP 拉 blob 再打包。
 # 整条链路里唯一「完全不需要 daemon」的入口——「不装 docker 也能分析在线镜像」
 # 就是靠它。`--save` 只对镜像引用生效，正好是这里的用法。
+#
+# `--save` 是独立出口，语义上已等同于 `--no-tui`（issue #128 复盘），所以这里
+# 得显式带上 `--no-tui`：不带就等于「又要界面又只保存」，按参数错退 2。
 say ''
 say "${BOLD}== dive <ref> --save（不碰本地 daemon）==${RESET}"
 if [ -z "$ca_bundle" ]; then
   say "${YELLOW}skip${RESET} 没有 CA 包，连不了 https registry"
-elif "$DIVE" "$REMOTE_REF" --save --output "$work/registry.tar" \
+elif "$DIVE" "$REMOTE_REF" --save --no-tui --output "$work/registry.tar" \
     --format json >"$work/registry.json" 2>"$work/registry.log"; then
   [ -s "$work/registry.tar" ] || fail "--save 没落盘"
   python3 - "$work/registry.tar" <<'PY' || fail "registry 的产物不是合法 docker-archive"
@@ -724,7 +727,7 @@ plain_pid=$!
 sleep 1
 if kill -0 "$plain_pid" 2>/dev/null; then
   if "$DIVE" "127.0.0.1:$PLAIN_PORT/test/plain:latest" \
-      --insecure-registry --save --output "$work/plain.tar" --format json \
+      --insecure-registry --save --no-tui --output "$work/plain.tar" --format json \
       >"$work/plain.json" 2>"$work/plain.log"; then
     python3 - "$work/plain.tar" <<'PY' || fail "明文 registry 的产物不是合法 docker-archive"
 import json, sys, tarfile
