@@ -114,4 +114,13 @@ async test "streamed blobs survive the temp cleanup, and the temp dir does not" 
   // 读完再收：删的是临时目录，不是紧接着还要用的那份 blob
   cleanup_streamed(image, directory)
   assert_false(@fs.path_exists(path))
+  // 收完还得能解析：`ImageSource` 手里是字节，不是一条指向临时目录的路径
+  // （issue #138 的现场：到这一步只剩 `No such file or directory`）
+  let plain = try source.layers[0].raw_bytes() catch {
+    err =>
+      fail("the layer must still read back after cleanup: \{err.to_string()}")
+  } noraise {
+    bytes => bytes
+  }
+  assert_eq(plain.length(), layer.length())
 }

@@ -67,7 +67,10 @@ fn registry_source(
       diff_id: "",
     })
   }
-  @image_ci.ImageSource::from_oci_blobs(
+  // 读**现在**就读，不留路径：临时目录在这次调用之后就要收掉（`cleanup_streamed`），
+  // 而 `ImageSource` 要活到分析结束。只留路径的话，收目录等于把层删了，
+  // 报出来只有一句 `No such file or directory`——看不出是谁收了它（issue #138）
+  @image_ci.ImageSource::from_oci_files(
     "\{options.image} (from-registry)",
     image.config_json,
     layers,
