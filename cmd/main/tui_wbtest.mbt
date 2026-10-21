@@ -103,6 +103,7 @@ async test "streamed blobs survive the temp cleanup, and the temp dir does not" 
       },
     ],
     staging: directory,
+    staging_parent: None,
   }
   let options = parse_options(["demo:latest", "--no-tui"])
   let source = try registry_source(options, image) catch {
@@ -114,4 +115,29 @@ async test "streamed blobs survive the temp cleanup, and the temp dir does not" 
   // 读完再收：删的是临时目录，不是紧接着还要用的那份 blob
   cleanup_streamed(image, directory)
   assert_false(@fs.path_exists(path))
+}
+
+///|
+/// `-o` 给了镜像归档就去它旁边干活：一次拉取的东西全在 `{dirname}/.mdive/` 下。
+///
+/// issue #133 的现场是「归档在你这儿，700MB 的 blob 在 `/tmp` 某个随机目录」——
+/// 中间产物跟产物分居两地，谁也说不清哪些文件是一次拉取的。
+async test "the staging area sits next to the -o target" {
+  assert_eq(staging_area_of("/tmp/x/image.tar"), Some("/tmp/x/.mdive"))
+  assert_eq(staging_area_of("/tmp/x/layout"), Some("/tmp/x/.mdive"))
+  // 相对路径：落在当前目录下的 `.mdive/`
+  assert_eq(staging_area_of("image.tar"), Some(".mdive"))
+  // `/image.tar` 的父目录是根，不该拼成 `/.mdive` 之外的东西
+  assert_eq(staging_area_of("/image.tar"), Some("/.mdive"))
+  // 没有产物就没有落点：回系统临时目录，仍是单独一个 `dive-*`
+  assert_eq(staging_area_of(""), None)
+}
+
+///|
+/// 父目录只按 `/` 切：`/x` 的父目录是 `/`，`x` 没有。
+async test "parent_directory splits on the last slash" {
+  assert_eq(parent_directory("/tmp/x/image.tar"), "/tmp/x")
+  assert_eq(parent_directory("a/b"), "a")
+  assert_eq(parent_directory("/x"), "/")
+  assert_eq(parent_directory("x"), "")
 }

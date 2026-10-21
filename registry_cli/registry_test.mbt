@@ -771,6 +771,7 @@ async fn streamed_of(
   image : RemoteImage,
   reference : ImageReference,
 ) -> @registry_cli.StreamedImage raise RegistryError {
+  let staging_parent = image.staging_parent
   let staging = match image.staging {
     Some(directory) => directory
     None => raise Io("streamed image has no staging directory")
@@ -791,7 +792,13 @@ async fn streamed_of(
       size: layer.compressed_size(),
     })
   }
-  { reference: reference.original, config_json, layers, staging, }
+  {
+    reference: reference.original,
+    config_json,
+    layers,
+    staging,
+    staging_parent,
+  }
 }
 
 ///|
@@ -800,4 +807,91 @@ async fn streamed_of(
 ///|
 async fn blob_bytes_for_test(blob : PulledBlob) -> Bytes raise RegistryError {
   blob.bytes()
+}
+
+///|
+/// 一次拉取的中间产物全在**一个**目录里，并且收得干干净净（issue #133）。
+///
+/// 现场是用户在 `/tmp` 下看见好几个 `dive-registry-*` / `dive-blobs-*` 的空壳：
+/// 落点散在系统临时目录的根下，谁也认不出那是什么；层与 `--save` 的归档还各占
+/// 一个。现在给了 `staging_parent` 就只留一层 `{parent}/dive-*`，
+/// `discard_streamed` 连外层一起带走。
+async test "staged blobs live in one parent directory and take it with them" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let parent = @fs.tmpdir(prefix="dive-parent-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let client = RegistryClient::connect(host, insecure=true) catch {
+      _ => fail("cannot create the test client")
+    }
+    let pulled = pull_with_client(
+      client,
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        staging_parent=Some(parent),
+      ),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    client.close()
+    // 落点：`{parent}/dive-blobs-*`，层与 config 都在里面
+    let staging = match pulled.staging {
+      Some(directory) => directory
+      None => fail("the layers should be streamed to disk")
+    }
+    assert_true(staging.has_prefix("\{parent}/"))
+    let entries = @fs.readdir(parent) catch { _ => fail("readdir") }
+    assert_eq(entries.length(), 1)
+    assert_true(entries[0].has_prefix("dive-blobs-"))
+    let image = streamed_of(pulled, reference) catch {
+      err => fail("streaming should succeed: \{err.to_string()}")
+    }
+    assert_eq(image.staging_parent, Some(parent))
+    // 收掉之后连接点都不剩：既没有半截 blob，也没有一个空壳
+    let _ = discard_local(image)
+    assert_false(@fs.exists(staging))
+    assert_false(@fs.exists(parent))
+  })
+}
+
+///|
+/// `streamed_of` 造出来的 `StreamedImage` 要带上外层：不带的话
+/// `discard_streamed` 只删里面那层，`{parent}` 就变成用户眼里的空壳。
+async test "streamed_of carries the staging parent through" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let parent = @fs.tmpdir(prefix="dive-parent-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let client = RegistryClient::connect(host, insecure=true) catch {
+      _ => fail("cannot create the test client")
+    }
+    let pulled = pull_with_client(
+      client,
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        staging_parent=Some(parent),
+      ),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    client.close()
+    assert_eq(pulled.staging_parent, Some(parent))
+    let image = streamed_of(pulled, reference) catch {
+      err => fail("streaming should succeed: \{err.to_string()}")
+    }
+    let _ = discard_local(image)
+    assert_false(@fs.exists(parent))
+  })
 }
