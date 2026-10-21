@@ -820,3 +820,69 @@ fn proc_vm_kb(text : String, key : String) -> Int32 {
   }
   0
 }
+
+///|
+/// 一个 OCI layout 里的一层，**直接**来自独立的压缩 blob 文件。
+///
+/// 这条入口是给「字节从来没进过内存」的链路用的（`dive` 直连 registry 时，
+/// 流式落盘的层就长这样）：`image_ci` 于是不必要求先把 blob 拍成一张
+/// docker-archive tar，再按 tar 偏移把它们找回来。
+pub(all) struct BlobLayer {
+  /// 压缩 blob 的 media type（`+gzip` / `+zstd` / 无压缩）
+  media_type : String
+  /// 压缩 blob 自己的 digest，`sha256:<hex>`
+  digest : String
+  /// blob 文件的位置
+  path : String
+  /// 压缩后的大小
+  size : Int64
+  /// config 里 `rootfs.diff_ids` 的同下标项（没有就是空串）
+  diff_id : String
+}
+
+///|
+pub impl @debug.Debug for BlobLayer with fn to_repr(self) {
+  Repr::string(
+    "BlobLayer(\{self.media_type}, \{self.digest}, \{self.path}, \{self.size})",
+  )
+}
+
+///|
+pub extend BlobLayer with @debug.Debug::{to_repr}
+
+///|
+/// 从「config 字节 + 一堆独立的压缩 blob」拼出一个 `ImageSource`。
+///
+/// 与 `from_oci_layout` 的区别只在层的落点：那边层是**内存里的未压缩字节**，
+/// 这边层是**磁盘上的压缩 blob**，解压由 `LayerSource::raw_bytes` 照 media type
+/// 做（与读目录形态的 OCI layout 完全同一条路）。
+///
+/// 不校验 digest：调用方（`registry_cli`）在字节落地时就验过了，
+/// 这里再算一遍只是让 700MB 的层多跑一趟 sha256。
+pub fn ImageSource::from_oci_blobs(
+  name : String,
+  config_json : String,
+  layers : Array[BlobLayer],
+) -> ImageSource raise ImageError {
+  let config = @oci_spec.parse_image_config_lenient(config_json) catch {
+    err => raise Malformed("\{name}: config.json: \{err.to_string()}")
+  }
+  let diff_ids = config.rootfs.diff_ids
+  let built = []
+  for index, layer in layers {
+    let diff_id = if index < diff_ids.length() {
+      diff_ids[index]
+    } else {
+      layer.diff_id
+    }
+    built.push({
+      media_type: layer.media_type,
+      offset: 0L,
+      size: layer.size,
+      source_path: Some(layer.path),
+      data: Bytes::make(0, b'\x00'),
+      diff_id,
+    })
+  }
+  { name, format: "oci-layout", layers: built, }
+}

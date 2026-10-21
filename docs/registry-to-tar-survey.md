@@ -204,6 +204,39 @@ pub(all) struct PullOptions {
 可选：`cmd/main` 把镜像引用接到本包（当时是先加了个 `--from-registry` 开关，后来统一成位置参数判别）
 显式开关（不做魔数嗅探，和 P5 同样的理由）。
 
+### 3.2 分析链路不该先打包（issue #133）
+
+上面那个三角只在**要一份归档**、也就是 `--save` 的时候成立。分析一个镜像不需要
+`docker-archive`：分析要的是「每层解压后的 tar 字节」，而 docker-archive 只是把这些
+字节套进「目录 + `layer.tar` + `manifest.json`」的形状——那是给 `docker load` 看的。
+
+先打包再分析的实际代价（#133 现场：700 MiB / 13 层）：
+
+```
+下载 13 个 blob            → 磁盘上的压缩 blob
+packing（解压 + tar）      → 2.1 GiB 的 image.tar，每层解压一遍
+ImageSource::load          → 按 tar 偏移把每层找回来
+raw_bytes                  → 再解压一遍
+```
+
+中间那份 2.1 GiB 的 tar 从头到尾没人要：写它一遍、读它一遍、为它占一份磁盘。
+所以主链路改成**不打包**：
+
+```
+registry_cli::stream_image  → StreamedImage{ config_json, layers[path] }
+image_ci::from_oci_blobs    → ImageSource（层就是压缩 blob 路径）
+LayerSource::raw_bytes      → 照 media type 解压，一步到位
+```
+
+- 少一次「解压 → 套 tar」，也少一次「按 tar 偏移读回来 → 解压」
+- 中间产物从 2.1 GiB 降到「压缩 blob 本身」（同一批字节本来就要落盘）
+- 层不必整份进内存：解压前那一步是 `read_layer_bytes(path, offset, size)`
+- `--save` 一点没变，它本来就是要那份归档
+
+代价是 `image_ci` 多了一个入口（`from_oci_blobs`）。它跟读 OCI layout 目录共用
+`LayerSource::raw_bytes` 那条解压路径，所以「格式识别只有一份」这件事仍然成立——
+多出来的只是「层的路径从 blob 目录里来，还是从 `StreamedImage` 里来」。
+
 ## 5. 验收建议（若立项）
 
 - [ ] 匿名拉 Docker Hub 公共镜像（`library/<x>`）端到端成功，产出 tar
