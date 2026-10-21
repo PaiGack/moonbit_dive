@@ -447,3 +447,102 @@ async test "docker-archive is packed in a single pass" {
     assert_eq(@oci_spec.Digest::from_sha256(layer).to_string(), diff_id)
   }
 }
+
+///|
+/// 回归（issue #122）：内存里的层在打包前要被搬到磁盘上。
+///
+/// 「读进内存」那条拉取路径（`--jobs 1`、没有 `content-length` 的层）会把
+/// 压缩后的层整份留在内存里，而 docker-archive 还要再解压出一份。
+/// 小内存机器上进程就被 OOM 杀掉，用户看到的是「writing ... 之后
+/// No such file or directory」——因为临时目录随进程一起消失了。
+///
+/// 断言分两件：字节真的搬走了（`data` 空、`path` 有值），
+/// 以及打出来的归档与搬运前一模一样。
+async test "in-memory layers are spilled to disk before packing" {
+  let image = sample_image()
+  let expected = pack_docker_archive(image)
+  // 打包过一次之后层仍在内存里：`write_image` 不动调用方的数据
+  assert_true(image.layers[0].data is Some(_))
+
+  @registry_cli.spill_layers_to_disk(image) catch {
+    err => fail("spilling should succeed: \{err.to_string()}")
+  }
+  for layer in image.layers {
+    assert_true(layer.data is None)
+    assert_true(layer.path is Some(_))
+  }
+  // 打包结果不变：搬到磁盘上只是换了字节的存放位置
+  let spilled = pack_docker_archive(image)
+  assert_eq(spilled, expected)
+  @registry_cli.discard_image(image)
+}
+
+///|
+/// 搬到磁盘上的那份与内存里的逐字节相同（不是「重新压缩了一遍」）。
+async test "spilled layers keep the exact blob bytes" {
+  let image = sample_image()
+  let original = image.layers[0].data.unwrap()
+  @registry_cli.spill_layers_to_disk(image) catch {
+    err => fail("spilling should succeed: \{err.to_string()}")
+  }
+  let path = image.layers[0].path.unwrap()
+  let on_disk = @xfs.read_file_to_bytes(path) catch {
+    @xfs.IOError(message) => fail("\{path}: \{message}")
+  }
+  assert_eq(on_disk, original)
+  // 延迟落盘的层（本来就在磁盘上）不该被再搬一次：`path` 还是原来那个
+  assert_eq(image.layers[0].size, original.length().to_int64())
+  @registry_cli.discard_image(image)
+}
+
+///|
+/// 打包失败不能留下半个 tar：「名字对、内容坏」比一句报错难查得多。
+///
+/// 这里让第二层解压不出来（压缩流是坏的），走的是真实的 `write_image`。
+async test "a failed pack leaves no truncated archive behind" {
+  let broken = @layer_tree.gzip_compress(b"not a tar at all")[:256].to_owned()
+  let (first, first_diff) = fake_layer("etc/motd", "hello\n")
+  // config 里要记两层：少记一层时打包会跳过 diff id 校验，坏层就被安静地写进去了
+  let second_diff = @oci_spec.Digest::from_sha256(b"whatever").to_string()
+  let config = fake_config([first_diff, second_diff])
+  let image : RemoteImage = {
+    reference: sample_reference(),
+    media_type: @oci_spec.oci_manifest_media_type,
+    manifest_digest: @oci_spec.Digest::from_sha256(b"manifest").to_string(),
+    config: @registry_cli.PulledBlob::in_memory(
+      media_type=@oci_spec.oci_config_media_type,
+      digest=@oci_spec.Digest::from_sha256(config).to_string(),
+      data=config,
+    ),
+    layers: [
+      @registry_cli.PulledBlob::in_memory(
+        media_type=@oci_spec.oci_layer_gzip_media_type,
+        digest=@oci_spec.Digest::from_sha256(@layer_tree.gzip_compress(first)).to_string(),
+        data=@layer_tree.gzip_compress(first),
+      ),
+      @registry_cli.PulledBlob::in_memory(
+        media_type=@oci_spec.oci_layer_gzip_media_type,
+        digest=@oci_spec.Digest::from_sha256(broken).to_string(),
+        data=broken,
+      ),
+    ],
+    platform: None,
+    staging: None,
+  }
+  let path = temp_path("failed")
+  // 失败必须停在「解压这一层」，不能安静地打出一个内容不对的归档
+  let refused = try {
+    @registry_cli.write_image(image, path, format=@registry_cli.DockerArchive)
+    |> ignore
+    false
+  } catch {
+    _ => true
+  } noraise {
+    _ => false
+  }
+  assert_true(refused)
+  // 产物与 `*.partial` 都不该留下：前者会骗人，后者只是垃圾
+  assert_false(@xfs.path_exists(path))
+  assert_false(@xfs.path_exists("\{path}.partial"))
+  @registry_cli.discard_image(image)
+}

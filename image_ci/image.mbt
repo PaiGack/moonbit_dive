@@ -100,6 +100,13 @@ pub fn ImageSource::load(path : String) -> ImageSource raise ImageError {
     }
     read_archive(SliceInput::of_bytes(data), "<stdin>")
   } else if is_directory(path) {
+    // 目录但没有 `index.json`：多半是给错了目录（OCI layout 才有 index.json），
+    // 说清楚这点，比让 `read_utf8` 报一句 `No such file or directory` 有用
+    if !file_exists(path + "/index.json") {
+      raise Io(
+        "\{path} is a directory but holds no index.json; an OCI image layout needs one",
+      )
+    }
     read_oci_layout(path, read_utf8(path + "/index.json", "index"))
   } else {
     let file = open_image_file(path)
@@ -487,8 +494,10 @@ pub struct ImageFile {
 /// 打开一份文件输入。
 fn open_image_file(path : String) -> ImageFile raise ImageError {
   let size = match file_size(path) {
+    // 报错要自带路径：`strerror` 只说「No such file or directory」，
+    // 一句没有路径的错误在批量分析里等于没报
     Ok(size) => size
-    Err(reason) => raise Io(reason)
+    Err(reason) => raise Io("\{path}: \{reason}")
   }
   { path, size, bytes: None, }
 }
@@ -723,6 +732,11 @@ fn is_directory(path : String) -> Bool noraise {
   @fs.is_dir(path) catch {
     @fs.IOError(_) => false
   }
+}
+
+///|
+fn file_exists(path : String) -> Bool noraise {
+  @fs.path_exists(path)
 }
 
 ///|

@@ -42,8 +42,14 @@ async fn load_from_registry(
   // 紧接着要 `fopen` 的那份文件——现场就是「parsing .../image.tar」下一行
   // 「No such file or directory」（issue #122，也是 #128 里「界面没打开」的那条：
   // 镜像根本没读到，链路在选界面之前就退出了）
+  //
+  // 装载失败要把「哪份产物读不出来」带上：`ImageSource::load` 的错只提路径，
+  // 而这条路径是临时目录里的，用户根本没机会去看它（issue #122）
   let loaded = try @image_ci.ImageSource::load(result.path) catch {
-    err => raise CommandError::Image(err.to_string())
+    err =>
+      raise CommandError::Image(
+        "\{result.path} was written (\{result.bytes} bytes, \{result.format}) but cannot be read back: \{err.to_string()}; this looks like a bug in dive save",
+      )
   } noraise {
     loaded => loaded
   }

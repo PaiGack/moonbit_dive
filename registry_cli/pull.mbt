@@ -63,13 +63,14 @@ pub extend PullOptions with Show::{to_string, output}
 pub(all) struct PulledBlob {
   media_type : String
   digest : String
-  /// 读进内存的那份字节；`None` 表示字节在 `path` 上
-  data : Bytes?
+  /// 读进内存的那份字节；`None` 表示字节在 `path` 上。
+  /// 可写：`spill_layers_to_disk` 会把内存里的一份搬到磁盘上再清空它
+  mut data : Bytes?
   /// 压缩后的大小（manifest 里报的那个）
-  size : Int64
+  mut size : Int64
   /// 流式落盘时字节所在的文件；`None` 表示在 `data` 里。
   /// 生命周期跟着 `RemoteImage`：`discard_image` 会把它删掉
-  path : String?
+  mut path : String?
 } derive(Eq, Debug)
 
 ///|
@@ -138,8 +139,9 @@ pub(all) struct RemoteImage {
   layers : Array[PulledBlob]
   /// 选中的平台（index 里有落到哪一项）
   platform : @oci_spec.Platform?
-  /// 流式落盘时层所在的临时目录；`None` 表示字节都在内存里，无需清理
-  staging : String?
+  /// 流式落盘时层所在的临时目录；`None` 表示字节都在内存里，无需清理。
+  /// 可写：`spill_layers_to_disk` 可能在打包前才把目录建出来
+  mut staging : String?
 } derive(Eq, Debug)
 
 ///|
@@ -260,6 +262,52 @@ pub async fn pull_with_client(
     // 服务端没说是哪个平台，硬记成请求参数只会让报告说谎（见 `choose_manifest`）
     platform: picked_platform,
     staging,
+  }
+}
+
+///|
+/// 把「还在内存里的」层字节搬到磁盘上，原地把 `data` 换成 `path`。
+///
+/// 为什么需要这一步：显式 `--jobs 1`（以及没有 `content-length` 的层）走的是
+/// **读进内存**那条拉取路径，而 docker-archive 的打包要求层以未压缩字节出现。
+/// 一个 700MB 的镜像于是变成「每一层各占一份压缩字节 + 一份解压结果」，
+/// 在 3.7 GiB 内存的机器上就是被 OOM 杀掉——用户看到的却是
+/// `writing .../image.tar` 之后一句 `No such file or directory`（issue #122：
+/// 进程死在写盘中途，临时目录里的半成品随进程一起消失）。
+///
+/// 先落到 `dive-blobs-*` 再逐层释放：峰值是「一层压缩字节 + 一层解压字节」，
+/// 不再随镜像层数累加。
+pub async fn spill_layers_to_disk(
+  image : RemoteImage,
+) -> Unit raise RegistryError {
+  let mut pending = image.staging
+  for blob in image.layers {
+    match blob.data {
+      None => ()
+      Some(data) => {
+        let directory = match pending {
+          Some(directory) => directory
+          None => {
+            let created = @fs.tmpdir(prefix="dive-blobs-") catch {
+              err =>
+                raise Io(
+                  "cannot create a staging directory to free \{blob.digest}: \{err}",
+                )
+            }
+            image.staging = Some(created)
+            pending = Some(created)
+            created
+          }
+        }
+        let path = staged_blob_path(directory, blob.digest)
+        @fs.write_file(path, data) catch {
+          err => raise Io("\{path}: \{err}")
+        }
+        blob.data = None
+        blob.path = Some(path)
+        blob.size = data.length().to_int64()
+      }
+    }
   }
 }
 
