@@ -10,9 +10,11 @@ pub(all) struct LayerSource {
   size : Int64
   /// 独立文件形式的层（OCI layout 的 blob）；`None` 表示字节在同名 tar 的
   /// `offset` 处（或者就在 `data` 里）
-  source_path : String?
+  /// 可写：`from_oci_files` 把磁盘读到的那份收进 `data` 之后就地清空它
+  mut source_path : String?
   /// 内存里的那份字节；空表示字节在磁盘上，需要时按 `offset` 读
-  data : Bytes
+  /// 可写：同上
+  mut data : Bytes
   diff_id : String
 } derive(Debug)
 
@@ -864,11 +866,53 @@ pub fn ImageSource::from_oci_blobs(
   config_json : String,
   layers : Array[BlobLayer],
 ) -> ImageSource raise ImageError {
+  let built = assemble_oci_layers(name, config_json, layers)
+  { name, format: "oci-layout", layers: built, }
+}
+
+///|
+/// 与 `from_oci_blobs` 同义，但层是**现在就读进内存**的磁盘 blob。
+///
+/// 给「临时目录只活到这次调用为止」的场景用：直连 registry 拉下来的层落在
+/// 自己的临时目录里，那个目录在镜像打出来之后马上就要收掉（issue #138）。
+/// 若 `ImageSource` 只带路径，收掉目录就等于把层删了，读的时候只剩
+/// `No such file or directory`——而这个错完全看不出是「谁把目录收了」。
+///
+/// 代价是层在内存里：这条路本来就要把整层解压一遍才建得出目录树，
+/// 解压结果才是峰值，压缩字节只是提前一步到账。
+pub fn ImageSource::from_oci_files(
+  name : String,
+  config_json : String,
+  layers : Array[BlobLayer],
+) -> ImageSource raise ImageError {
+  let built = assemble_oci_layers(name, config_json, layers)
+  for layer in built {
+    let path = match layer.source_path {
+      Some(path) => path
+      None => continue
+    }
+    let bytes = match read_layer_bytes(path, 0L, layer.size) {
+      Ok(bytes) => bytes
+      Err(reason) => raise Io(reason)
+    }
+    layer.data = bytes
+    layer.source_path = None
+  }
+  { name, format: "oci-layout", layers: built, }
+}
+
+///|
+/// 两种 blob 入口共用的那一段：config 定 diff_id，层照 media type 挂着。
+fn assemble_oci_layers(
+  name : String,
+  config_json : String,
+  layers : Array[BlobLayer],
+) -> Array[LayerSource] raise ImageError {
   let config = @oci_spec.parse_image_config_lenient(config_json) catch {
     err => raise Malformed("\{name}: config.json: \{err.to_string()}")
   }
   let diff_ids = config.rootfs.diff_ids
-  let built = []
+  let built : Array[LayerSource] = []
   for index, layer in layers {
     let diff_id = if index < diff_ids.length() {
       diff_ids[index]
@@ -884,5 +928,5 @@ pub fn ImageSource::from_oci_blobs(
       diff_id,
     })
   }
-  { name, format: "oci-layout", layers: built, }
+  built
 }

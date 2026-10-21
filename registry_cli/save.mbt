@@ -341,13 +341,21 @@ pub async fn stream_image(
   let config_json = @encoding.decoder(UTF8).decode_lossy(
     blob_bytes(image.config),
   )
+  // 落盘名字改成「它是什么」：调用方拿到的是一整个目录，
+  // 里面该有 `cfg.blob` 与 `layer-0.blob`，而不是一串 sha256（issue #138）
+  rename_staged_blob(image.config, "\{staging}/cfg.blob") catch {
+    err => raise Io("naming the config blob: \{err}")
+  }
   let layers : Array[StreamedBlob] = []
   for index, layer in image.layers {
+    let target = "\{staging}/layer-\{index}.blob"
+    rename_staged_blob(layer, target) catch {
+      err => raise Io("naming layer \{index}: \{err}")
+    }
     let path = match layer.path {
       Some(path) => path
       None => {
         // 层没落在文件上：把字节写出去，之后统一按路径处理
-        let target = "\{staging}/layer-\{index}.blob"
         @fs.write_file(target, layer.bytes()) catch {
           err => raise Io("\{target}: \{err}")
         }

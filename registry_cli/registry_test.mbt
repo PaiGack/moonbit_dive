@@ -810,6 +810,8 @@ async fn blob_bytes_for_test(blob : PulledBlob) -> Bytes raise RegistryError {
 }
 
 ///|
+
+///|
 /// 一次拉取的中间产物全在**一个**目录里，并且收得干干净净（issue #133）。
 ///
 /// 现场是用户在 `/tmp` 下看见好几个 `dive-registry-*` / `dive-blobs-*` 的空壳：
@@ -849,6 +851,19 @@ async test "staged blobs live in one parent directory and take it with them" {
     let entries = @fs.readdir(parent) catch { _ => fail("readdir") }
     assert_eq(entries.length(), 1)
     assert_true(entries[0].has_prefix("dive-blobs-"))
+    // 每个 blob 都该在那个目录里：config 一个、层两个
+    for blob in pulled.layers {
+      let path = match blob.path {
+        Some(path) => path
+        None => fail("layer \{blob.digest} was not streamed to disk")
+      }
+      assert_true(path.has_prefix(staging + "/"))
+    }
+    let config_path = match pulled.config.path {
+      Some(path) => path
+      None => fail("the config blob should be on disk too")
+    }
+    assert_true(config_path.has_prefix(staging + "/"))
     let image = streamed_of(pulled, reference) catch {
       err => fail("streaming should succeed: \{err.to_string()}")
     }
@@ -857,6 +872,57 @@ async test "staged blobs live in one parent directory and take it with them" {
     let _ = discard_local(image)
     assert_false(@fs.exists(staging))
     assert_false(@fs.exists(parent))
+  })
+}
+
+///|
+/// 下一次拉取换一个目录：同名（同 digest）的 blob 不会互相踩。
+async test "a second pull gets its own staging directory" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let parent = @fs.tmpdir(prefix="dive-parent-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    let first = pull_with_client(
+      RegistryClient::connect(host, insecure=true) catch {
+        _ => fail("cannot create the first client")
+      },
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        staging_parent=Some(parent),
+      ),
+    ) catch {
+      err => fail("pull should succeed: \{err.to_string()}")
+    }
+    let second = pull_with_client(
+      RegistryClient::connect(host, insecure=true) catch {
+        _ => fail("cannot create the second client")
+      },
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(
+        stream_to_disk=true,
+        staging_parent=Some(parent),
+      ),
+    ) catch {
+      err => fail("the second pull should succeed: \{err.to_string()}")
+    }
+    let staging = match first.staging {
+      Some(directory) => directory
+      None => fail("the first pull must have a staging directory")
+    }
+    let again = match second.staging {
+      Some(directory) => directory
+      None => fail("the second pull must have a staging directory")
+    }
+    assert_false(again == staging)
+    let paths : Array[String] = [staging, again, parent]
+    let _ = discard_paths(paths)
   })
 }
 
@@ -872,11 +938,10 @@ async test "streamed_of carries the staging parent through" {
     let parent = @fs.tmpdir(prefix="dive-parent-") catch {
       err => fail("tmpdir: \{err}")
     }
-    let client = RegistryClient::connect(host, insecure=true) catch {
-      _ => fail("cannot create the test client")
-    }
     let pulled = pull_with_client(
-      client,
+      RegistryClient::connect(host, insecure=true) catch {
+        _ => fail("cannot create the test client")
+      },
       reference,
       fallback="http://\{host}",
       options=@registry_cli.PullOptions::new(
@@ -886,7 +951,6 @@ async test "streamed_of carries the staging parent through" {
     ) catch {
       err => fail("pull should succeed: \{err.to_string()}")
     }
-    client.close()
     assert_eq(pulled.staging_parent, Some(parent))
     let image = streamed_of(pulled, reference) catch {
       err => fail("streaming should succeed: \{err.to_string()}")
@@ -894,4 +958,47 @@ async test "streamed_of carries the staging parent through" {
     let _ = discard_local(image)
     assert_false(@fs.exists(parent))
   })
+}
+
+///|
+/// 落盘的名字要能读：`cfg.blob` + `layer-N.blob`。
+///
+/// 下游拿到的是别人的一整个临时目录，里面若只有一串 sha256，
+/// 想找一个 blob 就只能靠「目录里随便捡一个」，出事时也读不下去（issue #138）。
+async test "staged blobs are named after what they are" {
+  let source = fake_image()
+  with_fake_registry(source, body=async fn(host) {
+    let parent = @fs.tmpdir(prefix="dive-blob-name-test-") catch {
+      err => fail("tmpdir: \{err}")
+    }
+    // `stream_image` 自己按引用去连 host：测试里端口是随机的，只能借明文连接
+    let image = @registry_cli.stream_image(
+      @registry_cli.StreamRequest::new(
+        reference="\{host}/test/image:latest",
+        insecure=true,
+        staging_parent=Some(parent),
+      ),
+    ) catch {
+      err => fail("streaming should succeed: \{err.to_string()}")
+    }
+    assert_true(@fs.exists(image.staging + "/cfg.blob"))
+    for index, layer in image.layers {
+      assert_eq(layer.path, "\{image.staging}/layer-\{index}.blob")
+      assert_true(@fs.exists(layer.path))
+    }
+    @registry_cli.discard_streamed(image)
+    assert_false(@fs.exists(parent))
+  })
+}
+
+///|
+/// 收掉一串目录（叶子先删）。
+async fn discard_paths(paths : Array[String]) -> Unit noraise {
+  for path in paths {
+    try @fs.rmdir(path, recursive=true) catch {
+      _ => ()
+    } noraise {
+      _ => ()
+    }
+  }
 }
