@@ -19,6 +19,10 @@
 # 位置参数自己判别输入（issue #124）：`-` 是 stdin，存在的路径是本地归档，
 # 其余当镜像引用。所以下面每条都不用再带 `--from-image` / `--from-registry`。
 #
+# 脚本里的 `dive` 一律不靠终端状态决定行为：界面是默认出口，这里没有 tty
+# 只会让它悄悄降级，所以凡是要文本 / 要产物的地方都显式写 `--no-tui`
+# （`--save` 也一样——`--save` 不带 `--no-tui` 按参数错退 2，见第 5 节）。
+#
 # 退出码：0 全过；77 表示环境里没有可用的 daemon（**跳过**，不算失败）；
 # 其它表示真失败。CI 里没有 daemon 的机器不该因为「没装 docker」变红。
 set -uo pipefail
@@ -428,10 +432,10 @@ fi
 # 整条链路里唯一「完全不需要 daemon」的入口——「不装 docker 也能分析在线镜像」
 # 就是靠它。`--save` 只对镜像引用生效，正好是这里的用法。
 #
-# `--save` 是独立出口，语义上已等同于 `--no-tui`（issue #128 复盘），所以这里
-# 得显式带上 `--no-tui`：不带就等于「又要界面又只保存」，按参数错退 2。
 say ''
 say "${BOLD}== dive <ref> --save（不碰本地 daemon）==${RESET}"
+# `--save` 只落盘，`--no-tui` 在它面前是句废话：写与不写都走同一条路，
+# 互斥校验只看显式的 `--tui`（issue #128 / #139）。这里留着只是读起来明白。
 if [ -z "$ca_bundle" ]; then
   say "${YELLOW}skip${RESET} 没有 CA 包，连不了 https registry"
 elif "$DIVE" "$REMOTE_REF" --save --no-tui --output "$work/registry.tar" \

@@ -39,18 +39,21 @@ async test "the browser opens the last layer by default and clamps a bad one" {
 }
 
 ///|
-/// `--save` 与界面互斥（第一条硬原则的反面：不静默让谁赢）。
+/// `--save` 不问界面：没给 `--no-tui` 也不是参数错（issue #139）。
 ///
-/// 「互斥」判的是**用户有没有明说要界面**，不是「终端够不够格」：`--save`
-/// 先于取镜像就 return，本来就走不到选界面那一步，终端状态掺进来只会让
-/// 同一份脚本在本地和 CI 里得到两种结论（issue #128 复盘）。
-async test "save without --no-tui is a config error, not a silent choice" {
+/// 互斥要拦的是「真有两句话」的组合。`--save` 只有一句：落盘。
+/// `--no-tui` 在这里是空的，写与不写都该走到同一条落盘路径——
+/// 否则 CI 探针里的 `dive <ref> --save -o x.tar` 会白退一次 2。
+async test "save without --no-tui still saves, it just never opens the browser" {
   let save = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
-  assert_true(save.save && save.interactive())
+  assert_true(save.save)
+  // 开关是「想要界面」的意思，但界面的入口在 `main` 里排在 `--save` 后面
+  assert_true(save.interactive())
   let save_text = parse_options([
     "nginx:latest", "--save", "-o", "x.tar", "--no-tui",
   ])
-  assert_false(save_text.save && save_text.interactive())
+  assert_true(save_text.save)
+  assert_false(save_text.interactive())
 }
 
 ///|

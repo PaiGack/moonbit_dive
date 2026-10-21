@@ -127,37 +127,42 @@ async test "the old --tui flag is gone" {
 }
 
 ///|
-/// `--save` 与界面互斥，判的是**用户有没有明说要界面**（issue #128 复盘）。
+/// `--save` 与界面不抢，因为它根本走不到选界面那一步（issue #139）。
 ///
-/// `--save` 在 `main` 里先于取镜像就 return，走不到选界面那一步，两者本来
-/// 就不抢；需要拦的只是「又要界面、又只保存」这句自相矛盾的话。
-/// 终端状态不参与判断——CI 里没有 tty，算进去会让同一个脚本在本地过、在 CI 里退 2。
-async test "save and an explicit browser request are mutually exclusive" {
-  let with_browser = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
-  assert_true(with_browser.save && with_browser.interactive())
-  let save_only = parse_options([
+/// 曾经这里按「用户明说要界面」退 2：`--save` 而没给 `--no-tui` 就算说错话。
+/// 可 `--no-tui` 在 `--save` 面前不过是句废话，不是第二句相反的话——
+/// 于是 `dive <ref> --save -o x.tar`（CI 探针里就这么写）白退一次 2。
+/// 现在的约定：`--save` 只落盘，写不写 `--no-tui` 都一样。
+async test "save does not care whether --no-tui was given" {
+  let bare = parse_options(["nginx:latest", "--save", "-o", "x.tar"])
+  assert_true(bare.save)
+  assert_true(bare.interactive())
+  let quiet = parse_options([
     "nginx:latest", "--save", "-o", "x.tar", "--no-tui",
   ])
-  assert_true(save_only.save)
-  assert_false(save_only.interactive())
+  assert_true(quiet.save)
+  assert_false(quiet.interactive())
+  // 两个都只是「要不要界面」的开关，落盘这件事跟它们无关
+  assert_eq(bare.output, quiet.output)
+  assert_eq(bare.archive_format, quiet.archive_format)
 }
 
 ///|
-/// `--save` 是「只落盘」，它自己的语义就已经是不开界面——所以互斥只看开关，
-/// 与 stdin / stdout 是不是终端无关：`dive img --save -o x.tar > log` 和
-/// `dive - --save -o x.tar` 在真终端里也不该退 2。
-async test "save never becomes a config error just because a tty is around" {
+/// `--save` 与终端状态无关：本地终端、stdin 是 tar 流、stdout 重定向，
+/// 都该落盘成功。真判据在 `main` 的顺序（`--save` 先于选界面 return），
+/// 这里钉住的是「参数层没有别的暗桩」。
+async test "save is never a config error, whatever the terminal looks like" {
   for
     args in [
       ["nginx:latest", "--save", "-o", "x.tar"],
       ["-", "--save", "-o", "x.tar"],
+      ["nginx:latest", "--save", "-o", "x.tar", "--no-tui"],
+      ["-", "--save", "-o", "x.tar", "--no-tui"],
     ] {
     let options = parse_options(args)
     assert_true(options.save)
-    // 互斥判据只看 `interactive()`，不看 tty——测试跑没跑在终端里都得出同一答案
-    assert_true(options.save && options.interactive())
+    assert_eq(options.output, Some("x.tar"))
   }
-  assert_true(parse_options(["-", "--save", "-o", "x.tar", "--no-tui"]).save)
 }
 
 ///|
