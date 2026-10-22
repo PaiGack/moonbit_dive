@@ -64,8 +64,10 @@ pub(all) struct SaveResult {
   /// 真正落盘的位置：文件路径，或 OCI layout 的目录
   path : String
   format : ArchiveFormat
-  /// 落盘字节总量
-  bytes : Int32
+  /// 落盘字节总量。`Int64`：`--save` 的归档轻松超过 2 GiB，
+  /// 而这个值一路来自 `WrittenArchive.bytes`（本来就是 `Int64`），
+  /// 中间任何一次 `to_int()` 都会把高位截掉、正数翻成负数（issue #141）
+  bytes : Int64
   layers : Int32
   /// 选中的平台，`os/arch[/variant]`
   platform : String
@@ -79,7 +81,7 @@ pub extend SaveResult with @debug.Debug::{to_repr}
 
 ///|
 pub impl Show for SaveResult with fn to_string(self) {
-  "\{self.format} -> \{self.path} (\{self.bytes} bytes, \{self.layers} layers, \{self.platform})"
+  "\{self.format} -> \{self.path} (\{human_bytes(self.bytes)}, \{self.layers} layers, \{self.platform})"
 }
 
 ///|
@@ -138,7 +140,7 @@ pub async fn save_image(
   {
     path: written.path,
     format: request.format,
-    bytes: written.bytes.to_int(),
+    bytes: written.bytes,
     layers: image.layers.length(),
     platform: describe_platform(platform),
   }
