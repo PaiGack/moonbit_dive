@@ -75,23 +75,36 @@ PY
 # 校验一份 docker-archive：`manifest.json` 在、层路径指的 tar 都在、层里有锚点。
 # 第三个参数传 `prefix` 时顺手断言条目真的带 `./`，免得打包方式哪天变了、
 # 用例静默退化成「没前缀也能过」。
+#
+# 这里必须自己抹前缀：Python 的 `extractfile` 只认原样的名字，`./manifest.json`
+# 传 `manifest.json` 是 KeyError。归档里的路径没有「根」，两种写法同一个文件——
+# 我们自己的 `find_tar_entry` 也是这个口径。
 check_archive() {
   python3 - "$1" "$2" "${3:-}" <<'PY'
 import json, sys, tarfile
 
 archive, probe, want_prefix = sys.argv[1:4]
+
+def bare(name):
+    return name[2:] if name.startswith("./") else name
+
 with tarfile.open(archive) as tar:
     names = tar.getnames()
     if want_prefix == "prefix":
         odd = [n for n in names if n != "." and not n.startswith("./")]
         assert not odd, "归档条目没带 ./ 前缀，这一节就白测了：%s" % odd[:5]
-    manifest = json.load(tar.extractfile("manifest.json"))
+    members = {bare(n): n for n in names}
+    manifest_path = members.get("manifest.json")
+    assert manifest_path is not None, "归档里没有 manifest.json：%s" % names[:5]
+    manifest = json.load(tar.extractfile(manifest_path))
     assert manifest, "manifest.json 为空"
     entry = manifest[0]
     assert entry["Layers"], "manifest.json 没有 Layers"
     for path in entry["Layers"]:
-        layer = tar.extractfile(path)
-        assert layer is not None, "manifest.json 指的层不在归档里: " + path
+        member = members.get(bare(path))
+        assert member is not None, "manifest.json 指的层不在归档里: " + path
+        layer = tar.extractfile(member)
+        assert layer is not None, "manifest.json 指的层不是文件: " + path
         with tarfile.open(fileobj=layer) as inner:
             inner_names = inner.getnames()
         assert probe in inner_names, "层里找不到 %s，实际有 %s" % (probe, inner_names[:5])

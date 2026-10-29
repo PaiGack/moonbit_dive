@@ -55,6 +55,7 @@ fn read_entry_bytes(
   path : String,
 ) -> Bytes? raise DockerCliError {
   let reader = @layer_tree.TarReader::new(archive)
+  let want = archive_member_path(path)
   while true {
     let entry = reader.next() catch {
       err => {
@@ -64,8 +65,8 @@ fn read_entry_bytes(
         raise Archive(err.to_string())
       }
     }
-    let name = @layer_tree.normalize_path(entry.path) catch { _ => continue }
-    if name == path || name == "/\{path}" {
+    let name = archive_member_path(entry.path)
+    if name == want || name == Some("/\{path}") {
       return Some(entry.data(archive).to_owned())
     }
   }
