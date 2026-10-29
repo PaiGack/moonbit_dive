@@ -785,20 +785,35 @@ pub fn parse_tar_entries_from(
 
 ///|
 /// 在输入里找一条路径：返回首次出现的 `Regular` entry。
+///
+/// 比较前两边都抹掉开头的 `./`：`docker save` 的产物经常带着它
+/// （`docker save | tar -x` 再重打包就会），而归档内的路径本身
+/// 没有「根」的概念，`./manifest.json` 和 `manifest.json` 是同一个文件。
 pub fn find_tar_entry(
   reader : MappedReader,
   path : String,
 ) -> TarEntry? raise TarError {
+  let want = strip_dot_slash(path)
   let scanner = MappedTarReader::new(reader)
   while true {
     let entry = scanner.next() catch {
       err => if err is NotFound { break } else { raise err }
     }
-    if entry.path == path && entry.entry_type is Regular {
+    if strip_dot_slash(entry.path) == want && entry.entry_type is Regular {
       return Some(entry)
     }
   }
   None
+}
+
+///|
+/// 抹掉路径开头的 `./`（只抹一层，`././x` 不是 tar 里的正常形态）。
+fn strip_dot_slash(path : String) -> String {
+  if path.has_prefix("./") {
+    path[2:].to_owned()
+  } else {
+    path
+  }
 }
 
 ///|
