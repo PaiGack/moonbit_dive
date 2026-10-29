@@ -39,6 +39,65 @@ say() { printf '%s\n' "$*"; }
 fail() { printf '%sFAIL%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 pass() { printf '%sok%s   %s\n' "$GREEN" "$RESET" "$*"; }
 
+# 归档内的路径没有「根」的概念，`./manifest.json` 和 `manifest.json` 是同一个
+# 文件（`layer_tree` 的 `find_tar_entry` 抹前缀就是为这个）。所以下面这几件
+# 工具都围着「前缀」转：`prefix_archive` 造带前缀的归档，`check_archive` 在
+# 带前缀的前提下把结构核一遍。
+
+# 打归档。先 `rm -f`：GNU tar 往已有归档里是追加，旧成员会留着。
+make_archive() {
+  local archive=$1 base=$2
+  shift 2
+  rm -f "$archive"
+  tar -cf "$archive" -C "$base" "$@"
+}
+
+# 把归档里的条目名全改成带 `./` 前缀的形状。
+#
+# 为什么不直接用带前缀的 `/bin/tar` 打包：`docker load` 先解包这层壳，解出来
+# 的路径就带 `./`，它认不认是它的事。这里先用普通路径打壳、再在内存里改
+# `name` 字段——**内容一个字节不动**，于是「壳免不免费」与「dive 能不能读带
+# 前缀的归档」拆成两件事，这一节只测后者。
+prefix_archive() {
+  python3 - "$1" "$2" <<'PY'
+import io, sys, tarfile
+
+src, dst = sys.argv[1:]
+with tarfile.open(src) as source, tarfile.open(dst, "w") as target:
+    for member in source.getmembers():
+        data = source.extractfile(member).read() if member.isreg() else b""
+        if member.name != ".":
+            member.name = "./" + member.name
+        target.addfile(member, io.BytesIO(data) if member.isreg() else None)
+PY
+}
+
+# 校验一份 docker-archive：`manifest.json` 在、层路径指的 tar 都在、层里有锚点。
+# 第三个参数传 `prefix` 时顺手断言条目真的带 `./`，免得打包方式哪天变了、
+# 用例静默退化成「没前缀也能过」。
+check_archive() {
+  python3 - "$1" "$2" "${3:-}" <<'PY'
+import json, sys, tarfile
+
+archive, probe, want_prefix = sys.argv[1:4]
+with tarfile.open(archive) as tar:
+    names = tar.getnames()
+    if want_prefix == "prefix":
+        odd = [n for n in names if n != "." and not n.startswith("./")]
+        assert not odd, "归档条目没带 ./ 前缀，这一节就白测了：%s" % odd[:5]
+    manifest = json.load(tar.extractfile("manifest.json"))
+    assert manifest, "manifest.json 为空"
+    entry = manifest[0]
+    assert entry["Layers"], "manifest.json 没有 Layers"
+    for path in entry["Layers"]:
+        layer = tar.extractfile(path)
+        assert layer is not None, "manifest.json 指的层不在归档里: " + path
+        with tarfile.open(fileobj=layer) as inner:
+            inner_names = inner.getnames()
+        assert probe in inner_names, "层里找不到 %s，实际有 %s" % (probe, inner_names[:5])
+PY
+}
+
 # ------------------------------------------------------------------ 环境 --
 DOCKER_BIN=${DIVE_TEST_DOCKER:-docker}
 # 测试镜像名：带 `dive-ci-` 前缀，跑完按前缀清干净，不碰机器上的别的镜像
@@ -305,12 +364,17 @@ PY
 # 造一份 docker-archive 并 load 进去。
 # 与 OCI layout 那版相比，这里**不猜**导入后的 ID：`docker-archive` 的
 # `RepoTags` 就是 tag 的来源，load 完直接按 tag 认。
+# 这份壳是喂给 `docker load` 的，条目名保持**不带前导 `./`**（`manifest.json`、
+# `<sha>.json`、`<sha>/layer.tar`）：daemon 要按这些名字去找文件，换个写法就得
+# 赌它自己的规不规范。带前缀那条通路在第 2 节单独验，不靠 daemon。
 load_archive() {
   local layout=$1 tag=$2 archive=$3
   local entries
   entries=$(write_archive "$layout" "$tag") || return 1
-  # shellcheck disable=SC2086
-  tar -cf "$archive" -C "$layout" manifest.json $entries
+  # write_archive 打印的就是 `manifest.json` 之外该带的成员，逐条列出而不是
+  # `tar -C dir .`——后者会多写一条 `./` 目录项。
+  # shellcheck disable=SC2086 -- 成员之间用空格分隔，这里就是要按空格拆
+  make_archive "$archive" "$layout" manifest.json $entries
   "$DOCKER_BIN" load -i "$archive" >"$archive.log" 2>&1
 }
 
@@ -362,23 +426,35 @@ pass "inspect：数组 + sha256 Id"
 
 "$DOCKER_BIN" save "$IMAGE_REF" >"$work/saved.tar" 2>"$work/save.err" ||
   fail "docker save 失败：$(cat "$work/save.err")"
-# 归档里必须能找到 `manifest.json`，且层路径指的 tar 真的在
-python3 - "$work/saved.tar" "$PROBE_FILE" <<'PY' || fail "docker save 归档结构不对"
-import json, sys, tarfile
-archive, probe = sys.argv[1:]
-with tarfile.open(archive) as tar:
-    manifest = json.load(tar.extractfile("manifest.json"))
-    assert manifest, "manifest.json 为空"
-    entry = manifest[0]
-    assert entry["Layers"], "manifest.json 没有 Layers"
-    for path in entry["Layers"]:
-        layer = tar.extractfile(path)
-        assert layer is not None, "manifest.json 指的层不在归档里: " + path
-        with tarfile.open(fileobj=layer) as inner:
-            names = inner.getnames()
-        assert probe in names, "层里找不到 %s，实际有 %s" % (probe, names[:5])
-PY
+# 归档里必须能找到 `manifest.json`，且层路径指的 tar 真的在。
+# docker save 出不出 `./` 前缀归 docker 管，这里不做前缀断言。
+check_archive "$work/saved.tar" "$PROBE_FILE" || fail "docker save 归档结构不对"
 pass "save：manifest.json + layer.tar 可解析，标记文件在层里"
+
+# 本节最后一条：`dive` 读 `docker save` 真产物。上面只验了 docker 的归档结构，
+# `dive` 自己那条 read_archive → find_tar_entry 还没走过真产物。
+#
+# 顺带在这里放一份**带 `./` 前缀**的同内容归档（issue #144 的回归）：条目名与
+# manifest 里的层路径全带前缀时，以前判断得出「这是 docker-archive」却读不到
+# `manifest.json`。归档本身是 `dive` 的位置参数入口，不用 daemon，daemon 拒绝
+# 加载这种壳也不影响这条。
+prefix_archive "$work/saved.tar" "$work/saved-dot.tar" ||
+  fail "给 docker save 的产物加 ./ 前缀失败"
+# 加完前缀再核一遍：结构没坏，且条目确实都带 `./`
+check_archive "$work/saved-dot.tar" "$PROBE_FILE" prefix ||
+  fail "改前缀后的归档结构不对"
+"$DIVE" "$work/saved.tar" --format json >"$work/saved.json" 2>"$work/saved.log" ||
+  fail "dive 读 docker save 的产物失败：$(tail -5 "$work/saved.log")"
+"$DIVE" "$work/saved-dot.tar" --format json \
+  >"$work/saved-dot.json" 2>"$work/saved-dot.log" ||
+  fail "dive 读带 ./ 前缀的归档失败（issue #144 的回归）：$(tail -5 "$work/saved-dot.log")"
+python3 - "$work/saved.json" "$work/saved-dot.json" <<'PY' || fail "带 ./ 前缀的归档和原样的报告不一致"
+import json, sys
+plain, dotted = (json.load(open(p)) for p in sys.argv[1:3])
+assert plain, "原样归档的报告为空"
+assert dotted == plain, "带 ./ 前缀的归档读出来的报告和原样的不一样"
+PY
+pass "dive：带 ./ 前缀的 docker-archive 与原样归档读出一致的报告"
 
 # 参数形态这层也直接拿库里的构造器对一次：bin 名不对（podman / nerdctl）
 # 在 CI 上通常没装，但参数表本身可以逐条核。
@@ -739,6 +815,19 @@ with tarfile.open(sys.argv[1]) as tar:
     manifest = json.load(tar.extractfile("manifest.json"))
     assert manifest and manifest[0]["Layers"], "registry 产物缺层"
 PY
+    # 明文 registry 的产物名是 `manifest.json`（`registry_cli` 自己打的壳），
+    # 同样把条目改成带 `./` 前缀再读一遍，把「壳怎么打的」与「dive 认不认」
+    # 分开。第 2 节那份来自 docker save，这份来自我们自己的打包器，两边都过
+    # 才算 `find_tar_entry` 真的不看前缀。
+    prefix_archive "$work/plain.tar" "$work/plain-dot.tar" ||
+      fail "给 registry 产物加 ./ 前缀失败"
+    check_archive "$work/plain-dot.tar" "etc/plain-marker" prefix ||
+      fail "改前缀后的 registry 产物结构不对"
+    "$DIVE" "$work/plain-dot.tar" --no-tui >"$work/plain-dot.txt" 2>"$work/plain-dot.log" ||
+      fail "dive 读带 ./ 前缀的 registry 产物失败：$(tail -5 "$work/plain-dot.log")"
+    grep -q 'plain-marker' "$work/plain-dot.txt" ||
+      fail "带 ./ 前缀的 registry 产物里没读到锚点：$(head -5 "$work/plain-dot.txt")"
+    pass "明文 registry 的产物带 ./ 前缀时读得出同一层（锚点 etc/plain-marker）"
     pass "明文 registry：挑战说要 https、blob 再跳一跳，都退回已知 origin 走过去"
   else
     fail "明文 registry 拉取失败：$(tail -5 "$work/plain.log")"
