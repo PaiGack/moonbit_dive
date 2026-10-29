@@ -72,15 +72,16 @@ with tarfile.open(src) as source, tarfile.open(dst, "w") as target:
 PY
 }
 
-# 校验一份 docker-archive：`manifest.json` 在、层路径指的 tar 都在、层里有锚点。
+# 校验一份 docker-archive：`manifest.json` 在、层路径指的 tar 都在；
+# 第二个参数给了锚点就再核层里有没有它（不给只核外壳，给拉来的第三方镜像用）。
 # 第三个参数传 `prefix` 时顺手断言条目真的带 `./`，免得打包方式哪天变了、
 # 用例静默退化成「没前缀也能过」。
 #
 # 这里必须自己抹前缀：Python 的 `extractfile` 只认原样的名字，`./manifest.json`
 # 传 `manifest.json` 是 KeyError。归档里的路径没有「根」，两种写法同一个文件——
-# 我们自己的 `find_tar_entry` 也是这个口径。
+# 我们自己的 `find_tar_entry` / `archive_member_path` 也是这个口径。
 check_archive() {
-  python3 - "$1" "$2" "${3:-}" <<'PY'
+  python3 - "$1" "${2:-}" "${3:-}" <<'PY'
 import json, sys, tarfile
 
 archive, probe, want_prefix = sys.argv[1:4]
@@ -105,8 +106,10 @@ with tarfile.open(archive) as tar:
         assert member is not None, "manifest.json 指的层不在归档里: " + path
         layer = tar.extractfile(member)
         assert layer is not None, "manifest.json 指的层不是文件: " + path
+        if not probe:
+            continue
         with tarfile.open(fileobj=layer) as inner:
-            inner_names = inner.getnames()
+            inner_names = [bare(n) for n in inner.getnames()]
         assert probe in inner_names, "层里找不到 %s，实际有 %s" % (probe, inner_names[:5])
 PY
 }
@@ -536,12 +539,10 @@ if [ -z "$ca_bundle" ]; then
 elif "$DIVE" "$REMOTE_REF" --save --no-tui --output "$work/registry.tar" \
     --format json >"$work/registry.json" 2>"$work/registry.log"; then
   [ -s "$work/registry.tar" ] || fail "--save 没落盘"
-  python3 - "$work/registry.tar" <<'PY' || fail "registry 的产物不是合法 docker-archive"
-import json, sys, tarfile
-with tarfile.open(sys.argv[1]) as tar:
-    manifest = json.load(tar.extractfile("manifest.json"))
-    assert manifest and manifest[0]["Layers"], "registry 产物缺层"
-PY
+  # 这里拉的是 $REMOTE_REF（hello-world 之类），层里没有我们那份标记文件，
+  # 所以只核外壳：manifest.json 在、层路径指的 tar 都在。
+  check_archive "$work/registry.tar" ||
+    fail "registry 的产物不是合法 docker-archive"
   pass "registry 直拉：落盘 tar 可被 docker_cli 解析"
 else
   if grep -qiE 'connection refused|network is unreachable|no such host|i/o timeout' \
@@ -828,12 +829,8 @@ if kill -0 "$plain_pid" 2>/dev/null; then
   if "$DIVE" "127.0.0.1:$PLAIN_PORT/test/plain:latest" \
       --insecure-registry --save --no-tui --output "$work/plain.tar" --format json \
       >"$work/plain.json" 2>"$work/plain.log"; then
-    python3 - "$work/plain.tar" <<'PY' || fail "明文 registry 的产物不是合法 docker-archive"
-import json, sys, tarfile
-with tarfile.open(sys.argv[1]) as tar:
-    manifest = json.load(tar.extractfile("manifest.json"))
-    assert manifest and manifest[0]["Layers"], "registry 产物缺层"
-PY
+    check_archive "$work/plain.tar" "etc/plain-marker" ||
+      fail "明文 registry 的产物不是合法 docker-archive"
     # 明文 registry 的产物名是 `manifest.json`（`registry_cli` 自己打的壳），
     # 同样把条目改成带 `./` 前缀再读一遍，把「壳怎么打的」与「dive 认不认」
     # 分开。第 2 节那份来自 docker save，这份来自我们自己的打包器，两边都过
@@ -842,10 +839,19 @@ PY
       fail "给 registry 产物加 ./ 前缀失败"
     check_archive "$work/plain-dot.tar" "etc/plain-marker" prefix ||
       fail "改前缀后的 registry 产物结构不对"
-    "$DIVE" "$work/plain-dot.tar" --no-tui >"$work/plain-dot.txt" 2>"$work/plain-dot.log" ||
-      fail "dive 读带 ./ 前缀的 registry 产物失败：$(tail -5 "$work/plain-dot.log")"
-    grep -q 'plain-marker' "$work/plain-dot.txt" ||
-      fail "带 ./ 前缀的 registry 产物里没读到锚点：$(head -5 "$work/plain-dot.txt")"
+    # 得看层里真读出来的东西：`-f json` 在这条链路上打的是规则判定，本来
+    # 就没有层账；`--no-tui` 的文本报告也只报体积账、不列路径。所以这里要
+    # 逐层视图（`--layer 0`）——它的 `tree` 就是层里读出来的路径，读不到
+    # `./manifest.json` 时会是空树。
+    "$DIVE" "$work/plain-dot.tar" --layer 0 --format json \
+      >"$work/plain-dot-layer.json" 2>"$work/plain-dot.layer.log" ||
+      fail "dive 逐层读带 ./ 前缀的 registry 产物失败：$(tail -5 "$work/plain-dot.layer.log")"
+    python3 - "$work/plain-dot-layer.json" <<'PY' || fail "带 ./ 前缀的 registry 产物没读出层内容"
+import json, sys
+tree = json.load(open(sys.argv[1])).get("tree", "")
+# 树是嵌套打的（`etc/` 下面缩进一行 `plain-marker (13 bytes)`），只认文件名本身
+assert "plain-marker" in tree, "层树里没有锚点 etc/plain-marker：%r" % tree[:200]
+PY
     pass "明文 registry 的产物带 ./ 前缀时读得出同一层（锚点 etc/plain-marker）"
     pass "明文 registry：挑战说要 https、blob 再跳一跳，都退回已知 origin 走过去"
   else
