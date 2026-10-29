@@ -461,10 +461,16 @@ check_archive "$work/saved-dot.tar" "$PROBE_FILE" prefix ||
 "$DIVE" "$work/saved-dot.tar" --format json \
   >"$work/saved-dot.json" 2>"$work/saved-dot.log" ||
   fail "dive 读带 ./ 前缀的归档失败（issue #144 的回归）：$(tail -5 "$work/saved-dot.log")"
+# 两份报告要一致，但顶层 `image` 记的是**输入名**（`saved.tar` / `saved-dot.tar`），
+# 两个文件名本来就不同，把它算进比对里这条用例只会因为文件名而红。改前缀要验的
+# 是体积账、层统计、路径列表这些随归档内容走的东西，所以先摘掉 `image` 再比。
 python3 - "$work/saved.json" "$work/saved-dot.json" <<'PY' || fail "带 ./ 前缀的归档和原样的报告不一致"
 import json, sys
 plain, dotted = (json.load(open(p)) for p in sys.argv[1:3])
 assert plain, "原样归档的报告为空"
+assert dotted, "带 ./ 前缀的归档报告为空"
+assert dotted.pop("image", None), "带 ./ 前缀的报告缺 image 字段"
+assert plain.pop("image", None), "原样归档的报告缺 image 字段"
 assert dotted == plain, "带 ./ 前缀的归档读出来的报告和原样的不一样"
 PY
 pass "dive：带 ./ 前缀的 docker-archive 与原样归档读出一致的报告"
