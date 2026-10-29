@@ -53,12 +53,28 @@ pub fn parse_docker_archive(
 }
 
 ///|
+/// 归档里的条目名抹成「相对归档根」的路径：`./x` 和 `x` 是同一个文件。
+///
+/// `docker save` 的产物经常带 `./` 前缀（`docker save | tar -x` 再重打包就会），
+/// 而 manifest 里写的既有 `x` 也有 `./x`，查找与比对得用同一种口径。
+/// 归一到根（`/`）或者带 `..` 跳出归档时返回 `None`，调用方跳过该条目。
+fn archive_member_path(raw : String) -> String? {
+  let normalized = @layer_tree.normalize_path(raw) catch { _ => return None }
+  if normalized == "/" || !raw.has_prefix("/") {
+    // normalize_path 给的是绝对形态；没有前导 `/` 的条目按相对路径比
+    return Some(normalized[1:].to_owned())
+  }
+  Some(raw)
+}
+
+///|
 /// 从 tar 里按路径取一条 entry 的文本内容。
 fn read_tar_entry_text(
   archive : BytesView,
   path : String,
 ) -> String? raise @layer_tree.TarError {
   let reader = @layer_tree.TarReader::new(archive)
+  let want = archive_member_path(path)
   while true {
     // 读完（`NotFound`）就是正常出口，其它错误照旧往上抛
     let entry = reader.next() catch {
@@ -69,8 +85,8 @@ fn read_tar_entry_text(
           raise err
         }
     }
-    let name = @layer_tree.normalize_path(entry.path) catch { _ => continue }
-    if name == path || name == "/\{path}" {
+    let name = archive_member_path(entry.path)
+    if name == want || name == Some("/\{path}") {
       let data = entry.data(archive)
       return Some(bytes_to_text(data))
     }

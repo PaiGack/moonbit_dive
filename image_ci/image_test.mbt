@@ -459,3 +459,33 @@ fn remove_fixture_file(path : String) -> Unit {
     _ => ()
   }
 }
+
+///|
+/// `docker save` 的产物在很多场景下条目带 `./` 前缀（`docker save | tar -xC`
+/// 再 `tar -C . -cf` 重打包、或某些工具直接生成）。判 format 时抹了前缀，
+/// 真去读却按原样比较——这条路以前会在 `manifest.json not found` 上炸掉。
+async test "load docker archive with ./ prefixed entries" {
+  let layer0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("app"),
+    @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),
+  ])
+  let layer1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("app/main.js", "0123456789abcdef"),
+  ])
+  let config =
+    #|{ "architecture": "amd64", "os": "linux", "rootfs": { "type": "layers", "diff_ids": ["sha256:ccc", "sha256:ddd"] } }
+  let manifest =
+    #|[ { "Config": "./config.json", "RepoTags": ["demo:dot"], "Layers": ["./layer0/layer.tar", "./layer1/layer.tar"] } ]
+  let builder = @layer_tree.TarBuilder::new()
+  builder.add_file("./layer0/layer.tar", bytes_as_text(layer0))
+  builder.add_file("./layer1/layer.tar", bytes_as_text(layer1))
+  builder.add_file("./config.json", config)
+  builder.add_file("./manifest.json", manifest)
+  let source = ImageSource::from_tar_bytes(builder.finish(), name="dot.tar") catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(source.format, "docker-archive")
+  assert_eq(source.layers.length(), 2)
+  assert_eq(source.layers[0].diff_id, "sha256:ccc")
+  assert_eq(source.layers[1].diff_id, "sha256:ddd")
+}

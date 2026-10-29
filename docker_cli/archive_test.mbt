@@ -143,3 +143,31 @@ async test "cli tool names are stable" {
   assert_eq(@docker_cli.CliTool::Podman.to_string(), "podman")
   assert_eq(@docker_cli.CliTool::Nerdctl.to_string(), "nerdctl")
 }
+
+///|
+/// 条目带 `./` 前缀的归档（`docker save | tar -x` 再重打包就会）照样能读：
+/// 查找 `manifest.json` 与 manifest 里写的层路径都不该被前缀绊住。
+///
+/// 这条是 issue #144 在 `docker_cli` 这一侧的回归——`image_ci` 侧由
+/// `find_tar_entry` 兜住，可 `dive <ref>` 自己解析 daemon 给的归档走的是
+/// 这里的 `read_tar_entry_text` / `read_entry_bytes`，另有一套查找。
+async test "archive with ./ prefixed entries is readable" {
+  let layer = @layer_tree.build_tar([File("etc/marker", "hello")])
+  let builder = @layer_tree.TarBuilder::new()
+  builder.add_file(
+    "./manifest.json", "[{\"Config\":\"./c.json\",\"RepoTags\":[\"x:1\"],\"Layers\":[\"./aaaa/layer.tar\"]}]",
+  )
+  builder.add_file("./c.json", "{}")
+  builder.add_file("./aaaa/layer.tar", bytes_to_text(layer))
+  let archive = builder.finish()
+  let parsed = @docker_cli.parse_docker_archive(archive) catch {
+    err => fail("prefixed archive should parse: \{err}")
+  }
+  let entry = @docker_cli.primary_entry(parsed).unwrap()
+  assert_eq(entry.layers, ["./aaaa/layer.tar"])
+  let layers = @docker_cli.extract_layers(archive, entry) catch {
+    err => fail("prefixed layer should extract: \{err}")
+  }
+  assert_eq(layers.length(), 1)
+  assert_eq(layers[0].path, "./aaaa/layer.tar")
+}

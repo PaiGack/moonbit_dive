@@ -718,7 +718,9 @@ fn docker_media_type(
 }
 
 ///|
-/// `manifest.json` 里的路径可能带 `./` 前缀，tar 查找要能对上。
+/// `manifest.json` 里的路径可能带 `./` 前缀。这里只用它做「这份归档是不是
+/// docker save 产物」的判断；真正去读的时候 `@layer_tree.find_tar_entry` /
+/// `read_mapped_file` 自己会抹前缀，两边口径一致才不会判得出来却读不到。
 fn strip_dot_slash(path : String) -> String {
   if path.has_prefix("./") {
     path[2:].to_owned()
