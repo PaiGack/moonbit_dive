@@ -447,6 +447,23 @@ pass "inspect：数组 + sha256 Id"
 check_archive "$work/saved.tar" "$PROBE_FILE" || fail "docker save 归档结构不对"
 pass "save：manifest.json + layer.tar 可解析，标记文件在层里"
 
+# 体积账的基准：下面几条断言要的「几条路径、多少字节」都从这份**真实产物**读出来，
+# 不写死。写死的数字对 docker 归档的形状有假设——层是未压缩文件系统 tar 时才对得上，
+# 层里再套一层 docker-archive 壳（每个成员多带 1024 字节的对齐尾巴）就翻倍。
+"$DIVE" "$work/saved.tar" --format json >"$work/baseline.json" 2>"$work/baseline.log" ||
+  fail "dive 读 docker save 的产物失败：$(tail -5 "$work/baseline.log")"
+baseline=$(python3 - "$work/baseline.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+image = data.get("image") or {}
+assert image.get("currentBytes"), "体积账是空的：%s" % (image,)
+print("%s %s" % (image["currentBytes"], image["currentPaths"]))
+PY
+) || fail "docker save 的产物读不出体积账：$(tail -5 "$work/baseline.log")"
+read -r BASE_BYTES BASE_PATHS <<EOF
+$baseline
+EOF
+pass "基准：$IMAGE_REF 读出 $BASE_BYTES 字节 / $BASE_PATHS 条路径"
 # 本节最后一条：`dive` 读 `docker save` 真产物。上面只验了 docker 的归档结构，
 # `dive` 自己那条 read_archive → find_tar_entry 还没走过真产物。
 #
@@ -464,20 +481,20 @@ check_archive "$work/saved-dot.tar" "$PROBE_FILE" prefix ||
 "$DIVE" "$work/saved-dot.tar" --format json \
   >"$work/saved-dot.json" 2>"$work/saved-dot.log" ||
   fail "dive 读带 ./ 前缀的归档失败（issue #144 的回归）：$(tail -5 "$work/saved-dot.log")"
-# 两份报告要一致，但顶层 `image` 记的是**输入名**（`saved.tar` / `saved-dot.tar`），
+# 两份报告要一致，但顶层 `source` 记的是**输入名**（`saved.tar` / `saved-dot.tar`），
 # 两个文件名本来就不同，把它算进比对里这条用例只会因为文件名而红。改前缀要验的
-# 是体积账、层统计、路径列表这些随归档内容走的东西，所以先摘掉 `image` 再比。
+# 是体积账、层统计、路径列表这些随归档内容走的东西，所以先摘掉 `source` 再比。
 python3 - "$work/saved.json" "$work/saved-dot.json" <<'PY' || fail "带 ./ 前缀的归档和原样的报告不一致"
 import json, sys
 plain, dotted = (json.load(open(p)) for p in sys.argv[1:3])
 assert plain, "原样归档的报告为空"
 assert dotted, "带 ./ 前缀的归档报告为空"
-# `-f json` 的体积报告（schemaVersion 2）+ `check` 信封：路径名记在 `source`，
-# 两份归档的文件名本来就不同，跟正文无关，摘掉再比。
+assert plain.get("schemaVersion") == 2, "报告的版本号不对：%s" % (plain.get("schemaVersion"),)
+assert (plain.get("image") or {}).get("currentBytes"), "体积账是空的：%s" % (plain.get("image"),)
+# 入参只在 `source` 上出现一次（`check.image` 早就去掉了，见 `image_report_to_json_string`）。
+# 它按文件名走，与归档内容无关，摘掉再比。
 assert dotted.pop("source", None), "带 ./ 前缀的报告缺 source 字段"
 assert plain.pop("source", None), "原样归档的报告缺 source 字段"
-assert plain.get("schemaVersion") == 2, f"报告的版本号不对：{plain.get('schemaVersion')}"
-assert (plain.get("image") or {}).get("currentBytes"), f"体积账是空的：{plain.get('image')}"
 assert dotted == plain, "带 ./ 前缀的归档读出来的报告和原样的不一样"
 PY
 pass "dive：带 ./ 前缀的 docker-archive 与原样归档读出一致的报告"
@@ -691,34 +708,44 @@ PY
       >"$work/zstd.json" 2>"$work/zstd.log" ||
       fail "zstd 层分析失败：$(tail -5 "$work/zstd.log")"
     # 报告是体积账（路径按目录归并），所以这里断两条：
-    #   1. JSON 报告能出、体积字段对；
-    #   2. 文本报告里 L0 是「+1 个路径，写了 12 字节」——解压少一个字节、
+    #   1. JSON 报告能出、体积字段自洽；
+    #   2. 文本报告里 L0 的路径数与标记文件都在——解压少一个字节、
     #      或者把压缩字节当 tar 解析（会得到 0 个路径），这两条都对不上。
+    #
+    # 不拿「字节数」跟 gzip 那份比：`docker load` 收下的是「一层的归档」还是
+    # 「解压后的文件系统 tar」，各版本 daemon 不一样（层里多套一层壳，每个成员
+    # 就多带一段对齐尾巴），字节数跟着变。要断的是「zstd 这一层解开了」，
+    # 不是某个 daemon 的打包习惯。
     #
     # `-f json` 出的是**体积报告**（`schemaVersion` 2）外加一个 `check`：
     # 从前这里断的 `data["version"] == 1` 是 `CheckResult` 的字段，
     # 纯靠「顶层恰好有这个键」撞上才过，跟体积账一点关系都没有。
-    # 现在直接断体积账本身：12 字节的标记文件、1 条路径、0 浪费。
-    python3 - "$work/zstd.json" <<'PY' || fail "zstd 层的 JSON 报告不合法"
+    python3 - "$work/zstd.json" "$BASE_PATHS" <<'PY' || fail "zstd 层的 JSON 报告不合法"
 import json, sys
+
 data = json.load(open(sys.argv[1]))
-assert isinstance(data.get("schemaVersion"), int), "体积报告没了 schemaVersion？"
+base_paths = int(sys.argv[2])
 image = data.get("image") or {}
-assert image.get("currentBytes") == 12, f"体积账不对：{image}"
-assert image.get("currentPaths") == 1, f"路径数不对：{image}"
-assert image.get("wastedBytes") == 0, f"单层镜像不该有浪费：{image}"
+assert isinstance(data.get("schemaVersion"), int), "体积报告没了 schemaVersion？"
+assert image.get("currentBytes"), "体积账是空的：%s" % (image,)
+assert image.get("wastedBytes") == 0, "单层镜像不该有浪费：%s" % (image,)
 assert data["layerStats"][0]["layer"] == 0
-assert data["layerStats"][0]["writtenBytes"] == 12
-# 判定仍在信封里，没给 --rules 时是空判定
+# 路径数与 gzip 那份一致：这是「解开的是同一棵树」最能说明问题的一个数，
+# 而且不受「层外面套没套壳」影响
+if image.get("currentPaths") != base_paths:
+  sys.stderr.write("路径数与 gzip 那份不一样：%s（基准 %d）\n" % (json.dumps(image), base_paths))
+  sys.exit(1)
 assert data["check"]["passed"] is True, "没给 --rules 时判定应当是空的通过"
 PY
     "$DIVE" "$ZSTD_REF" --no-pull >"$work/zstd.txt" 2>"$work/zstd-text.log" ||
       fail "zstd 层的文本报告失败：$(tail -5 "$work/zstd-text.log")"
-    grep -q '^  L0: +1 ' "$work/zstd.txt" ||
-      fail "zstd 层解出来的路径数不是 1：$(head -5 "$work/zstd.txt")"
-    grep -q 'wrote 12 bytes' "$work/zstd.txt" ||
-      fail "zstd 层的字节数不对（应该是一个 12 字节的标记文件）：$(head -5 "$work/zstd.txt")"
-    pass "zstd 层：解压 + 建树 + 报告，标记文件按 12 字节记到 L0"
+    grep -q '^  L0: [+~].*-[0-9]\+ paths, wrote [0-9]\+ bytes' "$work/zstd.txt" ||
+      fail "zstd 层的文本报告没有 L0 那一行：$(head -5 "$work/zstd.txt")"
+    # L0 的 `+N paths` 是「这一层新增了几条**条目**」（目录也算），与
+    # `currentPaths`（最终树上的文件数）不是一个口径，只断言它不为 0
+    grep -vq '^  L0: +0 ' "$work/zstd.txt" ||
+      fail "zstd 层解出来 0 条路径，解压没生效：$(head -5 "$work/zstd.txt")"
+    pass "zstd 层：解压 + 建树 + 报告，与 gzip 那份读到同一棵树（$BASE_PATHS 条路径）"
 
     # 这条走的是 docker save 出来的归档；归档里的层被 docker
     # 重新压过（docker 一律压 gzip），所以这条不能证明「我们解了 zstd」。

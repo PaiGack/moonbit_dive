@@ -696,7 +696,11 @@ async test "the json report carries the size report next to the gate result" {
   // 判定整份进来，但不再自带一个 `version` 与 envelope 抢名字
   assert_true(json.contains("\"check\": {"))
   assert_true(json.contains("\"passed\": true"))
+  // 两个版本号并存只会让消费方猜哪个管哪个
   assert_false(json.contains("\"version\""))
+  // 入参只在一个地方说：`check.image` 与信封的 `source` 是同一个数，
+  // 留着它，内容相同的两份归档会因为文件名不同而比不出「一致」
+  assert_false(json.contains("\"image\": \"demo.tar\""))
   // 来源是解析后的那份字符串，不是别的
   assert_true(json.contains("\"source\": \"demo.tar\""))
 }

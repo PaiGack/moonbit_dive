@@ -201,8 +201,7 @@ JSON（`report_to_json_string`）：
   "largestDirectories": [ ... ],
   "source": "nginx:latest",     // 解析到的来源（路径 / 引用）
   "check": {                    // 门禁判定，即 CheckResult::to_json
-    "source": "rules.json",
-    "image": "nginx:latest",
+    "source": "rules.json",     // 规则来源，与顶层 source（镜像来源）不是一回事
     "passed": true,
     "exitCode": 0,
     "summary": { "total": 1, "passed": 1, "failed": 0 },
@@ -215,8 +214,9 @@ JSON（`report_to_json_string`）：
 
 - 顶层字段**逐项**就是上面的体积报告（`schemaVersion` + `layers` + …），一个不少
 - `image` 是体积概览，**不是**镜像名；来源挪到 `source`
-- 判定整份进 `check`，字段与 `CheckResult::to_json` 完全一致，只少了一个 `version`——
-  信封顶层已经有一个版本号，两个并存只会让消费方猜哪个管哪个
+- 判定整份进 `check`，字段与 `CheckResult::to_json` 一致，只少了两个：
+  `version`（信封顶层已经有一个版本号，两个并存只会让消费方猜哪个管哪个）与
+  `image`（它与顶层 `source` 是同一个入参，留着等于同一件事在报告里说两遍）
 - 不给 `--rules` 时 `check` 是一份空判定（`total: 0`、`passed: true`），
   与 `-f text` 末尾那两行「0/0 rules passed」说的是同一件事
 - 探针与脚本请按 `schemaVersion` 断版本、按 `image.wastedBytes` 之类的路径断数据，

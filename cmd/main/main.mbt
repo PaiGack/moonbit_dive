@@ -1105,8 +1105,9 @@ fn run(
 /// - `schemaVersion` 放在**顶层**，就是 `json_report_schema_version`。外层的形状
 ///   不变，消费方按「自己的版本号」分支即可
 /// - `image` 字段此前是镜像名，现在被体积报告占住；解析过的来源挪到 `source`
-/// - `check` 是原来那份 `CheckResult`，一个字段没动——只认 `check.passed` /
-///   `check.rules` 的老脚本照旧能跑
+/// - `check` 是原来那份 `CheckResult`：只认 `check.passed` / `check.rules` 的老脚本
+///   照旧能跑。它少两个字段，`version` 与 `image`——前者与信封的 `schemaVersion`
+///   抢「版本号」这个词，后者与信封的 `source` 是同一个入参
 ///
 /// 不给 `--rules` 时 `check` 是一份空判定（0 条规则、`passed: true`），
 /// 与 `-f text` 末尾那两行「0/0 rules passed」说的是同一件事。
@@ -1130,6 +1131,11 @@ fn image_report_to_json_string(
       }
     _ => abort("report_to_json must yield an object")
   }
+  // 判定里原来那个 `image` 记的是**入参**（`saved.tar`、`nginx:latest`），与信封的
+  // `source` 是同一个数。留着它，`source` 说一套、`check.image` 说一套，同一份报告
+  // 里两个字段指向同一件事却各说各的（带 `./` 前缀的归档只是把这事摊开：
+  // 内容一模一样的两个归档，报告却因为文件名不同而对不上）。
+  check.remove("image") |> ignore
   envelope["source"] = Json(source)
   envelope["check"] = Json::object(check)
   Json::object(envelope).stringify(indent=2)
