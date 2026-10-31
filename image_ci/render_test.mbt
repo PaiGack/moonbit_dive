@@ -32,7 +32,7 @@ async test "text report snapshot" {
       #|[FAIL] rule-1: maxImageSize <= 15 (observed 16 bytes, expected <= 15 bytes)
       #|        reason: observed 16 bytes exceeds the 15 bytes limit by 1 bytes
       #|[FAIL] rule-2: minEfficiency >= 0.9 (observed 38.5%, expected >= 90%)
-      #|        reason: efficiency 38.5% is below the 90% floor; 10 bytes were wasted across layers
+      #|        reason: efficiency 38.5% is below the 90% floor; 10 bytes were overwritten or deleted across layers (the score is min / cumulative, a different number)
       #|[pass] rule-3: denyPaths 1 pattern(s) (observed 0 matching file(s), expected no file matches (/node_modules/**))
       #|1/3 rules passed, 2 failed
       #|gate: fail

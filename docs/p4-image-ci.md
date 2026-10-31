@@ -38,12 +38,15 @@
 
 ## 非目标
 
-- 不做交互式 TUI（dive 的 gocui 部分不复刻）
+- 不做交互式 TUI（dive 的 gocui 部分不复刻；界面在 P6 `tui`，本包只出 `Report` / `CheckResult`）
 - 不做 registry 拉取（公网镜像名直拉归 `mizchi/oci_wasm` 那条可选路径）
 - 不自己实现 Docker Engine 客户端（封装归 P5 `docker_cli`，见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)）
 
-输入层对上文三种本地格式负责；「给个镜像名」由 P5 取到 tar/layout 后**回落到同一入口**，
-本包不直接依赖 P5，保持可离线运行。
+输入层对上文三种本地格式负责，就是 `image_ci/image.mbt` 里的 `ImageSource::load`——
+它认 docker-archive（`manifest.json` + `<hash>/layer.tar`，含 `./` 前缀）、
+OCI layout 目录、单层 tar 与 stdin 四挡；「给个镜像名」由 P5 `docker_cli` / P7
+`registry_cli` 取到 tar/layout 后**回落到同一入口**。本包不依赖 P5/P7，
+`cmd/main` 只做接线，保持可离线运行。
 
 接口边界的调研与取舍见 [docker-cli-survey.md](docker-cli-survey.md)。
 

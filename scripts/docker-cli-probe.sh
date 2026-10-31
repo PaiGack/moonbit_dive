@@ -472,8 +472,12 @@ import json, sys
 plain, dotted = (json.load(open(p)) for p in sys.argv[1:3])
 assert plain, "原样归档的报告为空"
 assert dotted, "带 ./ 前缀的归档报告为空"
-assert dotted.pop("image", None), "带 ./ 前缀的报告缺 image 字段"
-assert plain.pop("image", None), "原样归档的报告缺 image 字段"
+# `-f json` 的体积报告（schemaVersion 2）+ `check` 信封：路径名记在 `source`，
+# 两份归档的文件名本来就不同，跟正文无关，摘掉再比。
+assert dotted.pop("source", None), "带 ./ 前缀的报告缺 source 字段"
+assert plain.pop("source", None), "原样归档的报告缺 source 字段"
+assert plain.get("schemaVersion") == 2, f"报告的版本号不对：{plain.get('schemaVersion')}"
+assert (plain.get("image") or {}).get("currentBytes"), f"体积账是空的：{plain.get('image')}"
 assert dotted == plain, "带 ./ 前缀的归档读出来的报告和原样的不一样"
 PY
 pass "dive：带 ./ 前缀的 docker-archive 与原样归档读出一致的报告"
@@ -492,6 +496,9 @@ python3 - "$work/local.json" <<'PY' || fail "本地镜像的报告不对"
 import json, sys
 report = json.load(open(sys.argv[1]))
 assert report, "报告为空"
+image = report.get("image") or {}
+assert image.get("currentBytes", 0) > 0, f"体积账是空的：{image}"
+assert report["check"]["passed"] is True, "没给 --rules 时判定应当是空的通过"
 PY
 pass "本地命中：出了 JSON 报告"
 # 探测日志里要说清用了哪个后端，否则「到底连了 daemon 还是敲了 CLI」无法复核
@@ -684,13 +691,26 @@ PY
       >"$work/zstd.json" 2>"$work/zstd.log" ||
       fail "zstd 层分析失败：$(tail -5 "$work/zstd.log")"
     # 报告是体积账（路径按目录归并），所以这里断两条：
-    #   1. JSON 报告能出、格式版本对；
+    #   1. JSON 报告能出、体积字段对；
     #   2. 文本报告里 L0 是「+1 个路径，写了 12 字节」——解压少一个字节、
     #      或者把压缩字节当 tar 解析（会得到 0 个路径），这两条都对不上。
+    #
+    # `-f json` 出的是**体积报告**（`schemaVersion` 2）外加一个 `check`：
+    # 从前这里断的 `data["version"] == 1` 是 `CheckResult` 的字段，
+    # 纯靠「顶层恰好有这个键」撞上才过，跟体积账一点关系都没有。
+    # 现在直接断体积账本身：12 字节的标记文件、1 条路径、0 浪费。
     python3 - "$work/zstd.json" <<'PY' || fail "zstd 层的 JSON 报告不合法"
 import json, sys
 data = json.load(open(sys.argv[1]))
-assert data.get("version") == 1, "报告格式变了？"
+assert isinstance(data.get("schemaVersion"), int), "体积报告没了 schemaVersion？"
+image = data.get("image") or {}
+assert image.get("currentBytes") == 12, f"体积账不对：{image}"
+assert image.get("currentPaths") == 1, f"路径数不对：{image}"
+assert image.get("wastedBytes") == 0, f"单层镜像不该有浪费：{image}"
+assert data["layerStats"][0]["layer"] == 0
+assert data["layerStats"][0]["writtenBytes"] == 12
+# 判定仍在信封里，没给 --rules 时是空判定
+assert data["check"]["passed"] is True, "没给 --rules 时判定应当是空的通过"
 PY
     "$DIVE" "$ZSTD_REF" --no-pull >"$work/zstd.txt" 2>"$work/zstd-text.log" ||
       fail "zstd 层的文本报告失败：$(tail -5 "$work/zstd-text.log")"
@@ -839,9 +859,9 @@ if kill -0 "$plain_pid" 2>/dev/null; then
       fail "给 registry 产物加 ./ 前缀失败"
     check_archive "$work/plain-dot.tar" "etc/plain-marker" prefix ||
       fail "改前缀后的 registry 产物结构不对"
-    # 得看层里真读出来的东西：`-f json` 在这条链路上打的是规则判定，本来
-    # 就没有层账；`--no-tui` 的文本报告也只报体积账、不列路径。所以这里要
-    # 逐层视图（`--layer 0`）——它的 `tree` 就是层里读出来的路径，读不到
+    # 得看层里真读出来的东西：`-f json` 出的是整份体积账（路径按目录归并），
+    # 不列逐层路径；`--no-tui` 的文本报告同理。所以这里要逐层视图
+    # （`--layer 0`）——它的 `tree` 就是层里读出来的路径，读不到
     # `./manifest.json` 时会是空树。
     "$DIVE" "$work/plain-dot.tar" --layer 0 --format json \
       >"$work/plain-dot-layer.json" 2>"$work/plain-dot.layer.log" ||

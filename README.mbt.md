@@ -54,7 +54,8 @@ moon run --target native cmd/main -- nginx:latest
 moon run --target native cmd/main -- nginx:latest --verbose
 # 完全离线：一次网络请求都不发（不 pull、不连 registry）
 moon run --target native cmd/main -- nginx:latest --no-pull
-# 单次 docker 调用最多等多久（秒，默认 30），拉大镜像时调大
+# 单次 docker 调用最多等多久没输出（秒，默认 30）：**只管 docker 调用**
+# （`inspect` / `save` / `pull`），registry 直拉那条自己发的 HTTP 不走它
 moon run --target native cmd/main -- nginx:latest --timeout 300
 
 # 只把镜像存成 tar 或 OCI layout，不分析（`--save` 只对镜像引用生效）
@@ -64,6 +65,8 @@ moon run --target native cmd/main -- --save --archive-format oci -o ./nginx-oci 
 moon run --target native cmd/main -- --save --platform linux/arm64 -o x.tar ghcr.io/owner/repo:tag
 moon run --target native cmd/main -- --save --insecure-registry -o x.tar localhost:5000/team/app:dev
 # 同时在途的层数（默认 4；1 = 逐层串行，排障用）
+# `--jobs` 两条取镜像的路都吃；`--timeout` 只吃 docker 那条，
+# 走 registry 直拉（本机没有 docker 后端）时它不生效
 moon run --target native cmd/main -- --save --jobs 8 -o nginx.tar library/nginx:1.27
 # 根证书不在系统默认位置：指定一份 PEM（`https://` registry 都要校验证书）
 DIVE_CA_BUNDLE=/path/to/ca-bundle.crt moon run --target native cmd/main -- --save -o x.tar registry.example.com/team/app:1.0

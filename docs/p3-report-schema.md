@@ -1,7 +1,7 @@
 # P3 报告 JSON schema
 
 `image_analysis` 的 JSON 报告由 `report_to_json` / `report_to_json_string` 产出，
-用于 P4 的体积门禁判定与外部工具消费。
+经 CLI 的 `-f json` 交给外部工具消费（信封形状见下文「CLI 的 `-f json` 出口」）。
 
 - 顶层带 `schemaVersion`（当前 `2`），字段有增删改时递增
 - 所有字节数都是整数（`Int32`）
@@ -93,28 +93,65 @@ dive 原版同样如此——它是「用户层的改动换来多少浪费」的
 
 ## 示例
 
+一份手搓的两层镜像：L0 写 `/app/main.js`（10 字节），L1 把它改成 16 字节
+并新增 `/app/other.js`（3 字节）。下面两段是从**同一份报告**出的两个渲染，
+一个字节都不差——文本示例与 JSON 示例必须能对上，否则拿文本写解析脚本会踩坑。
+
+文本（`render_text_report` 的原文，顺序即代码顺序）：
+
+```
+layers: 2
+  L0: +2 ~0 -0 paths, wrote 10 bytes, wasted 0 bytes
+  L1: +1 ~2 -0 paths, wrote 19 bytes, wasted 10 bytes
+image:
+  current: 19 bytes in 3 paths
+  written: 29 bytes
+  user written: 9 bytes (all layers but the base)
+  wasted: 16 bytes (55.2%)
+    by path (cumulative - min): 16 bytes
+    overwritten: 10 bytes
+    deleted: 0 bytes
+  user wasted: 177.8% of 9 bytes
+efficiency: 44.8% (13/29)
+wasteful paths:
+  10 bytes  x2  /app/main.js
+largest directories:
+  19 bytes  2 files  /app
+```
+
+JSON（`report_to_json_string`）：
+
 ```json
 {
   "schemaVersion": 2,
   "layers": 2,
   "image": {
-    "currentBytes": 16,
-    "currentPaths": 2,
-    "writtenBytes": 26,
-    "userBytes": 6,
+    "currentBytes": 19,
+    "currentPaths": 3,
+    "writtenBytes": 29,
+    "userBytes": 9,
     "wastedBytes": 16,
-    "userWastedPercent": 2.666667,
+    "userWastedPercent": 1.777778,
     "wasted": { "overwritten": 10, "deleted": 0 }
   },
-  "efficiency": { "score": 0.384615, "minBytes": 10, "cumulativeBytes": 26 },
+  "efficiency": { "score": 0.448276, "minBytes": 13, "cumulativeBytes": 29 },
   "layerStats": [
     {
       "layer": 0,
-      "addedPaths": 1,
+      "addedPaths": 2,
       "overwrittenPaths": 0,
       "deletedPaths": 0,
       "writtenBytes": 10,
       "wastedBytes": 0,
+      "erasedBytes": 0
+    },
+    {
+      "layer": 1,
+      "addedPaths": 1,
+      "overwrittenPaths": 2,
+      "deletedPaths": 0,
+      "writtenBytes": 19,
+      "wastedBytes": 10,
       "erasedBytes": 0
     }
   ],
@@ -129,10 +166,61 @@ dive 原版同样如此——它是「用户层的改动换来多少浪费」的
     }
   ],
   "largestDirectories": [
-    { "path": "/app", "cumulativeBytes": 16, "files": 1 }
+    { "path": "/app", "cumulativeBytes": 19, "files": 2 }
   ]
 }
 ```
+
+对读的几条锚：
+
+| 文本 | JSON | 备注 |
+|---|---|---|
+| `wasted: 16 bytes (55.2%)` | `image.wastedBytes: 16` | 括号里的百分比 = `wastedBytes / writtenBytes = 16/29` |
+| `by path (cumulative - min): 16 bytes` | 同上 | 文本多这一行只是把口径写在脸上，**不是**第二个数 |
+| `overwritten: 10 bytes` / `deleted: 0 bytes` | `image.wasted.overwritten` / `.deleted` | 与 `wastedBytes` 不是一个数（见上「口径差异」） |
+| `user wasted: 177.8% of 9 bytes` | `image.userWastedPercent: 1.777778` | 文本按百分数印、JSON 给 `0..n` 的比值 |
+| `efficiency: 44.8% (13/29)` | `efficiency.score: 0.448276` + `minBytes`/`cumulativeBytes` | |
+| `19 bytes  2 files  /app` | `largestDirectories[]` | 文本只印前 10 条，JSON 也只给 10 条 |
+
+`layerStats[layer].wastedBytes` 是「这一层覆盖掉的旧内容」，与 `image.wastedBytes`
+（`Σ cumulative - min`）同样不是一个口径：上例里 L1 的 10 就是我们多写的那 10 字节，
+两者相等纯属巧合（一条路径只写了两版、第二版更大）。
+
+## CLI 的 `-f json` 出口：体积报告 + 门禁判定
+
+`dive <image> --no-tui --format json` 出的不是 `report_to_json` 裸奔，而是一个**信封**：
+
+```json
+{
+  "schemaVersion": 2,          // = json_report_schema_version，体积报告的版本号
+  "layers": 2,
+  "image": { ... },
+  "efficiency": { ... },
+  "layerStats": [ ... ],
+  "wastefulPaths": [ ... ],
+  "largestDirectories": [ ... ],
+  "source": "nginx:latest",     // 解析到的来源（路径 / 引用）
+  "check": {                    // 门禁判定，即 CheckResult::to_json
+    "source": "rules.json",
+    "image": "nginx:latest",
+    "passed": true,
+    "exitCode": 0,
+    "summary": { "total": 1, "passed": 1, "failed": 0 },
+    "rules": [ ... ]
+  }
+}
+```
+
+几条口径：
+
+- 顶层字段**逐项**就是上面的体积报告（`schemaVersion` + `layers` + …），一个不少
+- `image` 是体积概览，**不是**镜像名；来源挪到 `source`
+- 判定整份进 `check`，字段与 `CheckResult::to_json` 完全一致，只少了一个 `version`——
+  信封顶层已经有一个版本号，两个并存只会让消费方猜哪个管哪个
+- 不给 `--rules` 时 `check` 是一份空判定（`total: 0`、`passed: true`），
+  与 `-f text` 末尾那两行「0/0 rules passed」说的是同一件事
+- 探针与脚本请按 `schemaVersion` 断版本、按 `image.wastedBytes` 之类的路径断数据，
+  别再拿 `version == 1` 当「报告格式没变」
 
 ## `--efficiency` 视图的 JSON
 

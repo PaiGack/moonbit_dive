@@ -191,3 +191,55 @@ async test "jobs defaults to 4 and can be overridden" {
   assert_false(options.save)
   assert_eq(options.image, "nginx:latest")
 }
+
+///|
+/// 短写也要吃值：`-f json` / `-o x.tar` 与长写解析成同一份选项（issue #147）。
+///
+/// 这一版 argparse 的短选项**是**消费后面那个值的（`parser.mbt` 的
+/// `can_take_next` 分支），但仓库里一条用例都没有覆盖短写——README 的例子
+/// 却几乎全是短写。没有用例的路径迟早会有人改坏，这里把它钉住。
+async test "short forms take the next argument as their value" {
+  let long = parse_options([
+    "nginx:latest", "--save", "--no-tui", "--output", "x.tar", "--format", "json",
+  ])
+  let short = parse_options([
+    "nginx:latest", "--save", "--no-tui", "-o", "x.tar", "-f", "json",
+  ])
+  assert_eq(short.format, "json")
+  assert_eq(short.output, Some("x.tar"))
+  assert_eq(short.format, long.format)
+  assert_eq(short.output, long.output)
+  // 值被吃掉了就不会再落成一个位置参数：`image` 仍是那个镜像引用
+  assert_eq(short.image, "nginx:latest")
+}
+
+///|
+/// 短写的另外两种写法：`-f=json`（等号）与 `-fjson`（贴在一起）。
+///
+/// 三种写法都要能落到同一个值上——脚本里三种都有人写。
+async test "short forms accept =value and the attached form" {
+  for
+    args in [
+      ["demo.tar", "-f=json"],
+      ["demo.tar", "-fjson"],
+      ["demo.tar", "-f", "json"],
+    ] {
+    assert_eq(parse_options(args).format, "json")
+  }
+  // 开关与取值挤在一个词组里也要分开解析：`-o x.tar` 前面挂一个 `-l1`
+  let options = parse_options(["-l1", "-o", "x.tar", "demo.tar"])
+  assert_eq(options.layer, Some(1))
+  assert_eq(options.output, Some("x.tar"))
+}
+
+///|
+/// 短写后面少了值要报错，不能把下一个参数当值吞掉。
+async test "a short option without its value is rejected" {
+  let rejected : Bool = try {
+    cli().parse(argv=["demo.tar", "-f"]).flags |> ignore
+    false
+  } catch {
+    _ => true
+  }
+  assert_true(rejected)
+}

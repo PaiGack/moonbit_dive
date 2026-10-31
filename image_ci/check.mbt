@@ -150,7 +150,7 @@ fn check_rule(
           rule,
           percent1(score),
           ">= \{percent1(limit)}",
-          "efficiency \{percent1(score)} is below the \{percent1(limit)} floor; \{report.overwritten_wasted + report.deleted_wasted} bytes were wasted across layers",
+          "efficiency \{percent1(score)} is below the \{percent1(limit)} floor; \{report.overwritten_wasted + report.deleted_wasted} bytes were overwritten or deleted across layers (the score is min / cumulative, a different number)",
           [],
         )
       }

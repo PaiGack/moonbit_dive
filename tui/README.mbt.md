@@ -153,7 +153,7 @@ moon run --target native cmd/main -- demo-image.tar --layer 2 --aggregate -f jso
 | Filetree | `Enter` | 折叠 / 展开（与 `Space` 同效，本仓保留） |
 | Filetree | `Ctrl+U` | 只看被改写的行 ↔ 全都要（原版 `IgnoreUnmodified`，来回切） |
 | Filetree | `d` | 开关「被删除的路径」列表（可滚动） |
-| Filetree | `Ctrl+B` | 文件属性：权限 / mtime / 层号**常显**在详情面板，无开关（原版是切换） |
+| Filetree | `Ctrl+B` | **不绑键**：文件属性（权限 / mtime / 层号）常显在详情面板，没有可切的状态；原版那一下是开关 |
 | Filetree | `s` | 按体积排序（再按一次回名字序；原版是 `Ctrl+O`，`Ctrl+O` 留空） |
 | Mouse | 左键 | 选中；点目录行顺带折叠 / 展开（与 `Enter` 对称） |
 | Mouse | 右键 | 折叠 / 展开光标行 |
