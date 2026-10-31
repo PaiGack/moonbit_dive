@@ -1075,7 +1075,11 @@ fn run(
   let ruleset = load_rules(options)
   let result = ruleset.check(report, tree, image=options.image)
   match options.format {
-    "json" => println(result.to_json_string())
+    "json" =>
+      write_report_output(
+        options,
+        image_report_to_json_string(report, result, options.image),
+      )
     "html" =>
       write_report_output(options, @image_analysis.report_to_html(report))
     "annotations" => println(result.to_annotations())
@@ -1085,6 +1089,56 @@ fn run(
     }
   }
   @image_ci.exit_code_of(result)
+}
+
+///|
+/// `-f json` 的那一份：**体积报告**（`schemaVersion` 2）+ 门禁判定，装在一个信封里。
+///
+/// 从前面看，`-f json` 出的是 `CheckResult`（顶层 `version`，只剩规则表），
+/// 体积报告全仓**没有 JSON 出口**——`report_to_json` 写好了没人调，
+/// 想看 `image.wastedBytes` 的脚本只能去 `-f html` 里抠。文档（`p3-report-schema.md`、
+/// `image_analysis/README.mbt.md`）却一直按「有 JSON 出口」写，探针里那句
+/// `data.get("version") == 1` 更是纯靠字段名撞上才过的。
+///
+/// 信封的取舍：
+///
+/// - `schemaVersion` 放在**顶层**，就是 `json_report_schema_version`。外层的形状
+///   不变，消费方按「自己的版本号」分支即可
+/// - `image` 字段此前是镜像名，现在被体积报告占住；解析过的来源挪到 `source`
+/// - `check` 是原来那份 `CheckResult`：只认 `check.passed` / `check.rules` 的老脚本
+///   照旧能跑。它少两个字段，`version` 与 `image`——前者与信封的 `schemaVersion`
+///   抢「版本号」这个词，后者与信封的 `source` 是同一个入参
+///
+/// 不给 `--rules` 时 `check` 是一份空判定（0 条规则、`passed: true`），
+/// 与 `-f text` 末尾那两行「0/0 rules passed」说的是同一件事。
+fn image_report_to_json_string(
+  report : @image_analysis.Report,
+  result : @image_ci.CheckResult,
+  source : String,
+) -> String {
+  let check = match result.to_json() {
+    Json::Object(fields) => fields
+    _ => Map([])
+  }
+  // `version` 与信封的 `schemaVersion` 说的是两件事（一个判定的、一个体积账的），
+  // 留着两个版本号只会让消费方猜哪个管哪个
+  check.remove("version") |> ignore
+  let envelope = Map([])
+  match @image_analysis.report_to_json(report) {
+    Json::Object(fields) =>
+      for name, value in fields {
+        envelope[name] = value
+      }
+    _ => abort("report_to_json must yield an object")
+  }
+  // 判定里原来那个 `image` 记的是**入参**（`saved.tar`、`nginx:latest`），与信封的
+  // `source` 是同一个数。留着它，`source` 说一套、`check.image` 说一套，同一份报告
+  // 里两个字段指向同一件事却各说各的（带 `./` 前缀的归档只是把这事摊开：
+  // 内容一模一样的两个归档，报告却因为文件名不同而对不上）。
+  check.remove("image") |> ignore
+  envelope["source"] = Json(source)
+  envelope["check"] = Json::object(check)
+  Json::object(envelope).stringify(indent=2)
 }
 
 ///|
@@ -1137,12 +1191,14 @@ fn run_layer_view(
   }
   let view = views[wanted]
   match options.format {
-    "json" =>
+    "json" => {
+      let diff = compare_diff(view, options)
       println(
-        layer_view_to_json(view, compare_diff(view, options), options).stringify(
+        layer_view_to_json(view, subtree_of(view, options), diff, options).stringify(
           indent=2,
         ),
       )
+    }
     _ => println(render_layer_view(view, options, views.length()))
   }
   @image_ci.exit_ok
@@ -1156,10 +1212,7 @@ fn render_layer_view(
   options : Options,
   total_layers : Int32,
 ) -> String {
-  let subtree = match options.path {
-    Some(path) => view.subtree(path)
-    None => view.tree
-  }
+  let subtree = subtree_of(view, options)
   let diff = compare_diff(view, options)
   let builder = StringBuilder()
   builder.write_string(
@@ -1177,6 +1230,24 @@ fn render_layer_view(
   }
   builder.write_string(@layer_tree.render_tree(subtree))
   builder.to_string()
+}
+
+///|
+/// `--path` 生效后的树：文本与 JSON 两个出口共用同一份，「给了 `--path` 就只看子树」
+/// 这句话才只有一种解释。
+///
+/// 从前只有文本走了这里，JSON 里 `tree` 恒为整棵树（只把前缀记进 `path` 字段）——
+/// 文档说「字段与文本逐项对齐」，实际差着一个 `--path`，脚本按 JSON 取子树会
+/// 拿到整个镜像。`subtree` 本身会保留沿途祖先目录作缩进参照（见
+/// `LayerView::subtree`），所以这里不需要再补一遍。
+fn subtree_of(
+  view : @layer_tree.LayerView,
+  options : Options,
+) -> @layer_tree.FileTree {
+  match options.path {
+    Some(path) => view.subtree(path)
+    None => view.tree
+  }
 }
 
 ///|
@@ -1205,17 +1276,19 @@ fn compare_name(options : Options) -> String {
 ///|
 /// 逐层视图的 JSON：给脚本消费，字段与文本视图一一对应。
 ///
-/// `schemaVersion` 不动：本轮只是给 `compare` 与 `aggregateBytes` 各加一个字段，
-/// 既有字段一个都没改（默认档位下数值与从前完全一致）。
+/// `schemaVersion` 不动：`tree` 从「恒为整棵树」改成「跟着 `--path` 走」是对齐
+/// 文本视图的**修 bug**，不是加字段——字段名、类型、默认档位下的取值都没变。
+/// 唯一的差别是给了 `--path` 之后 `tree` 才真的只剩子树。
 fn layer_view_to_json(
   view : @layer_tree.LayerView,
+  tree : @layer_tree.FileTree,
   diff : @layer_tree.Diff,
   options : Options,
 ) -> Json {
   Json::object({
     "schemaVersion": Json(1),
     "layer": Json(view.layer),
-    "tree": Json(@layer_tree.render_tree(view.tree)),
+    "tree": Json(@layer_tree.render_tree(tree)),
     "path": Json(
       match options.path {
         Some(path) => Json(path)

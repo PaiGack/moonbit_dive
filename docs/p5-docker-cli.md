@@ -128,7 +128,9 @@ docker / podman / nerdctl 的 CLI 长得一样，实际有三处不一致，都�
   moon run --target native cmd/main -- nginx:latest --verbose
   # 本地缺镜像时默认先拉一次（对齐原版 dive）；--no-pull 关掉，纯离线绝不出网
   moon run --target native cmd/main -- nginx:latest --no-pull
-  # 单次 docker 调用的超时（秒），默认 30；拉大镜像时调大
+  # 单次 docker 调用的超时（秒），默认 30；拉大镜像时调大。
+  # 只管 docker 调用的空闲预算：本机没有 docker 后端、走 P7 registry 直拉时，
+  # 那个开关不生效（那条路的 HTTP 有自己的连接超时）
   moon run --target native cmd/main -- nginx:latest --timeout 300
   # 与既有开关组合，行为不变
   moon run --target native cmd/main -- nginx:latest --rules rules.json --format annotations

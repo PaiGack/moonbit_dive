@@ -125,7 +125,7 @@ image: demo-image.tar
 rules: rules.json
 [pass] image-size: maxImageSize <= 4096 (observed 36 bytes, expected <= 4096 bytes)
 [FAIL] efficiency: minEfficiency >= 0.5 (observed 35.7%, expected >= 50%)
-        reason: efficiency 35.7% is below the 50% floor; 20 bytes were wasted across layers
+        reason: efficiency 35.7% is below the 50% floor; 20 bytes were overwritten or deleted across layers (the score is min / cumulative, a different number)
 [FAIL] no-node-modules: denyPaths 2 pattern(s) (observed 1 matching file(s), expected no file matches (/app/node_modules/**, /node_modules/**))
         reason: forbidden paths present: /node_modules/pkg/index.js
 1/3 rules passed, 2 failed

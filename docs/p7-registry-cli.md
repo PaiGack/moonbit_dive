@@ -37,6 +37,16 @@ DIVE_CA_BUNDLE=/path/to/ca-bundle.crt dive --save -o x.tar registry.example.com/
 一个 docker 后端都没有时才走本包直连 registry。`--no-pull` 把后两条路一起关掉
 （本次运行绝不出网）。`--save` 只对镜像引用生效：给一份已存在的本地归档会按参数错退 2。
 
+两个开关在这条路上的口径不同，别记混：
+
+| 开关 | docker 那条路 | 本包直拉这条路 |
+|---|---|---|
+| `--jobs` | 不吃（`docker save` 一个进程到底） | **生效**，同时在途的层数（默认 4，上限 16） |
+| `--timeout` | **生效**，docker 调用的空闲预算（默认 30s） | **不生效**：命令行这个开关只包 docker 调用，本包自己发的 HTTP 不在它的射程里 |
+
+README 里 `--save` 的例子把两者并排放，容易被读成「`--save` 也能调超时」——
+所以在那两行旁边写明了。
+
 **TLS 根证书**：`https://` registry 要校验对端证书，机器上得有 CA 包
 （Debian 系 `apt install ca-certificates`）。缺了它握手一定失败，
 所以客户端会自己从常见位置挑一份 bundle
@@ -109,9 +119,17 @@ write_image                    解压即写盘：docker-archive（层解压）�
 ## 4. 补的基础件
 
 - `layer_tree::TarWriter` / `TarWriteEntry` / `tar_file_entry` / `tar_directory_entry`
-  —— 本仓原先只有 `TarReader`。用 `Buffer` + 512 对齐流式写，内存占用与镜像体积无关。
-  **注意**：`TarWriter` 目前写进内存缓冲区，`finish()` 才给出字节，所以整包仍在内存里；
-  真正需要「边拉边落盘」时再加 `write_to(File)` 的出口。
+  —— 本仓原先只有 `TarReader`。
+  **`TarWriter` 自己不留缓冲区**：`begin(sink, entry)` 写头、调用方接着写 `size` 个字节、
+  `pad(sink, size)` 补齐、`finish(sink)` 收尾，四步全都吃 `&@io.Writer`，
+  内存占用与镜像体积无关。`write_entry(sink, entry, data)` 是前三步的合体。
+  外加 `header_bytes` / `padding_bytes` 两个「不出字节、只要形状」的出口给回填用：
+  docker-archive 的 `<id>/layer.tar` 头里要写死数据长度，而长度只有解压完才知道，
+  于是先写占位头、收尾时按原偏移 `write_at` 换掉（issue #113）。
+- `registry_cli::package_docker_archive` 就是那条「边解压边落盘」的路：层从
+  `PulledBlob` 按需读、解压、直接写进目标文件，中途不攒整包。
+  `package_test.mbt` 有一条 24 MB 层的回归用例（`packing a big layer streams
+  instead of buffering it`）：老写法在这条上都勉强，700 MB 的镜像就是 issue #97。
 - `oci_spec::Digest::from_bytes` / `verify_digest` —— 按 digest 字符串校验字节，
   算法从 digest 里取，不必调用方先约定。
 

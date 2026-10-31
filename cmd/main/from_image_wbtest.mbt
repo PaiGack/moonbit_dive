@@ -577,6 +577,135 @@ async test "aggregate json adds the compare fields" {
 }
 
 ///|
+/// `--path` 在文本与 JSON 两个出口上必须说同一句话（issue #147）。
+///
+/// 从前只有文本走了 `subtree`，JSON 里 `tree` 恒为整棵树、只把前缀记进 `path`，
+/// 于是「给了 `--path` 就只看子树」这件事故意只在文本里成立。这条用例把两个出口
+/// 钉在同一份树上：JSON 的 `tree` 解析出来要与文本末尾那段逐字节相同。
+async test "layer view json follows --path like the text view" {
+  let l0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("etc"),
+    @layer_tree.TarEntrySpec::File("etc/hosts", "127.0.0.1"),
+    @layer_tree.TarEntrySpec::Dir("usr"),
+    @layer_tree.TarEntrySpec::Dir("usr/lib"),
+    @layer_tree.TarEntrySpec::File("usr/lib/a.so", "0123456789"),
+  ])
+  let l1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("usr/lib/a.so", "0123456789abcdef"),
+  ])
+  let layers : Array[BytesView] = [l0, l1]
+
+  // 不给 --path：两边都是整棵树
+  let plain = options_of(["demo.tar", "--layer", "1"])
+  let full_json = layer_view_json_for(plain, layers)
+  let full_tree = parse_tree_field(full_json)
+  assert_true(full_tree.contains("hosts"))
+  assert_true(full_tree.contains("a.so"))
+
+  // 给了 --path：文本与 JSON 都只剩 /usr/lib，沿途祖先（/usr）留着当缩进参照
+  let scoped = options_of(["demo.tar", "--layer", "1", "--path", "/usr/lib"])
+  let text = layer_view_text(scoped, layers)
+  let tree = parse_tree_field(layer_view_json_for(scoped, layers))
+  // 文本在树之前还有几行表头：从最后一段 `\n/` 起就是 `render_tree` 的产物
+  let view_text : StringView = text
+  let tree_start = view_text.find("\n/").unwrap_or(0) + 1
+  assert_eq(tree, view_text[tree_start:].to_owned())
+  assert_false(tree.contains("etc"))
+  assert_true(tree.contains("usr/"))
+  assert_true(tree.contains("a.so"))
+  assert_true(
+    layer_view_json_for(scoped, layers).contains("\"path\": \"/usr/lib\""),
+  )
+
+  // 前缀一个都不匹配：JSON 里只剩一个空根（`render_tree` 对空树的写法），
+  // 关键是别悄悄退回整棵树
+  let missing = options_of(["demo.tar", "--layer", "1", "--path", "/nope"])
+  let missing_tree = parse_tree_field(layer_view_json_for(missing, layers))
+  assert_eq(missing_tree, "/\n")
+  assert_false(missing_tree.contains("usr"))
+}
+
+///|
+/// 从逐层视图的 JSON 里取 `tree` 字段的原始文本。
+///
+/// 不引 JSON 解析器只为取一个字符串字段：`render_tree` 的产物里没有转义
+/// 之外的花样，`\n` / `\"` / `\\` 三种还原就够了。
+fn parse_tree_field(text : String) -> String {
+  let marker = "\"tree\": \""
+  let start = match text.find(marker) {
+    Some(index) => index + marker.length()
+    None => return ""
+  }
+  let builder = StringBuilder()
+  let view : StringView = text
+  let mut index = start
+  while index < view.length() {
+    let ch = view[index]
+    if ch == '\\' && index + 1 < view.length() {
+      match view[index + 1] {
+        'n' => builder.write_char('\n')
+        't' => builder.write_char('\t')
+        other => builder.write_char(other.unsafe_to_char())
+      }
+      index += 2
+      continue
+    }
+    if ch == '"' {
+      break
+    }
+    builder.write_char(ch.unsafe_to_char())
+    index += 1
+  }
+  builder.to_string()
+}
+
+///|
+/// `-f json` 出的是**体积报告**（`schemaVersion` 2）+ 门禁判定，装在一个信封里。
+///
+/// 从前它出的是 `CheckResult`（顶层 `version`），体积报告一个 JSON 出口都没有；
+/// 探针里那句 `data.get("version") == 1` 纯靠字段名撞上才过。这条用例钉三件事：
+///
+/// 1. 顶层 `schemaVersion` 就是 `json_report_schema_version`，体积字段在顶层；
+/// 2. 判定整份挪进 `check`，老脚本只认 `check.rules` 也照旧；
+/// 3. 信封里只剩一个版本号（判定那边那个 `version` 被拿掉了）。
+async test "the json report carries the size report next to the gate result" {
+  let layer = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("app"),
+    @layer_tree.TarEntrySpec::File("app/main.js", "0123456789"),
+  ])
+  let layers : Array[BytesView] = [layer]
+  let decompressed = @layer_tree.decompress_layers(layers) catch {
+    err => fail("should decompress: \{err.to_string()}")
+  }
+  let tree = @layer_tree.FileTree::new()
+  let analysis = @image_analysis.analyze_decompressed(tree, decompressed) catch {
+    err => fail("should analyze: \{err.to_string()}")
+  }
+  let report = @image_analysis.build_report(analysis, tree)
+  let ruleset = @image_ci.Ruleset::empty("<no rules>")
+  let result = ruleset.check(report, tree, image="demo.tar")
+  let json = image_report_to_json_string(report, result, "demo.tar")
+  assert_true(
+    json.contains(
+      "\"schemaVersion\": \{@image_analysis.json_report_schema_version}",
+    ),
+  )
+  assert_true(json.contains("\"currentBytes\": 10"))
+  assert_true(json.contains("\"wastedBytes\": 0"))
+  assert_true(json.contains("\"largestDirectories\":"))
+  // 判定整份进来，但不再自带一个 `version` 与 envelope 抢名字
+  assert_true(json.contains("\"check\": {"))
+  assert_true(json.contains("\"passed\": true"))
+  // 两个版本号并存只会让消费方猜哪个管哪个
+  assert_false(json.contains("\"version\""))
+  // 入参只在一个地方说：`check.image` 与信封的 `source` 是同一个数，
+  // 留着它，内容相同的两份归档会因为文件名不同而比不出「一致」
+  assert_false(json.contains("\"image\": \"demo.tar\""))
+  // 来源是解析后的那份字符串，不是别的
+  assert_true(json.contains("\"source\": \"demo.tar\""))
+}
+
+///|
 /// 与 `layer_view_text` 同形，只是走后者的 JSON 分支。
 async fn layer_view_json_for(
   options : Options,
@@ -585,9 +714,11 @@ async fn layer_view_json_for(
   let views = @layer_tree.browse_layers(layers) catch {
     err => raise CommandError::Analysis(err.to_string())
   }
+  let view = views[views.length() - 1]
   layer_view_to_json(
-    views[views.length() - 1],
-    compare_diff(views[views.length() - 1], options),
+    view,
+    subtree_of(view, options),
+    compare_diff(view, options),
     options,
   ).stringify(indent=2)
 }

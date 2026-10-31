@@ -29,8 +29,11 @@
 ## 非目标
 
 - 不做门禁阈值判定（P4 的职责）
-- 不做镜像拉取，也不做 Docker Engine 客户端（镜像获取归 P5 `docker_cli`，见 [issue #17](https://cnb.cool/nrzhangsan/moonbit_dive/-/issues/17)；本包只吃本地 tar / 已解析的层）
-- docker-archive / OCI layout 的输入识别在 P4 的 CLI 层完成
+- 不做镜像拉取，也不做 Docker Engine 客户端（镜像获取归 P5 `docker_cli` / P7 `registry_cli`；
+  本包只吃本地 tar / 已解析的层）
+- 不做输入识别：docker save tar / OCI layout / 单层 tar / stdin 四挡的识别在
+  `image_ci::ImageSource::load`（P4）。`cmd/main` 只负责把位置参数分到「本地路径 /
+  stdin / 镜像引用」三档，识别格式那一步不重复实现
 
 ## 验收
 
