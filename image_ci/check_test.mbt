@@ -146,3 +146,36 @@ async test "rule type names match the dsl" {
     "allowPaths", "maxFileSize",
   ])
 }
+
+///|
+/// whiteout 与 opaque 的层叠顺序不影响判定：本层重写的文件不该被同层
+/// `.wh.` 一并删掉，否则体积与禁止路径门禁会假放行。
+async test "gating sees the tree that whiteout ordering produced" {
+  let layer0 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::Dir("srv"),
+    @layer_tree.TarEntrySpec::File("srv/legacy.bin", "0123456789"),
+    @layer_tree.TarEntrySpec::Dir("srv/sub"),
+  ])
+  // 本层把 legacy.bin 换成更大的内容，且 whiteout 排在写回之后
+  let layer1 = @layer_tree.build_tar([
+    @layer_tree.TarEntrySpec::File("srv/fresh.bin", "0123456789abcdefghij"),
+    @layer_tree.TarEntrySpec::Opaque("srv"),
+    @layer_tree.TarEntrySpec::Whiteout("srv", "fresh.bin"),
+  ])
+  let tree = @layer_tree.FileTree::new()
+  let layers : Array[BytesView] = [layer0, layer1]
+  let analysis = @image_analysis.analyze_layers(tree, layers) catch {
+    err => fail(err.to_string())
+  }
+  let report = @image_analysis.build_report(analysis, tree)
+  // 本层重写的 fresh.bin 必须还在，legacy.bin 被 opaque 抹掉
+  assert_true(tree.paths().contains("/srv/fresh.bin"))
+  assert_false(tree.paths().contains("/srv/legacy.bin"))
+
+  let result = Ruleset::of_rules([
+    DenyPaths(["/srv/fresh.bin"]),
+    MaxFileSize(5, None),
+  ]).check(report, tree)
+  assert_false(result.all_passed())
+  assert_eq(result.failed_count(), 2)
+}

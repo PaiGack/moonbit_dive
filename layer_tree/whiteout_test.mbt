@@ -238,3 +238,87 @@ async test "opaque on the root keeps only the current layer" {
   assert_true(tree.get("/b") is None)
   assert_true(tree.get("/c") is Some(_))
 }
+
+///|
+test "whiteout after the same-layer write still keeps the file" {
+  // 层的效果不能依赖条目顺序：`.wh.` 排在被删文件之后，同名文件已被本层重写
+  let first = build_tar([Dir("app"), File("app/config", "old")])
+  let second = build_tar([
+    File("app/config", "new-and-longer"),
+    Whiteout("app", "config"),
+  ])
+  let tree = apply_all([first, second])
+  assert_eq(size_at(tree, "/app/config"), "new-and-longer".length())
+}
+
+///|
+test "whiteout before and after the same-layer write behave identically" {
+  let first = build_tar([Dir("app"), File("app/config", "old")])
+  let before = build_tar([
+    Whiteout("app", "config"),
+    File("app/config", "brand new"),
+  ])
+  let after = build_tar([
+    File("app/config", "brand new"),
+    Whiteout("app", "config"),
+  ])
+  let tree_a = apply_all([first, before])
+  let tree_b = apply_all([first, after])
+  assert_eq(tree_a.paths(), tree_b.paths())
+  assert_eq(size_at(tree_a, "/app/config"), size_at(tree_b, "/app/config"))
+}
+
+///|
+test "opaque written after the new entries keeps them" {
+  // `.wh..wh..opq` 的位置同样不该影响结果
+  let first = build_tar([Dir("data"), File("data/old.txt", "old")])
+  let second = build_tar([File("data/fresh.txt", "fresh"), Opaque("data")])
+  let tree = apply_all([first, second])
+  assert_true(tree.get("/data/old.txt") is None)
+  assert_true(tree.get("/data/fresh.txt") is Some(_))
+}
+
+///|
+test "opaque keeps same-layer files inside a directory from an older layer" {
+  // /srv/sub 由旧层创建，本层只在里面写了新文件：旧的 /srv/sub 不能连带删掉新内容
+  let first = build_tar([
+    Dir("srv"),
+    Dir("srv/sub"),
+    File("srv/legacy.conf", "old"),
+    File("srv/sub/stale.txt", "stale"),
+  ])
+  let second = build_tar([Opaque("srv"), File("srv/sub/new.txt", "new")])
+  let tree = apply_all([first, second])
+  assert_true(tree.get("/srv/legacy.conf") is None)
+  assert_true(tree.get("/srv/sub/stale.txt") is None)
+  assert_true(tree.get("/srv/sub/new.txt") is Some(_))
+}
+
+///|
+test "opaque on a nested directory keeps the parent untouched" {
+  let first = build_tar([
+    Dir("var"),
+    Dir("var/cache"),
+    File("var/keep", "k"),
+    File("var/cache/old", "o"),
+  ])
+  let second = build_tar([Opaque("var/cache"), File("var/cache/new", "n")])
+  let tree = apply_all([first, second])
+  assert_true(tree.get("/var/keep") is Some(_))
+  assert_true(tree.get("/var/cache/old") is None)
+  assert_true(tree.get("/var/cache/new") is Some(_))
+}
+
+///|
+test "whiteout of a directory does not remove same-layer recreations" {
+  let first = build_tar([Dir("opt"), Dir("opt/tools"), File("opt/tools/a", "1")])
+  let second = build_tar([
+    Whiteout("opt", "tools"),
+    Dir("opt/tools"),
+    File("opt/tools/b", "2"),
+  ])
+  let tree = apply_all([first, second])
+  // 目录被本层重建后是完整的新子树，旧层写入的 /opt/tools/a 不能复活
+  assert_true(tree.get("/opt/tools/a") is None)
+  assert_true(tree.get("/opt/tools/b") is Some(_))
+}
