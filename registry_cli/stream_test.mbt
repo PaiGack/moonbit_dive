@@ -674,3 +674,141 @@ async test "a discarded image never deletes a layer that is still on disk" {
     }
   })
 }
+
+///|
+/// 拿 token 期间被对端收掉的那条连接，要换一条新的重来。
+///
+/// 现场是 CNB 上的真实后端对拍（issue #153）：
+///
+/// ```text
+/// layer 1 done: 2.4 KiB (total 100%)
+/// registry error: cannot open a TLS connection to registry-1.docker.io:
+///   ConnectionClosed; the CA bundle in use is /etc/ssl/certs/ca-certificates.crt
+/// ```
+///
+/// 报的是「TLS 建不起来」，看着像证书问题；其实 token 已经在手上了，
+/// 只是那条 registry 连接在换票的往返期间被对端收掉了——拿它去请求，
+/// 读到的只有一个断掉的答复。`retry_with_token` 的职责就是在这种时候
+/// 换一条新连接把同一个请求再说一遍。
+///
+/// 这里的假 registry 把「换票之后的那一下」演出来：第一个 blob 请求只回个空壳
+/// 就掐连接（那个请求就是触发 401 → 换票的那一次），此后老连接已经死了。
+/// 客户端带着 token 回来时必然撞上 `ReaderClosed`。
+#cfg(not(platform="windows"))
+async test "a connection dropped while the token was fetched is replaced" {
+  let tar_payload = @encoding.encode(UTF8, "dropped-connection")
+  let diff_id = @oci_spec.Digest::from_sha256(tar_payload).to_string()
+  let config = fake_config([diff_id])
+  let blob = @layer_tree.gzip_compress(tar_payload)
+  let digest = @oci_spec.Digest::from_sha256(blob).to_string()
+  let manifest = truncated_manifest(
+    config~,
+    config_digest=@oci_spec.Digest::from_sha256(config).to_string(),
+    digest~,
+    blob~,
+  )
+  let server = @http.Server(@socket.Addr::new(0x7F000001, 0))
+  let port = server.addr.port()
+  // `blob` 只在第 2 个 blob（层）那次请求上出现：那一次正好是「换票刚回来」
+  let killed : Ref[Bool] = { val: false, }
+  @async.with_task_group(group => {
+    group.spawn_bg(no_wait=true, () => {
+      server.run_forever((request, _body, conn) => {
+        let path = request.path
+        if path.has_prefix("/token") {
+          let body = @encoding.encode(
+            UTF8,
+            Json::object(Map([("token", Json::string("fake-token"))])).stringify(),
+          )
+          let headers = Map([
+            (@http.CaseInsensitiveString("content-type"), "application/json"),
+            (
+              @http.CaseInsensitiveString("content-length"),
+              body.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(body)
+          return
+        }
+        let authorized = match
+          request.headers.get(@http.CaseInsensitiveString("authorization")) {
+          Some(value) => value == "Bearer fake-token"
+          None => false
+        }
+        if !authorized {
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("www-authenticate"),
+              "Bearer realm=\"http://127.0.0.1:\{port}/token\",service=\"fake\",scope=\"repository:test/image:pull\"",
+            ),
+            (@http.CaseInsensitiveString("content-length"), "0"),
+          ])
+          conn.send_response(401, "Unauthorized", extra_headers=headers)
+          return
+        }
+        if path.contains("/manifests/") {
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("content-type"),
+              @oci_spec.oci_manifest_media_type,
+            ),
+            (
+              @http.CaseInsensitiveString("content-length"),
+              manifest.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(manifest)
+          return
+        }
+        if path.contains("/blobs/") {
+          let is_layer = path.has_suffix(digest)
+          if is_layer && !killed.val {
+            // 换票就发生在这之前；这一下之后老连接就是死的。
+            // config 那次请求是换票**之后**立刻发的，还赶得上；层这一次就晚了。
+            killed.val = true
+            conn.close()
+            return
+          }
+          let body = if is_layer { blob } else { config }
+          let headers = Map([
+            (
+              @http.CaseInsensitiveString("content-length"),
+              body.length().to_string(),
+            ),
+          ])
+          conn.send_response(200, "OK", extra_headers=headers)
+          conn.write(body)
+          return
+        }
+        conn.send_response(404, "Not Found")
+      })
+    })
+    let host = "127.0.0.1:\{port}"
+    let reference = @registry_cli.parse_reference("test/image:latest") catch {
+      _ => fail("reference should parse")
+    }
+    let client = RegistryClient::connect(host, insecure=true) catch {
+      _ => fail("client")
+    }
+    let pulled = pull_with_client(
+      client,
+      reference,
+      fallback="http://\{host}",
+      options=@registry_cli.PullOptions::new(),
+    ) catch {
+      err =>
+        fail(
+          "a connection dropped while the token was fetched must be replaced: \{err.to_string()}",
+        )
+    }
+    client.close()
+    let landed = pulled.layers[0].bytes() catch {
+      err => fail("the layer should be readable: \{err.to_string()}")
+    }
+    assert_eq(landed, blob)
+    @registry_cli.discard_image(pulled)
+    server.close()
+  })
+}
