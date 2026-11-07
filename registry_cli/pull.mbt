@@ -65,6 +65,7 @@ pub extend PullOptions with Show::{to_string, output}
 /// `data` 是**可选**的：走流式落盘时字节直接进了 `path` 上的文件，
 /// 内存里只留 digest 与大小。这样 700MB 的层不会再要求一整块连续内存，
 /// 下游（打包、分析）改成按路径流式读。
+#derive(Eq, Debug)
 pub(all) struct PulledBlob {
   media_type : String
   digest : String
@@ -76,7 +77,7 @@ pub(all) struct PulledBlob {
   /// 流式落盘时字节所在的文件；`None` 表示在 `data` 里。
   /// 生命周期跟着 `RemoteImage`：`discard_image` 会把它删掉
   mut path : String?
-} derive(Eq, Debug)
+}
 
 ///|
 /// 一个「字节都在内存里」的 blob（测试、小 blob、老调用方的写法）。
@@ -134,6 +135,7 @@ pub extend PulledBlob with @debug.Debug::{to_repr}
 ///
 /// 保持压缩是有意的：打包成 OCI layout 时直接原样落盘，
 /// 打包成 docker-archive 时才解压——解压成本不该由「只是搬运」的用法来付。
+#derive(Eq, Debug)
 pub(all) struct RemoteImage {
   reference : ImageReference
   /// 选中的 manifest 的 media type（manifest 不是 index 时才有意义）
@@ -158,7 +160,7 @@ pub(all) struct RemoteImage {
   /// 相认的（`PulledBlob::path`），删掉目录就等于把 manifest 里还登记着的层
   /// 从脚下抽走（issue #133）。
   mut staging_used : Bool
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend RemoteImage with Eq::{equal, not_equal}

@@ -19,10 +19,11 @@ pub let certificate_paths : Array[String] = [
 ///
 /// - `Bundle(path)`：这个文件在，里面是 PEM，直接交给 OpenSSL 用
 /// - `System`：找不到任何候选，只能指望 `SSL_CTX_set_default_verify_paths`
+#derive(Eq, Debug)
 pub(all) enum TrustSource {
   Bundle(String)
   System
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend TrustSource with Eq::{equal, not_equal}

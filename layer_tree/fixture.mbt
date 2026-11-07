@@ -3,9 +3,10 @@
 ///
 /// 生产代码只解析 tar（镜像里的层是外部产物），写 tar 的能力只为测试服务，
 /// 因此放在包内而不是公开 API 里。
+#derive(Debug)
 pub struct TarBuilder {
   blocks : Array[Byte]
-} derive(Debug)
+}
 
 ///|
 pub extend TarBuilder with @debug.Debug::{to_repr}
@@ -253,6 +254,7 @@ pub fn build_tar(entries : Array[TarEntrySpec]) -> Bytes {
 
 ///|
 /// `build_tar` 的条目规格。
+#derive(Eq, Debug)
 pub(all) enum TarEntrySpec {
   File(String, String)
   Dir(String)
@@ -261,7 +263,7 @@ pub(all) enum TarEntrySpec {
   /// 目录 + 被删除的同目录条目名
   Whiteout(String, String)
   Opaque(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend TarEntrySpec with Eq::{equal, not_equal}

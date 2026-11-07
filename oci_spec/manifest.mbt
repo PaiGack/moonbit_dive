@@ -1,5 +1,6 @@
 ///|
 /// 镜像 manifest（对应 `application/vnd.oci.image.manifest.v1+json`）。
+#derive(Eq, Debug)
 pub(all) struct Manifest {
   schema_version : Int32
   media_type : String?
@@ -8,7 +9,7 @@ pub(all) struct Manifest {
   layers : Array[Descriptor]
   subject : Descriptor?
   annotations : Map[String, String]?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Manifest with Eq::{equal, not_equal}

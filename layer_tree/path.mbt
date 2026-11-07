@@ -1,9 +1,10 @@
 ///|
 /// 路径规范化错误：绝对路径逃逸出根目录。
+#derive(Eq, Debug)
 pub(all) suberror PathError {
   /// 规范化后越过了根，如 `../etc/passwd`
   Escape(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PathError with Eq::{equal, not_equal}

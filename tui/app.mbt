@@ -16,6 +16,7 @@
 ///
 /// 输入有两条：键盘（`keys.mbt`）与鼠标（`./mouse.mbt`）。鼠标多一层坐标，
 /// 得先按 `Layout` 认出「点在哪个面板的哪一行」，这一段收在 `handle_mouse`。
+#derive(Debug)
 pub(all) struct AppState {
   /// 逐层视图，`[i]` 是应用完第 i 层之后的树
   views : Array[@layer_tree.LayerView]
@@ -44,13 +45,14 @@ pub(all) struct AppState {
   /// 启动提示（命令行把「这次为什么进了文本」写在这里，退出后统一吐到 stderr）。
   /// 空串表示没有要说的。
   notices : Array[String]
-} derive(Debug)
+}
 
 ///|
 /// 进界面时的那几件事：起始层、起始档位、光标落点、谁先拿焦点。
 ///
 /// 与 `AppState::new` 分开，是因为它还能被单测原样构造——命令行那边只是把
 /// `--layer` / `--aggregate` / `--path` / `--efficiency` 翻译成这几个字段。
+#derive(Eq, Debug)
 pub(all) struct StartConfig {
   /// 起始层（0 起）；越界会被夹进 `0..layers-1`
   layer : Int32
@@ -60,7 +62,7 @@ pub(all) struct StartConfig {
   path : String?
   /// 起始焦点：`--efficiency` 给详情面板
   focus : Focus
-} derive(Eq, Debug)
+}
 
 ///|
 /// 缺省初始态：给定层、单层档、光标在首行、焦点在树。
@@ -536,10 +538,11 @@ pub fn window_size(tty : @tty.Tty) -> WindowSize {
 
 ///|
 /// 终端尺寸（本地类型，避免在渲染层依赖 `@tty`）。
+#derive(Eq, Debug)
 pub(all) struct WindowSize {
   cols : Int32
   rows : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend StartConfig with Eq::{equal, not_equal}

@@ -10,6 +10,7 @@
 ///
 /// 非目标（issue #51）：拖拽 / 框选。tty 会把 `Drag` / `Move` 解出来，
 /// 这里一律忽略——本轮只做「点」与「滚」。
+#derive(Eq, Debug)
 pub(all) enum MouseAction {
   /// 左键按下：落到哪一行由坐标反查决定；落在目录行上顺带切展开态（#62）
   Select
@@ -24,7 +25,7 @@ pub(all) enum MouseAction {
   SetFocusBack
   /// 没绑定的鼠标事件（拖拽、移动、中键、滚轮左右）
   None
-} derive(Eq, Debug)
+}
 
 ///|
 /// 把一次鼠标事件翻成动作。

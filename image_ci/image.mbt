@@ -1,6 +1,7 @@
 ///|
 /// 从本地镜像产物读出来的一层：`data` 是原始（可能压缩的）字节，
 /// `media_type` 用来推断压缩方式，`diff_id` 只是从 config 里带出来备查。
+#derive(Debug)
 pub(all) struct LayerSource {
   media_type : String
   /// 层在输入文件里的起点。文件输入时 `data` 为空，字节按需从 `offset` 读
@@ -16,7 +17,7 @@ pub(all) struct LayerSource {
   /// 可写：同上
   mut data : Bytes
   diff_id : String
-} derive(Debug)
+}
 
 ///|
 pub extend LayerSource with @debug.Debug::{to_repr}
@@ -31,13 +32,14 @@ pub extend LayerSource with Show::{to_string, output}
 
 ///|
 /// 一家镜像的来源：层 + 可读描述。
+#derive(Debug)
 pub(all) struct ImageSource {
   /// 给报告和注解看的名字（文件路径 / `<stdin>` / 目录）
   name : String
   /// 输入格式：`docker-archive` / `oci-layout` / `docker-save`（单层 tar）
   format : String
   layers : Array[LayerSource]
-} derive(Debug)
+}
 
 ///|
 pub extend ImageSource with @debug.Debug::{to_repr}
@@ -52,6 +54,7 @@ pub extend ImageSource with Show::{to_string, output}
 
 ///|
 /// 镜像读不出来时抛的错。它属于「工具入参不对」，CLI 里与规则非法同为 exit 2。
+#derive(Eq, Debug)
 pub(all) suberror ImageError {
   /// tar / JSON 结构不对
   Malformed(String)
@@ -61,7 +64,7 @@ pub(all) suberror ImageError {
   Io(String)
   /// 解压失败
   Decompress(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ImageError with Eq::{equal, not_equal}

@@ -1,6 +1,7 @@
 ///|
 /// 后端探测与调用的错误。区分「找不到可用后端」与「后端跑失败了」，
 /// 因为前者要提示用户装什么、后者要透传子进程的 stderr 供排查。
+#derive(Eq, Debug)
 pub(all) suberror DockerCliError {
   /// 一个后端都探测不到：既没有 unix socket，PATH 上也没有 docker/podman/nerdctl。
   ///
@@ -28,7 +29,7 @@ pub(all) suberror DockerCliError {
   /// 给出的确定答案，调用方可以据此走「本地没有 → 拉一次」的策略，
   /// 而不是把整条后端判成不可用。见 `ImageSource::inspect`。
   ImageNotFound(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend DockerCliError with Eq::{equal, not_equal}

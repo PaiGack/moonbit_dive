@@ -4,6 +4,7 @@
 /// 分类原则与 P5 的 `DockerCliError` 一致：**人话** + 能让调用方判定的形状。
 /// 尤其 `NotFound` 与 `Auth` 必须分开——前者是「名字写错了」，
 /// 后者是「凭据不对」，把两者混成一句 "failed" 只会让人两边都查。
+#derive(Eq, Debug)
 pub(all) suberror RegistryError {
   /// 镜像引用本身不合法（空、`:` 太多、仓库名带大写等）
   InvalidReference(String)
@@ -19,7 +20,7 @@ pub(all) suberror RegistryError {
   Network(String)
   /// 落盘失败
   Io(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend RegistryError with Eq::{equal, not_equal}

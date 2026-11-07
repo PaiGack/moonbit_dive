@@ -7,6 +7,7 @@
 /// 全屏形态下动作多了一类**焦点相关**的（切面板、开关帮助）：同一个 `↑`
 /// 在树上是「下一行」、在详情面板上是「往下滚」，所以动作表本身仍然与焦点无关，
 /// 「动作 → 状态」这一步（`apply_action`）才看焦点。
+#derive(Eq, Debug)
 pub(all) enum Action {
   MoveUp
   MoveDown
@@ -44,7 +45,7 @@ pub(all) enum Action {
   Quit
   /// 没绑定的键
   None
-} derive(Eq, Debug)
+}
 
 ///|
 /// 把一次按键翻成动作。**这一张表逐条对齐原版 dive 的 `DefaultBindings()`**

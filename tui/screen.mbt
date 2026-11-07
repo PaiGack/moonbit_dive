@@ -11,6 +11,7 @@
 /// 每格还带一份 `Style`（前景 / 背景 / 加粗）。样式与字符同属「这一帧的样子」，
 /// 因此它们的**比较**在 `terminal.mbt` 里一起参与脏格判定：
 /// 字符没变、只改了颜色，同样要重画（issue #53 的验收之一）。
+#derive(Debug)
 pub(all) struct Screen {
   cols : Int32
   rows : Int32
@@ -19,7 +20,7 @@ pub(all) struct Screen {
   /// 每格的样式；与 `cells` 一一对应
   styles : Array[Style]
   dirty : Array[Bool]
-} derive(Debug)
+}
 
 ///|
 pub fn Screen::new(cols : Int32, rows : Int32) -> Screen {

@@ -13,6 +13,7 @@ pub let plnk_marker : String = ".wh..wh..plnk"
 
 ///|
 /// whiteout 条目的语义分类。
+#derive(Eq, Debug)
 pub(all) enum WhiteoutKind {
   /// `.wh.<name>`：删除同目录下名为 `<name>` 的条目
   Entry(String)
@@ -20,7 +21,7 @@ pub(all) enum WhiteoutKind {
   Opaque
   /// `.wh..wh..plnk`：硬链接维护文件，忽略
   Plnk
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend WhiteoutKind with Eq::{equal, not_equal}

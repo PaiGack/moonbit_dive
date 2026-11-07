@@ -1,5 +1,6 @@
 ///|
 /// 一次判定：一条规则 + 一个镜像 + 一个结论。
+#derive(Eq, Debug)
 pub(all) struct RuleResult {
   id : String
   /// 规则原文，出现在报告与注解里
@@ -14,7 +15,7 @@ pub(all) struct RuleResult {
   reason : String
   /// 指认现场用的路径（最多若干条），可被 CI 注解引用
   locations : Array[String]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend RuleResult with Eq::{equal, not_equal}
@@ -33,13 +34,14 @@ pub extend RuleResult with Show::{to_string, output}
 
 ///|
 /// 整份规则集的判定结果。
+#derive(Eq, Debug)
 pub(all) struct CheckResult {
   results : Array[RuleResult]
   /// 规则来源，报告头部用
   source : String
   /// 被检查的镜像（文件路径或 `stdin`）
   image : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend CheckResult with Eq::{equal, not_equal}

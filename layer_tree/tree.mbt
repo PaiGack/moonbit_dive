@@ -5,6 +5,7 @@
 /// - `orphans` 记录还没有父目录的节点（tar 里目录 entry 可能后于文件出现，
 ///   甚至整层都不给目录 entry），拿到父节点后再挂上，避免为每条路径造中间节点
 /// - `history` 是一条 append-only 的覆盖日志，逐行记录「哪个层改了哪个路径」
+#derive(Debug)
 pub(all) struct FileTree {
   root : Node
   /// 当前生效的层数
@@ -16,7 +17,7 @@ pub(all) struct FileTree {
   mut history : String
   /// layer index -> 变更路径数 / 变更字节数 / 删除路径数
   mut layer_stats : Array[LayerStat]
-} derive(Debug)
+}
 
 ///|
 pub extend FileTree with @debug.Debug::{to_repr}
@@ -31,13 +32,14 @@ pub extend FileTree with Show::{to_string, output}
 
 ///|
 /// 单层的统计：变更与被删除的规模。给 P3 的 efficiency score 用。
+#derive(Eq, Debug)
 pub(all) struct LayerStat {
   layer : Int32
   mut changed_paths : Int32
   mut changed_bytes : Int32
   /// 被 whiteout 掉的路径数（含子树）
   mut deleted_paths : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend LayerStat with Eq::{equal, not_equal}

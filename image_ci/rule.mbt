@@ -3,6 +3,7 @@
 ///
 /// 每一类都对应 P3 报告里的一个可判定数字，外加两条需要看树上路径 / 文件的规则。
 /// 规则本身只描述「比什么、比多少」，判定在 `check.mbt` 里做。
+#derive(Eq, Debug)
 pub(all) enum RuleKind {
   /// 镜像当前占用上限（字节）。对齐 dive 的 `rules.maxImageSize`
   MaxImageSize(Int32)
@@ -18,7 +19,7 @@ pub(all) enum RuleKind {
   AllowPaths(Array[String])
   /// 单个文件字节上限，可限定在某个目录子树内
   MaxFileSize(Int32, PathFilter?)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend RuleKind with Eq::{equal, not_equal}
@@ -57,12 +58,13 @@ pub extend RuleKind with Show::{to_string, output}
 /// - 其余按字面量比较；以 `/` 结尾的模式表示「整个子树」
 ///
 /// 匹配的是树内绝对路径（`/usr/bin/sh`），模式里的相对写法会被补上 `/`。
+#derive(Eq, Debug)
 pub(all) struct PathPattern {
   raw : String
   segments : Array[PatternSegment]
   /// 模式以 `/` 结尾：只要落在该子树里就算命中
   subtree : Bool
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PathPattern with Eq::{equal, not_equal}
@@ -80,11 +82,12 @@ pub extend PathPattern with Show::{to_string, output}
 
 ///|
 /// 模式的一段。`Any` 是 `**`，`Wildcard` 是含 `*` 的一段，`Literal` 是字面量。
+#derive(Eq, Debug)
 pub(all) enum PatternSegment {
   Literal(String)
   Wildcard(String)
   Any
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PatternSegment with Eq::{equal, not_equal}
@@ -227,11 +230,12 @@ fn wildcard_match(pattern : String, text : String) -> Bool {
 
 ///|
 /// 单文件上限的限定范围：`path` 模式 + 递归/仅直接子项。
+#derive(Eq, Debug)
 pub(all) struct PathFilter {
   pattern : PathPattern
   /// 是否连子孙目录里的文件一起算
   recursive : Bool
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PathFilter with Eq::{equal, not_equal}

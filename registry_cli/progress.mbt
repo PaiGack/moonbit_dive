@@ -3,6 +3,7 @@
 ///
 /// 只报「事实」（已经拿到多少字节），不报「百分比」——百分比是渲染层的事：
 /// 命令行要百分比，将来的 TUI 要进度条，测试要纯数字。
+#derive(Eq, Debug)
 pub(all) enum PullEvent {
   /// 开始拉某个镜像
   Started(reference~ : String)
@@ -24,7 +25,7 @@ pub(all) enum PullEvent {
   Packing(note~ : String)
   /// 落盘
   Writing(path~ : String, bytes~ : Int64)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PullEvent with Eq::{equal, not_equal}

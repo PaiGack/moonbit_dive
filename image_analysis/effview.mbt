@@ -15,6 +15,7 @@ pub let efficiency_view_schema_version : Int32 = 1
 /// - 同一路径写两次、大小相同 → 这里 `size` 为正（空间被占了 2 份），`wasted_bytes` 为 0
 /// - 写一次 100 字节再 whiteout 删掉 → 这里 `size = 100`（min 取 0），`wasted_bytes` 也是 100
 /// - 先写 10 再写 1 → 这里 `size = 1`（多写的那一份只有 1 字节），`wasted_bytes` 是 10
+#derive(Eq, Debug)
 pub(all) struct PathEfficiencyRow {
   path : String
   /// 写了几版
@@ -25,7 +26,7 @@ pub(all) struct PathEfficiencyRow {
   min_bytes : Int32
   /// 多写了几份：`cumulative - min`，即这张表的排序键
   size : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PathEfficiencyRow with Eq::{equal, not_equal}
@@ -43,12 +44,13 @@ pub extend PathEfficiencyRow with Show::{to_string, output}
 
 ///|
 /// 逐路径效率表的渲染参数。`top` 传负数表示不截断（CLI 里用 `--top 0` 表达）。
+#derive(Eq, @debug.Debug)
 pub(all) struct EfficiencyViewOptions {
   /// 只看这个前缀下的路径；`None` 表示整棵树
   path : String?
   /// 最多几条，负数不截断
   top : Int32
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend EfficiencyViewOptions with Eq::{equal, not_equal}

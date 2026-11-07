@@ -3,6 +3,7 @@
 ///
 /// `size` 是该路径「最后一次写入」的字节数；被后层覆盖、或被 whiteout 删掉的
 /// 旧版本算作浪费，逐层累计到 `wasted_bytes`。
+#derive(Eq, Debug)
 pub(all) struct PathSize {
   /// 这个路径（报告里要能认出来是哪个文件）
   path : String
@@ -16,7 +17,7 @@ pub(all) struct PathSize {
   mut deleted : Bool
   /// 当前内容由哪一层写入；已删除时为 `None`
   mut current_layer : Int32?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PathSize with Eq::{equal, not_equal}
@@ -51,6 +52,7 @@ pub fn PathSize::new(path : String) -> PathSize {
 
 ///|
 /// 单层的体积账。
+#derive(Eq, Debug)
 pub(all) struct LayerUsage {
   layer : Int32
   /// 本层写入的全新路径数（树里此前不存在）
@@ -65,7 +67,7 @@ pub(all) struct LayerUsage {
   mut erased_bytes : Int32
   /// 本层删除的路径数（含 whiteout 的子树）
   mut deleted_paths : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend LayerUsage with Eq::{equal, not_equal}
@@ -99,6 +101,7 @@ pub fn LayerUsage::new(layer : Int32) -> LayerUsage {
 /// 一张镜像的体积分析结果。
 ///
 /// 「当前」指最后一层应用完之后的状态；`wasted_*` 覆盖所有层，含被删掉的内容。
+#derive(Eq, Debug)
 pub(all) struct Analysis {
   /// 层数
   mut layers : Int32
@@ -116,7 +119,7 @@ pub(all) struct Analysis {
   mut deleted_wasted : Int32
   /// 算 efficiency 用的逐路径版本表；只有 `analyze_layers` 会填
   mut versions : VersionTable?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Analysis with Eq::{equal, not_equal}
@@ -215,10 +218,11 @@ pub fn Analysis::waste_ranking(
 ///
 /// 值 `0` 表示「这一层把它删了」（whiteout / opaque），但不代表它没占过空间：
 /// 那 0 会参与 min 的计算，原大小则早已计入 cumulative。
+#derive(Eq, Debug)
 pub(all) struct VersionTable {
   /// 路径 -> (层下标 -> 该层的字节数)。稀疏：只记真正写过的层。
   versions : Map[String, Map[Int32, Int32]]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend VersionTable with Eq::{equal, not_equal}

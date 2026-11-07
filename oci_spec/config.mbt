@@ -1,10 +1,11 @@
 ///|
 /// 镜像的 rootfs 描述（对应 config 的 `rootfs`）。
+#derive(Eq, Debug)
 pub(all) struct RootFS {
   /// 目前 image-spec 只定义 "layers"
   fs_type : String
   diff_ids : Array[String]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend RootFS with Eq::{equal, not_equal}
@@ -61,6 +62,7 @@ pub extend RootFS with Show::{to_string, output}
 
 ///|
 /// layer 构建历史（对应 config 的 `history` 数组元素）。
+#derive(Eq, Debug)
 pub(all) struct History {
   created : String?
   created_by : String?
@@ -68,7 +70,7 @@ pub(all) struct History {
   comment : String?
   /// true 表示这一条不对应实际 layer（如 ENV/CMD 指令）
   empty_layer : Bool
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend History with Eq::{equal, not_equal}
@@ -145,9 +147,10 @@ pub extend History with Show::{to_string, output}
 ///
 /// 这一坨对 OCI 是开放键值集（docker 还在往上加 Healthcheck/StopSignal 之类），
 /// 全量建类型既跟不上也没收益，保留原始 JSON 交上层按需取。
+#derive(Eq, Debug)
 pub(all) struct ContainerConfig {
   raw : Json
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ContainerConfig with Eq::{equal, not_equal}
@@ -245,6 +248,7 @@ pub fn ContainerConfig::user(self : ContainerConfig) -> String? {
 
 ///|
 /// manifest 指向的镜像 config（对应 `application/vnd.oci.image.config.v1+json`）。
+#derive(Eq, Debug)
 pub(all) struct ImageConfig {
   schema_version : Int32
   media_type : String?
@@ -258,7 +262,7 @@ pub(all) struct ImageConfig {
   config : ContainerConfig?
   rootfs : RootFS
   history : Array[History]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ImageConfig with Eq::{equal, not_equal}
@@ -355,11 +359,12 @@ pub fn ImageConfig::layer_history(self : ImageConfig) -> Array[History] {
 
 ///|
 /// 合并后的 layer 描述：diff_id（未压缩摘要）与 history 一一对应。
+#derive(Eq, Debug)
 pub(all) struct LayerHistoryEntry {
   index : Int32
   diff_id : String
   created_by : String?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend LayerHistoryEntry with Eq::{equal, not_equal}

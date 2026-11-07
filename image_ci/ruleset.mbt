@@ -3,11 +3,12 @@
 ///
 /// 与 dive 的 `ci.Rules` 对应。`id` 用于报告与注解里指认是哪条规则，
 /// 缺省时按出现顺序生成 `rule-1`、`rule-2`……
+#derive(Eq, Debug)
 pub(all) struct Ruleset {
   rules : Array[Rule]
   /// 规则集的来源（文件路径 / `stdin`），出现在报告头部
   source : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Ruleset with Eq::{equal, not_equal}
@@ -25,10 +26,11 @@ pub extend Ruleset with Show::{to_string, output}
 
 ///|
 /// 一条已注入 id 的规则。
+#derive(Eq, Debug)
 pub(all) struct Rule {
   id : String
   kind : RuleKind
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Rule with Eq::{equal, not_equal}
@@ -69,6 +71,7 @@ pub fn Ruleset::of_rules(
 ///
 /// 「非法」与「未通过」是两回事：这里表示配置写错了（门禁没法信这个结论），
 /// 而不是镜像没达标。CLI 里两者 exit code 不同。
+#derive(Eq, Debug)
 pub(all) suberror ConfigError {
   /// JSON 解析失败
   Parse(String)
@@ -90,7 +93,7 @@ pub(all) suberror ConfigError {
   BadPatterns(Int32, String)
   /// maxFileSize 的目录范围写法不合法
   BadScope(Int32, String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ConfigError with Eq::{equal, not_equal}

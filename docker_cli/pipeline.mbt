@@ -1,11 +1,12 @@
 ///|
 /// docker-archive 里的一层：从归档里按路径取出、必要时解压后的 tar 字节。
+#derive(Debug)
 pub(all) struct ArchiveLayer {
   /// 在 `manifest.json` 里的路径
   path : String
   /// 未压缩的 tar 字节（docker-archive 的 `layer.tar` 本身就是未压缩的）
   bytes : Bytes
-} derive(Debug)
+}
 
 ///|
 pub extend ArchiveLayer with @debug.Debug::{to_repr}

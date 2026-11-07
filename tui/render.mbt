@@ -11,6 +11,7 @@
 ///
 /// 「画什么」和「数据从哪来」仍然分开：视图状态（光标、折叠、层号）来自交互层，
 /// 详情面板的数字来自 `image_analysis`。渲染函数只读这两份，不改动它们。
+#derive(Debug)
 pub(all) struct Frame {
   layout : Layout
   view : TreeView
@@ -30,7 +31,7 @@ pub(all) struct Frame {
   removed : Array[String]
   /// 删除列表的滚动位置
   removed_scroll : Viewport
-} derive(Debug)
+}
 
 ///|
 /// 详情面板的数据源。
@@ -39,6 +40,7 @@ pub(all) struct Frame {
 /// `image_analysis` 的内部布局，换数据源（逐层视图 / 效率报告）只要填这几个字段。
 /// `DetailEntry` 里的 `cumulative` 是「各版本大小之和」，与报告里的
 /// `wasted_bytes`（`cumulative - min`）不是同一个口径——这里只做展示，换算由数据源侧完成。
+#derive(Debug)
 pub(all) struct DetailSource {
   /// 路径 → 写入记录
   entries : Map[String, DetailEntry]
@@ -54,10 +56,11 @@ pub(all) struct DetailSource {
   /// 直接来自 `image_analysis::efficiency_view_rows`（精确的 `cumulative - min`），
   /// 不是「最终大小 × 版本数」那种近似。
   top_wasteful : Array[(String, Int32, Int32)]
-} derive(Debug)
+}
 
 ///|
 /// 单条路径的详情。
+#derive(Eq, Debug)
 pub(all) struct DetailEntry {
   /// 这个路径被写了几份
   versions : Int32
@@ -72,7 +75,7 @@ pub(all) struct DetailEntry {
   /// 于是算出来的 overhead 也只是近似。现在 `cumulative` 与 `min_bytes`
   /// 都来自逐路径版本表，`size` 因此是精确值（issue #72）。
   size : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 /// 画一整帧。

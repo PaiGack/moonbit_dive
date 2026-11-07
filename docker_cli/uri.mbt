@@ -1,11 +1,12 @@
 ///|
 /// 解析过的 `unix://` 地址。
+#derive(Eq, Debug)
 pub(all) struct UnixUri {
   path : String
   /// `http://host/path` 形式的 Host 头，Docker Engine 在 unix socket 上
   /// 默认用 `localhost`；留成字段便于后续支持 `DOCKER_CONTEXT`。
   host : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend UnixUri with Eq::{equal, not_equal}

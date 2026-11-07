@@ -2,9 +2,10 @@
 /// 解析过程中的字段位置，形如 `/layers/0/digest` 的 JSON Pointer。
 ///
 /// 不用 `@json.JsonPath` 是因为它对外不可构造：本包手写解析、自行拼路径。
+#derive(Eq, Debug)
 pub(all) struct JsonLoc {
   path : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend JsonLoc with Eq::{equal, not_equal}

@@ -16,12 +16,13 @@
 ///
 /// 每帧末尾依赖 `with_synchronized_update` 把这一批字节一次性提交，
 /// 避免终端边收边画导致的撕裂。
+#derive(Debug)
 pub(all) struct Painter {
   /// 上一帧的画布；`None` 表示还没有可对比的基线（下一帧全量重画）
   mut previous : Screen?
   /// 一个格子都没写过时不必下发任何字节
   mut painted : Bool
-} derive(Debug)
+}
 
 ///|
 pub fn Painter::new() -> Painter {

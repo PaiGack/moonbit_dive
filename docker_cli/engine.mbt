@@ -4,12 +4,13 @@
 /// 只实现「取到镜像」需要的 4 个端点：`_ping`（探测 + 版本协商）、
 /// `GET /images/{name}/json`、`GET /images/{name}/get`、`POST /images/create`。
 /// `tcp://` / `ssh://` / context store 明确不做（见 issue #17 非目标）。
+#derive(Debug)
 pub(all) struct EngineSource {
   uri : UnixUri
   /// 协商到的 API 版本前缀，形如 `/v1.45`；空串表示用无版本路径
   mut api_prefix : String
   timeout_ms : Int32
-} derive(Debug)
+}
 
 ///|
 pub extend EngineSource with @debug.Debug::{to_repr}

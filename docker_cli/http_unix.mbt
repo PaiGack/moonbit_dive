@@ -9,11 +9,12 @@
 /// 走 DNS + TCP + TLS，没有 unix socket 的入口。
 /// 连接由 `connect_unix_socket` 提供（native 上是 `@raw_fd.RawFdStream`），
 /// 这里只做 HTTP/1.1 报文层的组装与解析。
+#derive(Eq, Debug)
 pub(all) struct HttpResponse {
   status : Int32
   headers : Array[(String, String)]
   body : Bytes
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend HttpResponse with Eq::{equal, not_equal}
@@ -36,6 +37,7 @@ pub fn HttpResponse::header(self : HttpResponse, name : String) -> String? {
 
 ///|
 /// 单次请求的输入。
+#derive(Eq, Debug)
 pub(all) struct HttpRequest {
   http_method : String
   /// 例如 `/v1.45/images/nginx:latest/get`，必须以 `/` 开头
@@ -43,7 +45,7 @@ pub(all) struct HttpRequest {
   host : String
   headers : Array[(String, String)]
   body : Bytes
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend HttpRequest with Eq::{equal, not_equal}

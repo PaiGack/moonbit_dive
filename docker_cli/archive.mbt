@@ -4,10 +4,11 @@
 /// 格式：根下 `manifest.json` 数组 + 每个镜像一个 `<config-digest>.json`
 /// 加若干个 `<layer-id>/layer.tar`（老格式）或 `<blob-sha256>.tar`（新版）。
 /// 我们只解析出「谁是谁」，把层内容留给 P2 按需取。
+#derive(Eq, Debug)
 pub(all) struct DockerArchive {
   /// `manifest.json` 里的条目，通常一个镜像一条
   entries : Array[DockerArchiveEntry]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend DockerArchive with Eq::{equal, not_equal}
@@ -17,6 +18,7 @@ pub extend DockerArchive with @debug.Debug::{to_repr}
 
 ///|
 /// 一条 docker-archive 记录。
+#derive(Eq, Debug)
 pub(all) struct DockerArchiveEntry {
   /// 镜像引用的 Config 字段，形如 `<hex>.json`
   config : String
@@ -26,7 +28,7 @@ pub(all) struct DockerArchiveEntry {
   layers : Array[String]
   /// 层 ID（`<id>/layer.tar` 里的 `<id>` 部分）
   layer_ids : Array[String]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend DockerArchiveEntry with Eq::{equal, not_equal}

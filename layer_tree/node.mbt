@@ -1,12 +1,13 @@
 ///|
 /// 文件树节点类型。hardlink 是独立类型而不是「指向目标的引用」：
 /// 它记录链接目标路径，内容随目标变化，符合 AUFS/overlayfs 的语义。
+#derive(Eq, Debug)
 pub(all) enum NodeKind {
   File
   Directory
   Symlink(String)
   Hardlink(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend NodeKind with Eq::{equal, not_equal}
@@ -31,11 +32,12 @@ pub extend NodeKind with Show::{to_string, output}
 /// 节点被覆盖的一次记录：某一层用某个类型、某个大小改写了这个路径。
 ///
 /// `layer` 是产生这次写入的层下标（从 0 开始）；对软/硬链接不记录大小。
+#derive(Eq, Debug)
 pub(all) struct LayerWrite {
   layer : Int32
   kind : NodeKind
   size : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend LayerWrite with Eq::{equal, not_equal}
@@ -56,6 +58,7 @@ pub extend LayerWrite with Show::{to_string, output}
 ///
 /// 拆出来是为了让「覆写 = 换一份 info」只在一处发生（`Node::overwrite`）：
 /// 节点本体不可变，快照才能按路径共享没动过的节点（issue #122 第 5 项）。
+#derive(Eq, Debug)
 pub(all) struct NodeInfo {
   kind : NodeKind
   /// 常规文件的数据长度；目录与链接为 0
@@ -69,7 +72,7 @@ pub(all) struct NodeInfo {
   layer : Int32
   /// entry 里记录的修改时间（Unix 秒），缺省为 0
   mtime : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend NodeInfo with Eq::{equal, not_equal}
@@ -84,6 +87,7 @@ pub extend NodeInfo with @debug.Debug::{to_repr}
 /// `NodeInfo`，`children` 换成新的数组），父目录也顺着换一遍。
 /// 这不是洁癖，是 `snapshot` 能共享节点的前提——一份快照拿着的节点，
 /// 后面任何一层都改不到它。
+#derive(Debug)
 pub(all) struct Node {
   path : String
   info : NodeInfo
@@ -93,7 +97,7 @@ pub(all) struct Node {
   files : Array[NodeFile]
   /// 子节点，按路径字典序保持稳定，便于渲染与快照
   children : Array[Node]
-} derive(Debug)
+}
 
 ///|
 pub extend Node with @debug.Debug::{to_repr}
@@ -116,12 +120,13 @@ pub extend Node with Show::{to_string, output}
 ///
 /// 逐层叠树时不比对内容（那要把每层的每个文件都读一遍），
 /// 只在真要比两次快照时才按需算，因此这里允许为空。
+#derive(Eq, Debug)
 pub(all) struct Digest {
   /// 这个节点的内容被改写过的次数（含第一次写入）
   changes : Int32
   /// 当前内容的 sha256 摘要，全小写 hex；没有内容（目录 / 链接）为 `None`
   hash : String?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Digest with Eq::{equal, not_equal}
@@ -146,13 +151,14 @@ pub extend Digest with Show::{to_string, output}
 ///
 /// 同一层里同一路径被写了两次只留最后一份（与 `apply_layer` 的语义一致）；
 /// 链接与目录也会有记录，摘要为 `None`。
+#derive(Eq, Debug)
 pub(all) struct NodeFile {
   /// 写这份内容的层下标
   layer : Int32
   size : Int32
   /// 内容摘要；`None` 表示这条 entry 不带内容
   hash : String?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend NodeFile with Eq::{equal, not_equal}

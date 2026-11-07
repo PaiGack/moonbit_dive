@@ -28,6 +28,7 @@ pub async fn run_cli(
 ///
 /// 时刻要带出来，是因为超时文案得说清楚**是在等哪一步时**卡住的：
 /// 拉取 30 秒没新字节，和从头到尾 30 秒没新字节，是完全两回事。
+#derive(Eq, Debug)
 pub(all) struct CliRun {
   code : Int32
   /// 执行了多久（含被取消的那些），毫秒
@@ -36,7 +37,7 @@ pub(all) struct CliRun {
   idle_ms : Int32
   /// 整段过程中**最长**的一次连续空转，毫秒
   peak_idle_ms : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend CliRun with Eq::{equal, not_equal}
