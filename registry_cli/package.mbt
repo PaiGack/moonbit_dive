@@ -4,10 +4,11 @@
 /// 两个格式各有用途，别混：
 /// - `DockerArchive`：给本仓 P2/P3/P4 的分析链路吃，层要**解压**
 /// - `OciLayout`：无损搬运，blob 原样落盘，不重算 sha256，能直接推回 registry
+#derive(Eq, Debug)
 pub(all) enum ArchiveFormat {
   DockerArchive
   OciLayout
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ArchiveFormat with Eq::{equal, not_equal}

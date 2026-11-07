@@ -13,6 +13,7 @@ let tar_prefix_field_size : Int32 = 155
 ///|
 /// tar entry 类型标志。只保留文件树关心的几种，
 /// 其余（FIFO / 设备 / GNU long name 等）统一落到 `Other`。
+#derive(Eq, Debug)
 pub(all) enum TarEntryType {
   Regular
   Directory
@@ -21,7 +22,7 @@ pub(all) enum TarEntryType {
   /// GNU long name / long link、pax 扩展头等元数据 entry
   Meta
   Other(Byte)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend TarEntryType with Eq::{equal, not_equal}
@@ -47,6 +48,7 @@ pub extend TarEntryType with Show::{to_string, output}
 ///|
 /// 一条 tar entry 的元数据。数据不在此结构中：需要时才用
 /// `TarEntry::data` 从原始流里按偏移取。
+#derive(Eq, Debug)
 pub(all) struct TarEntry {
   /// `prefix/name` 拼出的完整路径
   path : String
@@ -64,7 +66,7 @@ pub(all) struct TarEntry {
   data_offset : Int32
   /// 数据段的 64 位偏移；解析时以它为准，`data_offset` 只是它的窄化
   data_offset_64 : Int64
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend TarEntry with Eq::{equal, not_equal}
@@ -300,12 +302,13 @@ fn is_zero_block_padded(stream : BytesView, offset : Int32) -> Bool {
 ///
 /// `base_offset` 让调用方在「已解压的前缀 + 原始流的尾巴」上解析，
 /// gzip 之外的压缩格式可借此复用同一套逻辑。
+#derive(Debug)
 pub struct TarReader {
   stream : BytesView
   base_offset : Int32
   mut cursor : Int32
   mut done : Bool
-} derive(Debug)
+}
 
 ///|
 pub extend TarReader with @debug.Debug::{to_repr}
@@ -389,6 +392,7 @@ pub fn read_file_from_tar(
 ///|
 /// 一条待写入的 tar entry。数据只在 `write_data` 时流式吐出，
 /// 不驻留在 entry 里——大层不能因为「要打包」就被整段搬进内存两遍。
+#derive(Eq, Debug)
 pub(all) struct TarWriteEntry {
   path : String
   /// 只支持 `Regular` / `Directory`：镜像归档里够用，
@@ -399,7 +403,7 @@ pub(all) struct TarWriteEntry {
   mode : Int32
   /// 秒级时间戳，缺省 0（镜像归档里时间戳不是语义的一部分）
   mtime : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend TarWriteEntry with Eq::{equal, not_equal}
@@ -523,9 +527,10 @@ fn header_checksum(header : FixedArray[Byte]) -> Int32 {
 /// 数据一律由调用方「边解压边写」。
 /// 没有状态：header 每次现拼，收尾的全零块是常量。
 /// 留一个 `struct` 是给调用方一个「写入器」的名字，也让以后加字段不用改签名。
+#derive(Debug)
 pub struct TarWriter {
   priv unit : Unit
-} derive(Debug)
+}
 
 ///|
 pub extend TarWriter with @debug.Debug::{to_repr}

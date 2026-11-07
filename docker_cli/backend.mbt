@@ -135,6 +135,7 @@ fn dir_of(path : String) -> String {
 ///|
 /// 镜像元信息。字段刻意与 `docker inspect` 的输出对齐，
 /// 缺字段留空而不是报错——inspect 只是给用户看的旁证，不是分析输入。
+#derive(Eq, Debug)
 pub(all) struct ImageInfo {
   /// 镜像 ID，形如 `sha256:...`
   id : String
@@ -148,7 +149,7 @@ pub(all) struct ImageInfo {
   size : Int32
   /// 镜像内所有层的累计大小（uncompressed）
   virtual_size : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ImageInfo with Eq::{equal, not_equal}
@@ -158,11 +159,12 @@ pub extend ImageInfo with @debug.Debug::{to_repr}
 
 ///|
 /// 后端种类。值直接当可执行文件名用（Engine 除外）。
+#derive(Eq, Debug)
 pub(all) enum CliTool {
   Docker
   Podman
   Nerdctl
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend CliTool with Eq::{equal, not_equal}
@@ -184,6 +186,7 @@ pub extend CliTool with Show::{to_string, output}
 
 ///|
 /// 探测顺序里的一项。
+#derive(Eq, Debug)
 pub(all) enum BackendCandidate {
   /// `DOCKER_HOST=unix://...` 显式指定的 socket
   Socket(String)
@@ -195,7 +198,7 @@ pub(all) enum BackendCandidate {
   /// 「就用这个文件」，不是「去 PATH 上找叫 docker 的东西」。把它折回
   /// `Cli(tool)` 会让那个路径被丢掉——用户写死的程序根本不会被调用。
   Program(String, CliTool)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend BackendCandidate with Eq::{equal, not_equal}
@@ -219,13 +222,14 @@ pub extend BackendCandidate with Show::{to_string, output}
 /// 探测结果：选中了谁、为什么。
 ///
 /// `reason` 是给人看的排查线索，issue #17 明确要求「探测结果要能打印出来」。
+#derive(Eq, Debug)
 pub(all) struct ProbedBackend {
   /// 选中项在候选列表里的下标，-1 表示没选中
   index : Int32
   candidate : BackendCandidate?
   /// 依次尝过哪些候选、各自为什么没成
   attempts : Array[BackendAttempt]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ProbedBackend with Eq::{equal, not_equal}
@@ -235,11 +239,12 @@ pub extend ProbedBackend with @debug.Debug::{to_repr}
 
 ///|
 /// 单个候选的探测记录。
+#derive(Eq, Debug)
 pub(all) struct BackendAttempt {
   candidate : BackendCandidate
   ok : Bool
   reason : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend BackendAttempt with Eq::{equal, not_equal}

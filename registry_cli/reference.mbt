@@ -5,6 +5,7 @@
 /// - registry：没写就是 Docker Hub（`docker.io`），但**请求**要走 `registry-1.docker.io`
 /// - repository：Docker Hub 上单段名字要补 `library/` 前缀
 /// - reference：tag 与 digest 二选一，都没写按 `latest`
+#derive(Eq, Debug)
 pub(all) struct ImageReference {
   /// 用户实际写的 registry（可能为空）
   registry : String
@@ -14,7 +15,7 @@ pub(all) struct ImageReference {
   reference : String
   /// 用户原始写法，报告里要能原样打回去
   original : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend ImageReference with Eq::{equal, not_equal}

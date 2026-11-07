@@ -1,12 +1,13 @@
 ///|
 /// 一个「镜像名 → 本地归档」的通路。CLI 后端与 Engine 后端都实现 `ImageSource`，
 /// 这个枚举让调用方在两者之间切换而不必关心具体类型。
+#derive(Debug)
 pub(all) enum ImageBackend {
   /// 包装 docker / podman / nerdctl 可执行文件
   Cli(DockerCliSource)
   /// 直连 Docker Engine 的 unix socket
   Engine(EngineSource)
-} derive(Debug)
+}
 
 ///|
 pub extend ImageBackend with @debug.Debug::{to_repr}
@@ -65,11 +66,12 @@ pub extend ImageBackend with Show::{to_string, output}
 
 ///|
 /// 探测 + 构造后的结果：选中的后端，以及完整的探测记录。
+#derive(Debug)
 pub(all) struct ResolvedBackend {
   backend : ImageBackend
   /// 探测过程，`describe_backends` 可以直接打印
   probed : ProbedBackend
-} derive(Debug)
+}
 
 ///|
 pub extend ResolvedBackend with @debug.Debug::{to_repr}
@@ -80,6 +82,7 @@ pub extend ResolvedBackend with @debug.Debug::{to_repr}
 /// 存在的理由：这些信息原来只在**整个取归档成功之后**才一次性打印，
 /// 于是用户看到的是「已经取完了才说 will pull」这种倒放的日志；
 /// 而取归档阶段若迟迟没有输出，人只会以为进程卡死。
+#derive(Debug)
 pub(all) enum FetchStage {
   /// 选定后端，开始取：`backend` 是探测挑中的那一个
   Resolved(ImageBackend)
@@ -89,7 +92,7 @@ pub(all) enum FetchStage {
   Pulling(String)
   /// 正在 `save` 出归档
   Saving(String)
-} derive(Debug)
+}
 
 ///|
 pub extend FetchStage with @debug.Debug::{to_repr}

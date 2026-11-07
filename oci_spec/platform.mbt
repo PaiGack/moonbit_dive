@@ -3,13 +3,14 @@
 ///
 /// schema 里字段全为可选，`os.version` 与 `os.features` 带点号，
 /// 不能直接 derive `FromJson`，走手写解析。
+#derive(Eq, Debug)
 pub(all) struct Platform {
   architecture : String
   os : String
   os_version : String?
   os_features : Array[String]?
   variant : String?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Platform with Eq::{equal, not_equal}

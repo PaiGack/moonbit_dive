@@ -60,6 +60,7 @@ pub extend SaveRequest with Show::{to_string, output}
 
 ///|
 /// 一次 save 的产出摘要（CLI 用它打一行结果）。
+#derive(Eq, Debug)
 pub(all) struct SaveResult {
   /// 真正落盘的位置：文件路径，或 OCI layout 的目录
   path : String
@@ -71,7 +72,7 @@ pub(all) struct SaveResult {
   layers : Int32
   /// 选中的平台，`os/arch[/variant]`
   platform : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend SaveResult with Eq::{equal, not_equal}
@@ -198,10 +199,11 @@ fn describe_platform(platform : @oci_spec.Platform) -> String {
 
 ///|
 /// 落盘结果：写到哪、写了多少字节。
+#derive(Eq, Debug)
 pub(all) struct WrittenArchive {
   path : String
   bytes : Int64
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend WrittenArchive with Eq::{equal, not_equal}
@@ -263,6 +265,7 @@ pub fn StreamRequest::new(
 
 ///|
 /// 拉下来的一个 blob 落在磁盘上的样子。
+#derive(Eq, Debug)
 pub(all) struct StreamedBlob {
   media_type : String
   digest : String
@@ -270,7 +273,7 @@ pub(all) struct StreamedBlob {
   path : String
   /// 压缩后的大小
   size : Int64
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend StreamedBlob with Eq::{equal, not_equal}
@@ -283,6 +286,7 @@ pub extend StreamedBlob with @debug.Debug::{to_repr}
 ///
 /// config 只有几十 KB，直接带着走；层一律按路径给——把 700MB 读成 `Bytes`
 /// 就是为了省掉一次 `fopen`，账不划算。
+#derive(Eq, Debug)
 pub(all) struct StreamedImage {
   reference : String
   config_json : String
@@ -292,7 +296,7 @@ pub(all) struct StreamedImage {
   /// `staging` 外面那一层（`{parent}/dive-*` 的 `parent`）。
   /// 缺省落点（系统临时目录）时为 `None`——那里没有我们建的外层
   staging_parent : String?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend StreamedImage with Eq::{equal, not_equal}

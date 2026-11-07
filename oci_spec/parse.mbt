@@ -3,11 +3,12 @@
 ///
 /// 判别优先看 `mediaType`；缺失时按结构探测（有 `manifests` 当 index、
 /// 有 `config` 当 manifest、其余当 config）。
+#derive(Eq, Debug)
 pub(all) enum OciDocument {
   Manifest(Manifest)
   IndexDoc(Index)
   ImageConfig(ImageConfig)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend OciDocument with Eq::{equal, not_equal}
@@ -29,6 +30,7 @@ pub extend OciDocument with Show::{to_string, output}
 
 ///|
 /// 顶层解析错误。
+#derive(Eq, Debug)
 pub(all) suberror OciParseError {
   /// JSON 语法错误
   ParseFailed(String)
@@ -38,7 +40,7 @@ pub(all) suberror OciParseError {
   InvalidField(String, String)
   /// 具体类型的解码失败，消息里带 JSON 路径
   DecodeFailed(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend OciParseError with Eq::{equal, not_equal}

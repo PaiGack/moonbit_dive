@@ -3,6 +3,7 @@
 ///
 /// `removed` 来自 whiteout 推导（或该路径在新层里消失），不是简单集合差：
 /// 「先删后加同名文件」会同时出现在 `removed` 与 `added` 里，如实反映 OCI 的层语义。
+#derive(Eq, Debug)
 pub(all) struct Diff {
   /// 上一层的层号；`-1` 表示与空树比较（第一层）
   base : Int32
@@ -10,7 +11,7 @@ pub(all) struct Diff {
   added : Array[String]
   modified : Array[String]
   removed : Array[String]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Diff with Eq::{equal, not_equal}
@@ -53,10 +54,11 @@ pub fn Diff::total(self : Diff) -> Int32 {
 ///
 /// 返回的 `Array[Diff]` 与 `layers` 一一对应：第 0 层是与空树比，
 /// 第 n 层是与第 n-1 层比。`apply_layers_with_diffs` 的返回结构。
+#derive(Debug)
 pub struct LayerDiffResult {
   tree : FileTree
   diffs : Array[Diff]
-} derive(Debug)
+}
 
 ///|
 pub extend LayerDiffResult with @debug.Debug::{to_repr}

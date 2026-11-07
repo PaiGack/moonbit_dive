@@ -1,5 +1,6 @@
 ///|
 /// 指向一块内容（layer/config/manifest）的引用（对应 image-spec 的 `descriptor`）。
+#derive(Eq, Debug)
 pub(all) struct Descriptor {
   media_type : String
   digest : String
@@ -8,7 +9,7 @@ pub(all) struct Descriptor {
   annotations : Map[String, String]?
   platform : Platform?
   data : String?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Descriptor with Eq::{equal, not_equal}

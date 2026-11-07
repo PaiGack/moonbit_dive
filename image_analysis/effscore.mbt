@@ -13,12 +13,13 @@
 /// 被 whiteout 删掉的路径计入 cumulative（原大小），min 记 0；目录 whiteout
 /// 按子树里各文件的累计大小展开。
 /// `cumulative` 为 0（空镜像或全是空文件）时定义成 `1.0`。
+#derive(Eq, Debug)
 pub(all) struct Efficiency {
   /// Σ 各路径出现过的最小字节数
   min_bytes : Int32
   /// Σ 各路径所有版本字节数之和
   cumulative_bytes : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Efficiency with Eq::{equal, not_equal}
@@ -52,13 +53,14 @@ pub fn Efficiency::wasted_ratio(self : Efficiency) -> Double {
 
 ///|
 /// 一条路径在整镜像里的版本记录：写过的字节（含 0 表示被删）/ 最小的那个版本。
+#derive(Eq, Debug)
 pub(all) struct PathEfficiency {
   path : String
   cumulative_bytes : Int32
   min_bytes : Int32
   /// 出现过几个版本；≥2 说明这条路径拖累了分数
   versions : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend PathEfficiency with Eq::{equal, not_equal}
@@ -76,11 +78,12 @@ pub extend PathEfficiency with Show::{to_string, output}
 
 ///|
 /// 逐路径的 efficiency 统计 + 总分。
+#derive(Eq, Debug)
 pub(all) struct EfficiencyReport {
   efficiency : Efficiency
   /// 被写过多版的路径（含被删的），按节省空间从大到小排；同分按路径序
   paths : Array[PathEfficiency]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend EfficiencyReport with Eq::{equal, not_equal}

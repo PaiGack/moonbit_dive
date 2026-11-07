@@ -1,6 +1,7 @@
 ///|
 /// 报告的输出口径：文本报告与 JSON 报告共用一份中间结构，
 /// 保证两边数字永远一致。
+#derive(Eq, Debug)
 pub(all) struct Report {
   layers : Int32
   /// 镜像当前占用（最后一层树上文件的字节合计）
@@ -29,7 +30,7 @@ pub(all) struct Report {
   wasteful_paths : Array[PathSize]
   /// 占用最大的目录，最多 10 条
   hotspots : Array[Hotspot]
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Report with Eq::{equal, not_equal}

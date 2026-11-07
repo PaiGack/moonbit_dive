@@ -3,9 +3,10 @@
 ///
 /// 键是 tar 里的路径，值是 sha256 hex 摘要；目录、符号链接这类没有内容字节的
 /// entry 也给一条记录，摘要为 `None`（它们在 `Node` 里靠 kind / mode / 属主比）。
+#derive(Debug)
 pub struct ContentScan {
   hashes : Map[String, String?]
-} derive(Debug)
+}
 
 ///|
 pub extend ContentScan with @debug.Debug::{to_repr}

@@ -1,13 +1,14 @@
 ///|
 /// CLI 后端：把 `docker` / `podman` / `nerdctl` 当黑盒用，只吃它们的
 /// `save` / `inspect` 输出。退出码与 stderr 原样带进错误，排查不靠猜。
+#derive(Eq, Debug)
 pub(all) struct DockerCliSource {
   /// 可执行文件绝对路径（或 PATH 上的裸名）
   program : String
   tool : CliTool
   /// 单次调用的超时（毫秒），0 表示不设超时
   timeout_ms : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend DockerCliSource with Eq::{equal, not_equal}

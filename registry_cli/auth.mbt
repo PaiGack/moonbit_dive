@@ -3,6 +3,7 @@
 ///
 /// registry 只在第一次裸请求时回这个头，之后就该拿着 token 走了；
 /// 所以这里只需要「把挑战读懂」，不需要实现完整的认证协商。
+#derive(Eq, Debug)
 pub(all) struct AuthChallenge {
   /// `Basic` 还是 `Bearer`
   scheme : String
@@ -12,7 +13,7 @@ pub(all) struct AuthChallenge {
   service : String
   /// 申请的权限范围，例如 `repository:library/nginx:pull`
   scope : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend AuthChallenge with Eq::{equal, not_equal}
@@ -115,11 +116,12 @@ fn parse_auth_params(text : String) -> Map[String, String] {
 /// 现在只支持两种：匿名（走 token 端点的匿名换票）与显式 token
 /// （`DIVE_REGISTRY_TOKEN` / `--registry-token`）。Basic 账号密码
 /// 留着枚举位但**没有实现**：真要支持得先有安全的落盘方式，见文档。
+#derive(Eq, Debug)
 pub(all) enum RegistryCredentials {
   Anonymous
   /// 直接当 `Authorization: Bearer <token>` 用
   Bearer(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend RegistryCredentials with Eq::{equal, not_equal}

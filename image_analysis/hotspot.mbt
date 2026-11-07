@@ -3,6 +3,7 @@
 ///
 /// 与 `Analysis::waste_ranking` 的区别：那个看「浪费」，这个看「占用」，
 /// 用来回答「镜像里最大的目录是哪个」。
+#derive(Eq, Debug)
 pub(all) struct Hotspot {
   path : String
   /// 子树里所有文件的字节合计（含自身，若是文件则等于自身大小）
@@ -11,7 +12,7 @@ pub(all) struct Hotspot {
   files : Int32
   /// 子树里被覆盖 / 被删掉的字节合计，用来判断这个热点值不值得优化
   mut wasted_bytes : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Hotspot with Eq::{equal, not_equal}

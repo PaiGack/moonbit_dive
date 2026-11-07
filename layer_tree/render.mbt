@@ -1,5 +1,6 @@
 ///|
 /// 渲染选项：影响缩进树里的展示内容。
+#derive(Eq, Debug)
 pub(all) struct RenderOptions {
   /// 在文件名后标注 `(N bytes)`
   show_size : Bool
@@ -7,7 +8,7 @@ pub(all) struct RenderOptions {
   show_layer : Bool
   /// 链接目标是否用 `->` / `==>` 带出
   show_links : Bool
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend RenderOptions with Eq::{equal, not_equal}

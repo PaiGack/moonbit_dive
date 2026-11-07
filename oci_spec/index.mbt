@@ -2,6 +2,7 @@
 /// 多平台镜像索引 / manifest list（对应 `application/vnd.oci.image.index.v1+json`）。
 ///
 /// `index` 在 MoonBit 里是常用词，类型名仍取 image-spec 的 `Index`。
+#derive(Eq, Debug)
 pub(all) struct Index {
   schema_version : Int32
   media_type : String?
@@ -9,7 +10,7 @@ pub(all) struct Index {
   manifests : Array[Descriptor]
   subject : Descriptor?
   annotations : Map[String, String]?
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Index with Eq::{equal, not_equal}

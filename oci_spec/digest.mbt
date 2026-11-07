@@ -3,6 +3,7 @@
 ///
 /// 与 image-spec 的 `ErrDigestUnsupported` / `ErrDigestInvalidFormat` 对应，
 /// 拆成细分构造子便于调用方给出精确提示。
+#derive(Eq, Debug)
 pub(all) suberror DigestError {
   EmptyDigest
   MissingSeparator(String)
@@ -13,7 +14,7 @@ pub(all) suberror DigestError {
   InvalidHexChar(String, Char, Int32)
   /// 格式合法但含大写 hex（OCI digest 必须小写）
   NotLowercase(String)
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend DigestError with Eq::{equal, not_equal}
@@ -48,12 +49,13 @@ pub extend DigestError with Show::{to_string, output}
 ///
 /// 该类型保证 encoded 全为小写 hex 且长度与算法匹配（sha256 = 64, sha512 = 128）。
 /// 通过 `Digest::parse` 构造，不会持有非法状态。
+#derive(Eq, Debug)
 pub(all) struct Digest {
   /// 小写算法名，如 `sha256`
   algorithm : String
   /// 小写 hex 编码
   encoded : String
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend Digest with Eq::{equal, not_equal}

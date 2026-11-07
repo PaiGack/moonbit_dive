@@ -496,6 +496,7 @@ fn cli() -> @argparse.Command {
 
 ///|
 /// 解析出来的选项。
+#derive(Debug)
 struct Options {
   image : String
   rules : String?
@@ -536,7 +537,7 @@ struct Options {
   /// 单次 docker 调用的超时（毫秒）。刻意**不接受 0**：
   /// 无超时正是「半死 socket → 静默挂住」的老问题，不给用户留这个坑
   docker_timeout_ms : Int32
-} derive(Debug)
+}
 
 ///|
 fn Options::from_matches(matches : @argparse.Matches) -> Options {
@@ -769,6 +770,7 @@ fn parse_non_negative_int(text : String) -> Int32? {
 
 ///|
 /// 一次运行里可能出的错；都按 `exit 2` 处理，但信息要能区分。
+#derive(Eq, Debug)
 suberror CommandError {
   Image(String)
   Analysis(String)
@@ -783,7 +785,7 @@ suberror CommandError {
   NoLocalImage(String)
   /// registry 拉取 / `--save` 失败：认证、404、digest 不符、落盘失败等
   Registry(String)
-} derive(Eq, Debug)
+}
 
 ///|
 /// 报错到 stderr。
@@ -800,6 +802,7 @@ fn report_error(error : CommandError) -> Unit {
 
 ///|
 /// 位置参数的三种形态。判定只做三档，见 `load_source`。
+#derive(Eq, Debug)
 enum InputKind {
   /// `-`：从 stdin 读
   Stdin
@@ -807,7 +810,7 @@ enum InputKind {
   LocalPath
   /// 其余：当镜像引用（`nginx:latest`、`docker.cnb.cool/x/y:tag`）
   Reference
-} derive(Eq, Debug)
+}
 
 ///|
 /// 这个位置参数是不是一份**已经存在**的本地输入（stdin 或路径）。

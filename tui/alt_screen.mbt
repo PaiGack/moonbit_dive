@@ -10,12 +10,13 @@
 ///
 /// 「该发什么」抽成纯函数（`teardown_commands`），因此可以在没有真终端的情况下
 /// 单测：`run_app` 里那几行只负责 `execute`。
+#derive(Debug)
 pub(all) struct AltScreen {
   /// tty 已经进过 alternate screen
   mut entered : Bool
   /// 每次重建画布都置真后由 painter 消费的「首帧全量重画」意图
   mut needs_full_redraw : Bool
-} derive(Debug)
+}
 
 ///|
 pub fn AltScreen::new() -> AltScreen {

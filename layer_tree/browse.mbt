@@ -3,13 +3,14 @@
 ///
 /// 拆出这一类型是为了让「解压」与「用」分开：叠树与分析都要吃同一批层，
 /// 先解压一次存下来，两条链路再各取所需，不必各自再解一遍。
+#derive(Eq, Debug)
 pub(all) struct DecompressedLayers {
   /// 逐层的 tar 字节（下标即层号）
   raws : Array[Bytes]
   /// 解压次数。测试用它钉住「一批层只解压一遍」——
   /// 这层保证不该靠人读代码维持（issue #52）。
   decompressed : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend DecompressedLayers with Eq::{equal, not_equal}
@@ -31,6 +32,7 @@ pub extend DecompressedLayers with Show::{to_string, output}
 /// dive 的交互界面核心是「在层之间切换，看这层的文件树长什么样」。本模块把
 /// 「把树裁到第 n 层」这件事抽出来：给定逐层快照，返回第 `layer` 层应用完之后的树。
 /// 它不是新语义，只是 `snapshot` 的时间切片，供 CLI 逐层浏览。
+#derive(Debug)
 pub(all) struct LayerView {
   /// 该视图对应的层号（从 0 开始）
   layer : Int32
@@ -49,7 +51,7 @@ pub(all) struct LayerView {
   /// `[:l].last() - ([:base].last() ?? 0)` 就是「这段区间整体涨了多少」，
   /// 与聚合 diff 落在同一把尺子上（`aggregate_size_delta`）。
   layer_sizes : Array[Int32]
-} derive(Debug)
+}
 
 ///|
 pub extend LayerView with @debug.Debug::{to_repr}

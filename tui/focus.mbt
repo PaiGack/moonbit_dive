@@ -10,10 +10,11 @@
 ///
 /// 这一层是纯函数：给定「哪些面板可聚焦」与「现在在谁身上」，算出下一个。
 /// 因此焦点逻辑可以完全单测，不需要终端。
+#derive(Eq, Debug)
 pub(all) enum Focus {
   Tree
   Detail
-} derive(Eq, Debug)
+}
 
 ///|
 /// 焦点顺序：固定的两格，与 `Layout.panes` 里的顺序一致。

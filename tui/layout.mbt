@@ -12,6 +12,7 @@
 ///
 /// 这一层是纯计算，不碰终端。`render.mbt` 按结果画，`app.mbt` 用
 /// `body_height()` 回填翻页步长。
+#derive(Eq, Debug)
 pub(all) enum PaneId {
   Tree
   Detail
@@ -19,17 +20,18 @@ pub(all) enum PaneId {
   Help
   /// 只有一行（或多行）提示的浮层，比如「放不下」/「没有数据」
   Popup
-} derive(Eq, Debug)
+}
 
 ///|
 /// 一块矩形区域（含边框）。`right` / `bottom` 是**闭区间**，
 /// 与屏幕坐标一致，免得每处都写一次 `-1`。
+#derive(Eq, Debug)
 pub(all) struct Rect {
   left : Int32
   top : Int32
   right : Int32
   bottom : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub fn Rect::width(self : Rect) -> Int32 {
@@ -43,6 +45,7 @@ pub fn Rect::height(self : Rect) -> Int32 {
 
 ///|
 /// 单个面板的定位。`bordered` 的面板内容区比外框各缩一列/一行。
+#derive(Eq, Debug)
 pub(all) struct Pane {
   id : PaneId
   rect : Rect
@@ -52,7 +55,7 @@ pub(all) struct Pane {
   title : String
   /// 能否被 Tab 聚焦（状态行 / 帮助浮层不接焦点）
   focusable : Bool
-} derive(Eq, Debug)
+}
 
 ///|
 /// 内容区左边界：有框就跳掉左边框那一列。
@@ -108,6 +111,7 @@ pub fn Pane::inner_height(self : Pane) -> Int32 {
 ///
 /// 字段仍是老的几个（`render.mbt` 里到处在用），但语义升级成「主面板矩形」，
 /// 另加 `panes` 给边框与焦点查询。`Layout::compute` 是唯一入口。
+#derive(Eq, Debug)
 pub(all) struct Layout {
   /// 终端总列数 / 行数
   cols : Int32
@@ -135,7 +139,7 @@ pub(all) struct Layout {
   detail_pane : Rect
   /// 帮助浮层外框；没展开时 0 高
   help_pane : Rect
-} derive(Eq, Debug)
+}
 
 ///|
 /// 最小可用列宽：再窄就只剩树，右栏退化掉，别把两个字宽的面板挤成竖条。

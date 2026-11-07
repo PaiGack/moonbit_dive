@@ -13,6 +13,7 @@ pub let plnk_marker : String = ".wh..wh..plnk"
 
 ///|
 /// whiteout 条目的语义分类。
+#derive(Eq, Debug)
 pub(all) enum WhiteoutKind {
   /// `.wh.<name>`：删除同目录下名为 `<name>` 的条目
   Entry(String)
@@ -20,7 +21,7 @@ pub(all) enum WhiteoutKind {
   Opaque
   /// `.wh..wh..plnk`：硬链接维护文件，忽略
   Plnk
-} derive(Eq, Debug)
+}
 
 ///|
 pub extend WhiteoutKind with Eq::{equal, not_equal}
@@ -70,13 +71,21 @@ pub fn whiteout_kind(raw : String) -> WhiteoutKind? {
 ///   再靠 `promote_orphans` 把先到的子节点挂回去
 /// - `.wh.<name>` 删除同目录条目；`.wh..wh..opq` 清空目录已有内容
 /// - 硬链接登记为 `Hardlink(target)`，软链接记录目标但不跟随
+///
+/// 关键约束：层的效果与层内条目顺序无关，判定一律看节点的**来层**
+/// （`node.info.layer`），而不是看谁先谁后：
+/// - whiteout 只删除来层早于本层的条目，本层重新写入的同名条目予以保留
+/// - opaque 目录删掉本层没有子条目的旧子树
+/// - whiteout / opaque 带来的删除先记下来，等整层扫完再一次性落到树上
 pub fn apply_layer(
   tree : FileTree,
   stream : BytesView,
   layer : Int32,
 ) -> Unit raise TarError {
   let reader = TarReader::new(stream)
-  // opaque 目录要在本层所有 entry 应用完后才清空，否则同层后续写入会被误删
+  // 本层 deletions 要等扫完再落地：whiteout 条目可能排在被删文件之前，
+  // 提前删掉会把本层重新写入的内容一起带走
+  let deletions : Array[String] = []
   let opaque_dirs : Array[String] = []
   while true {
     // 读完（`NotFound`）就是正常出口，其它错误照旧往上抛
@@ -87,8 +96,7 @@ pub fn apply_layer(
     let path = normalize_path(entry.path) catch { _ => continue }
     match whiteout_kind(path) {
       Some(WhiteoutKind::Entry(name)) => {
-        let target = join_path(parent_path(path), name)
-        remove_subtree(tree, target, layer) |> ignore
+        deletions.push(join_path(parent_path(path), name))
         continue
       }
       Some(WhiteoutKind::Opaque) => {
@@ -105,6 +113,9 @@ pub fn apply_layer(
   }
   for directory in opaque_dirs {
     make_opaque(tree, directory, layer)
+  }
+  for target in deletions {
+    remove_prior_entry(tree, target, layer)
   }
   tree.promote_orphans()
   tree.layers = layer + 1
@@ -344,6 +355,32 @@ fn FileTree::collect_subtree(self : FileTree, path : String) -> Array[String] {
 }
 
 ///|
+/// `path` 自身或子树里是否有「来层不早于 `layer`」的条目。
+///
+/// opaque 判定用它回答「这段旧内容在本层有没有被重新写过」。
+fn FileTree::has_descendant_from(
+  self : FileTree,
+  path : String,
+  layer : Int32,
+) -> Bool {
+  let prefix = if path == "/" { "" } else { path }
+  for node_path, node in self.nodes {
+    if node_path == "/" {
+      continue
+    }
+    let under = if prefix == "" {
+      true
+    } else {
+      path_is_under(node_path, prefix)
+    }
+    if under && node.info.layer >= layer {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// 子树被删后，仍有层记录指向这些路径的话，把它们的存在层号清成被删层。
 ///
 /// 目的是让 `tree[node].layer` 表达「最后一次有效写入」而不是指向一个已消失的层。
@@ -363,12 +400,18 @@ fn FileTree::clear_layers_from(
 /// opaque 语义：目录内容在本层被整体替换，抹掉本层没有重新写入的旧条目。
 ///
 /// `.wh..wh..opq` 自身出现在该目录下，本层写过的条目一律保留；
-/// 其余旧条目连同子树删除。
+/// 其余旧条目连同子树删除。判定看的是最近一次写入的层号，不是条目顺序，
+/// 所以 `.wh..wh..opq` 写在子条目之后也不会误删本层内容。
+///
+/// 注意不能只删「直接子节点」：本层新写了 `sub/new`、而 `sub` 目录本身
+/// 由更早的层创建时，只删旧子节点会把新内容一起带走。这里按「本层是否
+/// 有后代」来判断，删掉整段没有后代属于本层的旧子树。
 pub fn make_opaque(tree : FileTree, directory : String, layer : Int32) -> Unit {
-  let doomed : Array[String] = []
+  // 目录内所有后代，按深度从浅到深处理：父目录整段删掉后子路径已不存在
   let prefix = if directory == "/" { "" } else { directory }
-  for node_path, node in tree.nodes {
-    if node_path == "/" {
+  let descendents : Array[String] = []
+  for node_path, _ in tree.nodes {
+    if node_path == "/" || node_path == directory {
       continue
     }
     let under = if prefix == "" {
@@ -376,18 +419,54 @@ pub fn make_opaque(tree : FileTree, directory : String, layer : Int32) -> Unit {
     } else {
       path_is_under(node_path, prefix)
     }
-    if !under {
-      continue
-    }
-    let parent = parent_path(node_path)
-    if parent != directory {
-      continue
-    }
-    if node.info.layer < layer {
-      doomed.push(node_path)
+    if under && path_depth(node_path) > path_depth(directory) {
+      descendents.push(node_path)
     }
   }
-  for node_path in doomed {
+  for node_path in descendents {
+    // 本层写过的条目连同子树保留：它们就是 opaque 之后的新内容
+    if tree.has_descendant_from(node_path, layer) {
+      continue
+    }
+    remove_subtree(tree, node_path, layer) |> ignore
+  }
+  // 存活的那一支可能正好挂在被删节点下面，这里补挂一层
+  for node_path in descendents {
+    if tree.get(node_path) is Some(node) {
+      for child in node.children {
+        tree.relink_parent(child.path)
+      }
+    }
+  }
+}
+
+///|
+/// whiteout 语义：删除同目录下 `path` 的旧内容。
+///
+/// 只删来层早于本层的条目——同层重新写回的条目来层等于本层，必须保留。
+/// `tar` 里 `.wh.<name>` 排在写回条目之前还是之后，效果都该一样。
+///
+/// 本层重写了这个条目时，它算「这一层重新建立的完整子树」：目录被重建后
+/// 旧层塞进去的后代不该复活，所以连同旧后代一起清掉。
+fn remove_prior_entry(tree : FileTree, path : String, layer : Int32) -> Unit {
+  let rewritten = match tree.get(path) {
+    Some(node) => node.info.layer >= layer
+    None => false
+  }
+  if !rewritten {
+    remove_subtree(tree, path, layer) |> ignore
+    return
+  }
+  // 被本层重写的目录：先摘下旧后代，再逐个彻底删掉（含其子树）
+  let stale = []
+  for node_path in tree.collect_subtree(path) {
+    if node_path != path &&
+      tree.get(node_path) is Some(node) &&
+      node.info.layer < layer {
+      stale.push(node_path)
+    }
+  }
+  for node_path in stale {
     remove_subtree(tree, node_path, layer) |> ignore
   }
 }

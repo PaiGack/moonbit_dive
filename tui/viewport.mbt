@@ -7,6 +7,7 @@
 ///
 /// 只存 `offset` 与 `content` / `window` 两个计数，不持内容本体：
 /// 内容是每帧现算的（详情面板依赖光标），存进来反而要处理脏数据。
+#derive(Eq, Debug)
 pub(all) struct Viewport {
   /// 第一行内容对应的下标
   mut offset : Int32
@@ -14,7 +15,7 @@ pub(all) struct Viewport {
   mut content : Int32
   /// 窗口行数
   mut window : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 pub fn Viewport::new(content : Int32, window : Int32) -> Viewport {

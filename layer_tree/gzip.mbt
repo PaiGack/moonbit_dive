@@ -6,10 +6,11 @@ let deflate_max_bits : Int32 = 15
 /// 单个 Huffman 码表：`counts[n]` 是长度为 n 的码字数，`symbols` 是按码长升序
 /// 排列的符号表。解码时按标准做法逐位累加码值并与 `counts` 比较，
 /// 算出符号下标后回查 `symbols`。
+#derive(Debug)
 pub struct HuffmanTable {
   counts : FixedArray[Int32]
   symbols : FixedArray[Int32]
-} derive(Debug)
+}
 
 ///|
 pub extend HuffmanTable with @debug.Debug::{to_repr}
@@ -71,11 +72,12 @@ fn fixed_distance_table() -> HuffmanTable {
 
 ///|
 /// 位读取器：DEFLATE 按 LSB-first 打包位序。
+#derive(Debug)
 pub struct BitReader {
   data : BytesView
   mut byte : Int32
   mut bits : Int32
-} derive(Debug)
+}
 
 ///|
 pub extend BitReader with @debug.Debug::{to_repr}

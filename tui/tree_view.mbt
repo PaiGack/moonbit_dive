@@ -12,6 +12,7 @@
 /// 每行还带一份 `RowStatus`：这一层的 diff 说它是新增/改写/删除，还是没有动过。
 /// 它取自 `layer_tree` 的 `Diff`，但落在**视图状态**里而不是渲染时现查——
 /// 换层、折叠、滚动都不改变「某个路径在这一层属于哪一类」，算一次就够。
+#derive(Eq, Debug)
 pub(all) struct Row {
   /// 树内绝对路径
   path : String
@@ -29,7 +30,7 @@ pub(all) struct Row {
   mode : Int32
   /// entry 记录的修改时间（Unix 秒），0 表示数据源没给
   mtime : Int32
-} derive(Eq, Debug)
+}
 
 ///|
 /// 某条路径相对上一层的状态。
@@ -40,23 +41,25 @@ pub(all) struct Row {
 ///
 /// 「先删后加同名文件」在 `Diff` 里同时出现在 `added` 与 `removed`，树上有行，
 /// 按 `Added` 处理——对看树的人来说「这层写了它」比「这层删过它」更常用。
+#derive(Eq, Debug)
 pub(all) enum RowStatus {
   Added
   Modified
   /// 这一层没动过它
   Unchanged
-} derive(Eq, Debug)
+}
 
 ///|
 /// 一行降在哪一档。与 `RowStatus` 合成一张 3x2 的表，
 /// `Ctrl+U` 这颗过滤键就是从它派生出来的（`Row::in_group`）。
 ///
 /// 没有 `Removed`：被删的路径不在这一层的树上，没有行可以给它归档。
+#derive(Eq, Debug)
 pub(all) enum RowGroup {
   AddedOnly
   ModifiedOnly
   UnchangedOnly
-} derive(Eq, Debug)
+}
 
 ///|
 /// diff 的**比较档位**（对齐原版 dive 的 `viewmodel.LayerCompareMode`）：
@@ -70,16 +73,18 @@ pub(all) enum RowGroup {
 ///
 /// 与 `RowGroup` 是**正交**的两件事：档位换的是「拿哪段 diff 上色」，
 /// 过滤换的是「哪些行留在画面上」。
+#derive(Eq, Debug)
 pub(all) enum CompareMode {
   Single
   Aggregate
-} derive(Eq, Debug)
+}
 
 ///|
 /// 看树的状态机。
 ///
 /// `collapsed` 存「被收起的目录路径」而不是「展开过的」：新出现的目录默认展开，
 /// 这符合看镜像的直觉（想看的是全貌，不是一层层点开）。
+#derive(Debug)
 pub(all) struct TreeView {
   /// 当前用来渲染的层号
   mut layer : Int32
@@ -105,7 +110,7 @@ pub(all) struct TreeView {
   mut compare_mode : CompareMode
   /// 聚合档下被删除的路径（不在树上，给删除列表用）；单层档只放该层的 `removed`
   mut removed : Array[String]
-} derive(Debug)
+}
 
 ///|
 /// 从一棵树建视图。`total_layers` 只用于状态栏显示，排序按名字。

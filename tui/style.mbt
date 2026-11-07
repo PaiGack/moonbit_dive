@@ -12,11 +12,12 @@
 ///
 /// `fg` / `bg` 都用 `Default`：绝大多数格子应当是终端默认色，
 /// 只有 diff 的 added / modified / removed 三类上色，其余保持原样。
+#derive(Eq, Debug)
 pub(all) struct Style {
   fg : @tty_color.Color
   bg : @tty_color.Color
   bold : Bool
-} derive(Eq, Debug)
+}
 
 ///|
 /// 终端默认样式。
