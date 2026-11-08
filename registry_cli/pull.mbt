@@ -1111,10 +1111,17 @@ async fn get_stream_following_redirects(
   on_tick? : () -> Unit noraise,
   fallback~ : String = "",
 ) -> StreamedBody raise RegistryError {
+  // 连接本身也是「可能建不起来」的东西：`client` 的协议是调用方给的，
+  // 真实能走通的那个在 `fallback` 里（见 `pull_with_client`）。
+  // 只在这个函数的最外层判一次：`follow_stream` 里递归用的是**已经连上**的客户端，
+  // 它们不再需要（也不该）重新定协议。
+  //
+  // 换协议那条（`fallback` 是明文、`client` 是 https）走的是「拿头 → 判 401 →
+  // 换票 → 重头再来」这一整套，所以它直接进 `follow_stream`。
   guard !fallback.is_empty() &&
     fallback.has_prefix("http://") &&
     !client.base.has_prefix("http://") else {
-    return follow_stream(
+    return stream_with_retry(
       client,
       path,
       reference,
@@ -1124,17 +1131,15 @@ async fn get_stream_following_redirects(
       fallback~,
     )
   }
-  // 连接本身也是「可能建不起来」的东西：`client` 的协议是调用方给的，
-  // 真实能走通的那个在 `fallback` 里（见 `pull_with_client`）。
-  // 只在这个函数的最外层判一次：`follow_stream` 里递归用的是**已经连上**的客户端，
-  // 它们不再需要（也不该）重新定协议。
+  // 这里先把头拿了：`fallback` 与 `client` 协议不同时，「连不上」多半是
+  // 协议不对，换一条同协议的连接没有意义——那条路由 `follow_stream`
+  // 里的 `connect_origin(fallback)` 兜。
   let head = client.get_head(path) catch {
     err => {
       if !private_failure(err) {
         raise err
       }
-      // 换一条连接重来：`head` 只是一个值，没有「半条连接」要收
-      let retried = connect_origin(fallback, fallback~) catch { _ => raise err }
+      let retried = reconnect(client) catch { _ => raise err }
       let streamed = {
         errdefer retried.close()
         follow_stream(
@@ -1161,6 +1166,58 @@ async fn get_stream_following_redirects(
     fallback~,
     head~,
   )
+}
+
+///|
+/// 拉一次正文；连接在半路上被对端收掉了就换一条重来（只重来一次）。
+///
+/// 空闲连接被收掉在真实 registry 上很常见：拿头是一次请求，换票（Docker Hub 的
+/// `auth.docker.io`）是另一次跨主机往返，回来的那条连接常常已经死了。撞上它时
+/// 报出来的是 `ConnectionClosed`——一句话把「连接被收了」说成「TLS 握手失败」，
+/// 与证书坏了长得一模一样（issue #153 的现场）。
+///
+/// 重来一次是安全的：`Network` / `Io` 意味着这一遍**一个字节都没打算留下**
+/// （写盘走的是 `.partial` + rename）；只重来一次，所以一个真的坏掉的 registry
+/// 不会把我们拖进无限重连。
+async fn stream_with_retry(
+  client : RegistryClient,
+  path : String,
+  reference : ImageReference,
+  destination : String,
+  progress? : (Int64, Int64?) -> Unit,
+  on_tick? : () -> Unit noraise,
+  fallback~ : String = "",
+) -> StreamedBody raise RegistryError {
+  follow_stream(
+    client,
+    path,
+    reference,
+    destination,
+    progress?,
+    on_tick?,
+    fallback~,
+  ) catch {
+    err => {
+      if !private_failure(err) {
+        raise err
+      }
+      let fresh = reconnect(client) catch { _ => raise err }
+      let streamed = {
+        errdefer fresh.close()
+        follow_stream(
+          fresh,
+          path,
+          reference,
+          destination,
+          progress?,
+          on_tick?,
+          fallback~,
+        )
+      }
+      fresh.close()
+      streamed
+    }
+  }
 }
 
 ///|
@@ -1243,7 +1300,13 @@ async fn follow_stream(
     client.skip_body()
     raise Network("blob \{path} answered \{head.status}")
   }
-  // 200：正文接着在这条连接上读，不跳过
+  // 200：正文接着在这条连接上读，不跳过。
+  //
+  // 读正文这一下也可能撞上一条**已经死了的空闲连接**：拿头是一次请求，
+  // 换票（Docker Hub 的 `auth.docker.io`）又是另一次跨主机往返，等回来时
+  // 这条连接早被对端收掉了——报出来的是一句 `ConnectionClosed`，
+  // 与证书坏了长得一模一样。第一次一个字节都没读到（`reading the response
+  // body` 之后才失败、`received = 0`），所以整段重来是安全的。
   stream_body(client, path, destination, progress?, on_tick?)
 }
 
@@ -1382,13 +1445,79 @@ async fn get_authorized(
   }
   let token = fetch_token(client, challenge, reference, fallback~)
   client.set_token(token)
-  let retry = client.get(path, headers~)
+  let retry = retry_with_token(client, path, headers, fallback~)
   if retry.status == 401 || retry.status == 403 {
     raise Auth(
       "\{reference.canonical()}: the token was rejected (\{retry.status} on \{path})",
     )
   }
   retry
+}
+
+///|
+/// 带上 token 重发那一次请求；原来那条连接断了就换一条再说一遍。
+///
+/// 为什么要这一步：拿 token 是一次**跨主机的往返**（Docker Hub 上是另一个域名
+/// `auth.docker.io`），中间隔着几十毫秒级的等待。registry 那条空闲连接在这段
+/// 时间里被对端关掉很常见——实测在 CNB 上必现：
+///
+/// ```text
+/// layer 1 done: 2.4 KiB (total 100%)
+/// registry error: cannot open a TLS connection to registry-1.docker.io:
+///   ConnectionClosed; the CA bundle in use is /etc/ssl/certs/ca-certificates.crt
+/// ```
+///
+/// 报的是「TLS 建不起来」，看起来像证书问题，其实 token 已经换到了，
+/// 只是拿它去请求时复用了那条**已经死掉**的连接。所以这里退到一条新连接上
+/// 再请求一次——第一次请求本身就没拿到答复（`Network` / `Io`），重放是安全的。
+async fn retry_with_token(
+  client : RegistryClient,
+  path : String,
+  headers : Map[String, String],
+  fallback~ : String = "",
+) -> HttpReply raise RegistryError {
+  let first = client.get(path, headers~) catch {
+    err => {
+      if !private_failure(err) {
+        raise err
+      }
+      // 新连接走哪条协议：`client` 自己那条已经证明收发都不通了，
+      // 所以按 `fallback` 重新定；`fallback` 为空时原样沿用 `client` 的协议
+      let fresh = try {
+        if fallback.is_empty() {
+          reconnect(client)
+        } else {
+          connect_origin(fallback, fallback~)
+        }
+      } catch {
+        _ => raise err
+      }
+      let replied = {
+        errdefer fresh.close()
+        match client.token {
+          Some(token) => fresh.set_token(token)
+          None => ()
+        }
+        fresh.get(path, headers~)
+      }
+      fresh.close()
+      replied
+    }
+  }
+  first
+}
+
+///|
+/// 照抄一个客户端的协议与 token 重新建一条连接（`connect_origin` 只认 origin，
+/// 这里手上只有 `client.base`）。
+async fn reconnect(
+  client : RegistryClient,
+) -> RegistryClient raise RegistryError {
+  let plain = client.base.has_prefix("http://")
+  let host = strip_scheme(client.base)
+  RegistryClient::connect(host, insecure=plain, token=client.token) catch {
+    err => raise Network("cannot open a connection to \{client.base}: \{err}")
+  }
 }
 
 ///|
